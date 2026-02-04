@@ -1,20 +1,30 @@
 """
-Head pose estimation using MediaPipe.
+Head pose estimation using MediaPipe FaceLandmarker (Tasks API).
 
 Estimates yaw, pitch, and roll angles from face landmarks.
+Supports MediaPipe 0.10.30+ with the new Tasks API.
 """
 
 import logging
 import math
+import os
+import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import cv2
-import mediapipe as mp
 import numpy as np
 
 from thaqib.video.tracker import TrackedObject
 
 logger = logging.getLogger(__name__)
+
+# Model download URL
+FACE_LANDMARKER_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+    "face_landmarker/float16/1/face_landmarker.task"
+)
 
 
 @dataclass
@@ -63,9 +73,10 @@ class HeadPoseResult:
 
 class HeadPoseEstimator:
     """
-    MediaPipe-based head pose estimator.
+    MediaPipe-based head pose estimator using FaceLandmarker (Tasks API).
 
     Uses face mesh landmarks to estimate 3D head orientation (yaw, pitch, roll).
+    Compatible with MediaPipe 0.10.30+.
 
     Example:
         >>> estimator = HeadPoseEstimator()
@@ -104,6 +115,7 @@ class HeadPoseEstimator:
         self,
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
+        model_path: str | None = None,
     ):
         """
         Initialize head pose estimator.
@@ -111,30 +123,69 @@ class HeadPoseEstimator:
         Args:
             min_detection_confidence: Minimum confidence for face detection.
             min_tracking_confidence: Minimum confidence for face landmark tracking.
+            model_path: Path to face_landmarker.task model file. 
+                       If None, downloads automatically.
         """
         self.min_detection_confidence = min_detection_confidence
         self.min_tracking_confidence = min_tracking_confidence
+        self.model_path = model_path
 
-        self._face_mesh: mp.solutions.face_mesh.FaceMesh | None = None
+        self._landmarker: Any = None
         self._is_initialized = False
 
+    def _ensure_model(self) -> str:
+        """Ensure model file exists, downloading if needed."""
+        if self.model_path and Path(self.model_path).exists():
+            return self.model_path
+
+        # Default model location
+        models_dir = Path(__file__).parent.parent.parent.parent / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        model_file = models_dir / "face_landmarker.task"
+
+        if not model_file.exists():
+            logger.info(f"Downloading FaceLandmarker model to {model_file}...")
+            urllib.request.urlretrieve(FACE_LANDMARKER_MODEL_URL, model_file)
+            logger.info("Model downloaded successfully")
+
+        return str(model_file)
+
     def initialize(self) -> None:
-        """Initialize MediaPipe face mesh."""
+        """Initialize MediaPipe FaceLandmarker."""
         if self._is_initialized:
             return
 
-        logger.info("Initializing MediaPipe Face Mesh for head pose estimation")
+        logger.info("Initializing MediaPipe FaceLandmarker for head pose estimation")
 
-        self._face_mesh = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=1,  # Process one face at a time (cropped region)
-            refine_landmarks=True,
-            min_detection_confidence=self.min_detection_confidence,
+        try:
+            import mediapipe as mp
+            from mediapipe.tasks import python
+            from mediapipe.tasks.python import vision
+        except ImportError as e:
+            raise ImportError(
+                f"MediaPipe Tasks API not available: {e}. "
+                "Install with: pip install mediapipe>=0.10.30"
+            )
+
+        # Ensure model exists
+        model_path = self._ensure_model()
+
+        # Create FaceLandmarker
+        base_options = python.BaseOptions(model_asset_path=model_path)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=1,
+            min_face_detection_confidence=self.min_detection_confidence,
             min_tracking_confidence=self.min_tracking_confidence,
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=True,  # For pose estimation
         )
 
+        self._landmarker = vision.FaceLandmarker.create_from_options(options)
+        self._vision = vision  # Keep reference for Image creation
         self._is_initialized = True
-        logger.info("Head pose estimator initialized")
+        logger.info("Head pose estimator initialized with FaceLandmarker")
 
     def estimate(
         self,
@@ -155,6 +206,8 @@ class HeadPoseEstimator:
         """
         if not self._is_initialized:
             self.initialize()
+
+        import mediapipe as mp
 
         # Extract and pad bounding box
         x1, y1, x2, y2 = tracked_object.bbox
@@ -177,20 +230,23 @@ class HeadPoseEstimator:
         # Convert to RGB for MediaPipe
         crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
 
-        # Detect face mesh
-        results = self._face_mesh.process(crop_rgb)
+        # Create MediaPipe Image
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=crop_rgb)
 
-        if not results.multi_face_landmarks:
+        # Detect face landmarks
+        result = self._landmarker.detect(mp_image)
+
+        if not result.face_landmarks:
             return HeadPoseResult(track_id=tracked_object.track_id, pose=None)
 
         # Get landmarks from first face
-        landmarks = results.multi_face_landmarks[0]
+        landmarks = result.face_landmarks[0]
         crop_h, crop_w = crop.shape[:2]
 
         # Extract 2D image points
         image_points = []
         for name, idx in self.LANDMARK_INDICES.items():
-            lm = landmarks.landmark[idx]
+            lm = landmarks[idx]
             image_points.append((lm.x * crop_w, lm.y * crop_h))
 
         image_points = np.array(image_points, dtype=np.float64)
@@ -272,9 +328,9 @@ class HeadPoseEstimator:
 
     def close(self) -> None:
         """Close MediaPipe resources."""
-        if self._face_mesh is not None:
-            self._face_mesh.close()
-            self._face_mesh = None
+        if self._landmarker is not None:
+            self._landmarker.close()
+            self._landmarker = None
             self._is_initialized = False
 
     def __enter__(self) -> "HeadPoseEstimator":
