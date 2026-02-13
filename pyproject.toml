@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thaqib"
+version = "0.1.0"
+description = "Smart Exams Monitoring System - Real-time cheating detection using AI"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Thaqib Team"}
+]
+keywords = ["exam", "proctoring", "cheating-detection", "computer-vision", "ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "ultralytics>=8.0.0",        # YOLOv8 for detection
+    "opencv-python>=4.8.0",      # Video processing
+    "numpy>=1.24.0",             # Numerical operations
+    "mediapipe>=0.10.30",        # Head pose estimation (Tasks API)
+    "supervision>=0.16.0",       # Tracking utilities (ByteTrack)
+    "fastapi>=0.104.0",          # Backend API
+    "uvicorn[standard]>=0.24.0", # ASGI server
+    "websockets>=12.0",          # Real-time communication
+    "pydantic>=2.5.0",           # Data validation
+    "pydantic-settings>=2.1.0",  # Settings management
+    "sqlalchemy>=2.0.0",         # Database ORM
+    "alembic>=1.12.0",           # Database migrations
+    "python-dotenv>=1.0.0",      # Environment variables
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+    "pre-commit>=3.6.0",
+]
+gpu = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+]
+
+[project.scripts]
+thaqib = "thaqib.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
