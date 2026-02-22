@@ -143,6 +143,7 @@ class HumanDetector:
             conf=self.confidence_threshold,
             classes=[self.PERSON_CLASS_ID],  # Only detect persons
             verbose=False,
+            device="cpu" if not self.device else self.device,
         )
 
         # Parse results

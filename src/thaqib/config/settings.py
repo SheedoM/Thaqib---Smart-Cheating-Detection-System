@@ -43,13 +43,6 @@ class Settings(BaseSettings):
     tracking_max_distance: int = 100
     tracking_max_age: int = 30
 
-    # Neighbor Modeling
-    neighbor_distance_threshold: int = 200
-    neighbor_k: int = 4
-
-    # Head Pose
-    head_pose_model: Literal["mediapipe", "6drepnet"] = "mediapipe"
-
     # Risk Detection
     risk_angle_tolerance: float = 15.0  # Degrees
     suspicious_duration_threshold: float = 2.0  # Seconds
