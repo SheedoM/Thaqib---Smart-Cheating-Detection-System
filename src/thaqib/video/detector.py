@@ -7,6 +7,7 @@ Provides periodic detection of human subjects in video frames.
 import logging
 from dataclasses import dataclass, field
 
+import cv2
 import numpy as np
 from ultralytics import YOLO
 
@@ -109,10 +110,7 @@ class HumanDetector:
         logger.info(f"Loading YOLO model: {self.model_name}")
 
         self._model = YOLO(f"{self.model_name}.pt")
-
-        # Move to device if specified
-        if self.device:
-            self._model.to(self.device)
+        self._model.to("cuda")
 
         self._is_loaded = True
         logger.info("YOLO model loaded successfully")
@@ -137,33 +135,38 @@ class HumanDetector:
         if not self._is_loaded:
             self.load()
 
-        # Run inference
+        # Run inference using native high-resolution image
         results = self._model(
             frame,
             conf=self.confidence_threshold,
             classes=[self.PERSON_CLASS_ID],  # Only detect persons
+            device="cuda",
             verbose=False,
-            device="cpu" if not self.device else self.device,
+            imgsz=1280  # Force high-resolution inference
         )
 
         # Parse results
         detections = []
         for result in results:
             boxes = result.boxes
-            if boxes is None:
+            if boxes is None or len(boxes) == 0:
                 continue
 
-            for i in range(len(boxes)):
-                # Get bounding box (xyxy format)
-                bbox = boxes.xyxy[i].cpu().numpy().astype(int)
-                confidence = float(boxes.conf[i].cpu().numpy())
-                class_id = int(boxes.cls[i].cpu().numpy())
+            xyxy_arr = boxes.xyxy.cpu().numpy().astype(float)
+            conf_arr = boxes.conf.cpu().numpy()
+            cls_arr = boxes.cls.cpu().numpy().astype(int)
 
+            for i in range(len(boxes)):
                 detections.append(
                     Detection(
-                        bbox=(int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])),
-                        confidence=confidence,
-                        class_id=class_id,
+                        bbox=(
+                            int(xyxy_arr[i][0]),
+                            int(xyxy_arr[i][1]),
+                            int(xyxy_arr[i][2]),
+                            int(xyxy_arr[i][3])
+                        ),
+                        confidence=float(conf_arr[i]),
+                        class_id=int(cls_arr[i]),
                     )
                 )
 

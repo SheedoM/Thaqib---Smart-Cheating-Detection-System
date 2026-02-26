@@ -52,7 +52,7 @@ class OSNetReID:
             ) from e
 
         self._torch = torch
-        self._device = torch.device("cpu")
+        self._device = torch.device("cuda")
 
         logger.info("Loading OSNet-x0.25 model (pretrained on ImageNet)…")
         # Build model without classifier head for feature extraction
@@ -104,7 +104,7 @@ class OSNetReID:
         tensor = (resized.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD
         # HWC → CHW → NCHW
         tensor = tensor.transpose(2, 0, 1)[np.newaxis, ...]
-        t = self._torch.from_numpy(tensor)
+        t = self._torch.from_numpy(tensor).to(self._device)
 
         with self._torch.no_grad():
             feat = self._model(t)  # (1, 512)
@@ -162,3 +162,61 @@ class OSNetReID:
             return best_id, best_score
 
         return None
+    def extract_batch(
+        self,
+        frame: np.ndarray,
+        bboxes: list[tuple[int, int, int, int]],
+    ) -> list[np.ndarray | None]:
+        """
+        Extract 512-dim L2-normalised embeddings for a batch of person crops.
+        """
+        if not bboxes:
+            return []
+
+        fh, fw = frame.shape[:2]
+        valid_crops = []
+        valid_indices = []
+        results = [None] * len(bboxes)
+
+        for i, bbox in enumerate(bboxes):
+            x1, y1, x2, y2 = bbox
+            x1 = max(0, x1); y1 = max(0, y1)
+            x2 = min(fw, x2); y2 = min(fh, y2)
+
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0 or crop.shape[0] < 16 or crop.shape[1] < 8:
+                continue
+
+            # BGR -> RGB, resize to 256x128, float32 normalise
+            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            resized = cv2.resize(rgb, (_INPUT_W, _INPUT_H))
+            tensor = (resized.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD
+            
+            # HWC -> CHW
+            tensor = tensor.transpose(2, 0, 1)
+            valid_crops.append(tensor)
+            valid_indices.append(i)
+
+        if not valid_crops:
+            return results
+
+        # Stack into a single batch: (N, C, H, W)
+        batch_tensor = np.stack(valid_crops, axis=0)
+        t = self._torch.from_numpy(batch_tensor).to(self._device)
+
+        with self._torch.no_grad():
+            features = self._model(t)  # Output shape: (N, 512)
+
+        features_np = features.cpu().numpy()
+
+        # L2 normalise and map back to the correct index
+        for j, idx in enumerate(valid_indices):
+            feat = features_np[j]
+            norm = np.linalg.norm(feat)
+            if norm > 1e-6:
+                results[idx] = feat / norm
+
+        return results
