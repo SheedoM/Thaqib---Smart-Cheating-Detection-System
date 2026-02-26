@@ -135,12 +135,36 @@ class CameraStream:
 
         while not self._stop_event.is_set() and self._is_opened:
             start_time = time.time()
-            if self._cap is None:
-                break
+            if self._cap is None or not self._cap.isOpened():
+                logger.warning("Camera lost, reconnecting...")
+                if self._cap is not None:
+                    self._cap.release()
+                time.sleep(2.0)
+                
+                # Attempt to reconnect
+                if isinstance(self.source, int):
+                    self._cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW)
+                else:
+                    self._cap = cv2.VideoCapture(self.source)
+                    
+                if self._cap.isOpened():
+                    self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                    self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                    self._cap.set(cv2.CAP_PROP_FPS, self.target_fps)
+                    logger.info("Camera reconnected successfully.")
+                    continue
+                else:
+                    logger.error("Reconnection failed. Retrying in 2 seconds...")
+                    time.sleep(2.0)
+                    continue
                 
             ret, frame = self._cap.read()
             if not ret:
-                break
+                logger.warning("Failed to read frame. Reconnecting...")
+                if self._cap is not None:
+                    self._cap.release()
+                self._cap = None
+                continue
                 
             self._frame_index += 1
             fd = FrameData(

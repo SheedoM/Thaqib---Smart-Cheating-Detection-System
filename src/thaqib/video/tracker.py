@@ -91,16 +91,19 @@ class ObjectTracker:
         self.max_age = max_age or settings.tracking_max_age
 
         self._tracker = BoTSORT(
-            reid_weights=Path("models/osnet_x0_25_msmt17.pt"),
-            device="cpu",
-            half=False,
-            with_reid=True,
-            track_high_thresh=0.25,
-            track_low_thresh=0.05,
-            new_track_thresh=0.4,
-            track_buffer=300,
-            match_thresh=0.8
-        )
+    reid_weights=Path("models/osnet_x0_25_msmt17.pt"),
+    device="cuda",
+    half=True,
+    with_reid=False,
+    fuse_first_associate=True,
+    track_high_thresh=0.4,
+    track_low_thresh=0.1,
+    new_track_thresh=0.8,
+    track_buffer=600,
+    match_thresh=0.9,
+    proximity_thresh=0.7,
+    appearance_thresh=0.25,
+)
 
         # Per-track smoothed bbox (EMA)
         self._smoothed_bboxes: dict[int, tuple[int, int, int, int]] = {}

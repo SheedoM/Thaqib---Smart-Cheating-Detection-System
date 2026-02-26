@@ -7,11 +7,13 @@ Does NOT perform detection, tracking, registry updates, or neighbor computation.
 
 import cv2
 import numpy as np
+import functools
 
 from thaqib.video.pipeline import PipelineFrame
 from thaqib.video.registry import GlobalStudentRegistry
 
 
+@functools.lru_cache(maxsize=1024)
 def _track_color(track_id: int) -> tuple[int, int, int]:
     """Return a deterministic unique color for a given track_id."""
     rng = np.random.RandomState(track_id)

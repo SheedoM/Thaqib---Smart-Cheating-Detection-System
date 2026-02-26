@@ -7,6 +7,7 @@ Coordinates camera, detection, and tracking.
 import logging
 import time
 import threading
+import os
 from queue import Queue, Empty
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -136,7 +137,8 @@ class VideoPipeline:
         self._osnet_gallery: dict[int, np.ndarray] = {}
         
         # Parallel executor for per-student processing
-        self._face_executor = ThreadPoolExecutor(max_workers=4)
+        optimal_workers = os.cpu_count() or 8
+        self._face_executor = ThreadPoolExecutor(max_workers=optimal_workers)
 
         self._is_running = False
         
@@ -163,7 +165,7 @@ class VideoPipeline:
                 if frame_data is not None:
                     # Run YOLO inference
                     detection_result = self._detector.detect(
-                        frame_data.frame,
+                        frame_data.frame.copy(),
                         frame_data.frame_index,
                         frame_data.timestamp,
                     )
@@ -190,6 +192,9 @@ class VideoPipeline:
         Returns:
             True if started successfully.
         """
+        import torch
+        torch.set_num_threads(1)
+        
         logger.info("Starting video pipeline...")
 
         if not self._camera.open():
@@ -311,40 +316,11 @@ class VideoPipeline:
                 continue
             
             # ------------------------------------
-            # Re-ID new tracks using OSNet (body appearance) or face landmark fallback
+            # The actual OSNet extraction and tracking Re-ID is now deferred 
+            # to the background thread pool `_process_student_parallel` to maximize FPS.
+            # We simply mark the track as known here to prevent infinite loop checking.
             # ------------------------------------
             if track.track_id not in self._known_tracks:
-                if self._osnet is not None:
-                    # --- OSNet path: extract body-crop embedding ---
-                    osnet_emb = self._osnet.extract(frame_data.frame, track.bbox)
-                    if osnet_emb is not None:
-                        # Check against gallery of known embeddings
-                        match = self._osnet.match_against_gallery(
-                            osnet_emb, self._osnet_gallery, threshold=0.80
-                        )
-                        if match is not None:
-                            matched_id, score = match
-                            self._id_map[track.track_id] = matched_id
-                            track.track_id = matched_id
-                            track.is_selected = matched_id in self._selected_ids
-                        else:
-                            # First time — store in gallery
-                            self._osnet_gallery[track.track_id] = osnet_emb
-                else:
-                    # --- Face-landmark ReID fallback ---
-                    face_mesh = self._face_extractor.extract(
-                        frame_data.frame, track.bbox, track.track_id
-                    )
-                    if face_mesh:
-                        matched_id = self._reid.match(face_mesh)
-                        if matched_id is not None:
-                            self._id_map[track.track_id] = matched_id
-                            track.track_id = matched_id
-                            track.is_selected = matched_id in self._selected_ids
-                        else:
-                            self._reid.register_embedding(track.track_id, face_mesh)
-
-                # Mark as seen so we don't Re-ID on every subsequent frame
                 self._known_tracks.add(track.track_id)
 
 
@@ -373,45 +349,66 @@ class VideoPipeline:
                 )
                 student_states.append(state)
 
-            # 2. Extract face mesh in parallel
+# 2. Extract face mesh in parallel (run every 2 frames for speed)
             future_map = {}
-            for state in student_states:
-                future = self._face_executor.submit(
-                    self._face_extractor.extract,
-                    frame_data.frame,
-                    state.bbox,
-                    state.track_id
-                )
-                future_map[future] = state
+            if frame_data.frame_index % 2 == 0:
+                for state in student_states:
+                    future = self._face_executor.submit(
+                        self._process_student_parallel,
+                        frame_data.frame,
+                        state
+                    )
+                    future_map[future] = state
 
-            # 3. Collect parallel results and update embedding galleries
+            # 3. Batch process OSNet Embeddings
+            osnet_embeddings = []
+            if self._osnet is not None:
+                bboxes = [state.bbox for state in student_states]
+                # Process all bounding boxes in one forward pass
+                osnet_embeddings = self._osnet.extract_batch(frame_data.frame, bboxes)
+            else:
+                osnet_embeddings = [None] * len(student_states)
+
+            # 4. Collect parallel Face Mesh results and update states
             for future in as_completed(future_map):
                 state = future_map[future]
-                result = future.result()
+                _, result = future.result()
                 state.face_mesh = result
-
-                # Update OSNet gallery for this track (EMA blend)
-                if self._osnet is not None:
-                    osnet_emb = self._osnet.extract(frame_data.frame, state.bbox)
-                    if osnet_emb is not None:
-                        if state.track_id in self._osnet_gallery:
-                            prev = self._osnet_gallery[state.track_id]
-                            blended = 0.8 * prev + 0.2 * osnet_emb
-                            norm = np.linalg.norm(blended)
-                            if norm > 1e-6:
-                                blended /= norm
-                            self._osnet_gallery[state.track_id] = blended
-                        else:
-                            self._osnet_gallery[state.track_id] = osnet_emb
-                        # Also update registry
-                        reg_state = self._registry.get(state.track_id)
-                        if reg_state is not None:
-                            reg_state.update_embedding(osnet_emb)
 
                 # Update face-landmark gallery (fallback / face confidence)
                 if result is not None:
                     is_match = self._reid.register_embedding(state.track_id, result)
                     self._tracker.verify_embedding_match(state.track_id, is_match)
+
+            # 5. Process the OSNet Embeddings we got from the batch
+            for state, osnet_emb in zip(student_states, osnet_embeddings):
+                if osnet_emb is not None:
+                    if state.track_id in self._osnet_gallery:
+                        prev = self._osnet_gallery[state.track_id]
+                        blended = 0.8 * prev + 0.2 * osnet_emb
+                        norm = np.linalg.norm(blended)
+                        if norm > 1e-6:
+                            blended /= norm
+                        self._osnet_gallery[state.track_id] = blended
+                    else:
+                        self._osnet_gallery[state.track_id] = osnet_emb
+                        # Attempt matching against gallery for new tracks
+                        if self._osnet is not None:
+                            match = self._osnet.match_against_gallery(
+                                osnet_emb, 
+                                {k:v for k,v in self._osnet_gallery.items() if k != state.track_id}, 
+                                threshold=0.80
+                            )
+                            if match is not None:
+                                matched_id, _ = match
+                                self._id_map[state.track_id] = matched_id
+                                state.track_id = matched_id
+                                
+                    # Also update registry
+                    if frame_data.frame_index % 10 == 0:
+                        reg_state = self._registry.get(state.track_id)
+                        if reg_state is not None:
+                            reg_state.update_embedding(osnet_emb)
 
         t5 = time.perf_counter()
         
@@ -463,14 +460,13 @@ class VideoPipeline:
         if hasattr(self._tracker, 'clear_selection'):
             self._tracker.clear_selection()
 
-    def _process_student_face(self, frame: np.ndarray, state: StudentState):
+    def _process_student_parallel(self, frame: np.ndarray, state: StudentState) -> tuple[StudentState, FaceMeshResult | None]:
         """
         Process a single student's face mesh.
         Designed to be run in parallel via ThreadPoolExecutor.
         """
         face_mesh = self._face_extractor.extract(frame, state.bbox, state.track_id)
-        # The state.face_mesh will be set in the main thread after collecting results
-        return face_mesh
+        return state, face_mesh
 
     def get_all_tracks(self) -> list[TrackedObject]:
         """Get all currently tracked objects (for selection UI)."""

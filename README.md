@@ -1,11 +1,12 @@
-# Thaqib - Smart Exams Monitoring System
+# Thaqib - Smart Cheating Detection System
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Status](https://img.shields.io/badge/Status-Active-success.svg)]()
 
-**Thaqib** (Arabic: ثاقب, meaning "piercing" or "sharp-sighted") is an AI-powered real-time exam monitoring system that assists invigilators in detecting suspicious behaviors during examinations.
+Thaqib (Arabic: ثاقب, meaning 'piercing' or 'sharp-sighted') is an AI-powered real-time exam monitoring system leveraging Computer Vision (YOLOv8), Object Tracking (BoT-SORT), and Biometric Analysis (MediaPipe & OSNet) to assist invigilators in detecting suspicious behaviors.
 
-## 🎯 Features
+## ✨ Key Features
 
 - **Real-time Video Monitoring**: Capture and analyze video streams from IP cameras
 - **Human Detection & Tracking**: Identify and track students throughout the exam
@@ -44,8 +45,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/thaqib.git
-cd thaqib
+git clone https://github.com/SheedoM/Thaqib---Smart-Cheating-Detection-System.git
+cd Thaqib---Smart-Cheating-Detection-System
 
 # Create virtual environment
 python -m venv venv
@@ -53,27 +54,18 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -e .
-
-# For development
-pip install -e ".[dev]"
-
-# For GPU support
-pip install -e ".[gpu]"
+pip install -e ".[gpu]"  # For GPU support
 ```
 
 ### Running the Demo
 
 ```bash
-# Test video detection with webcam
-python -m thaqib.video.demo --source webcam
-
-# Test with video file
-python -m thaqib.video.demo --source path/to/video.mp4
+python scripts/demo_video.py --source <video_path>
 ```
 
 ## 📁 Project Structure
 
-```
+```text
 thaqib/
 ├── src/thaqib/           # Main source code
 │   ├── video/            # Video detection pipeline
@@ -117,4 +109,6 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduc
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
 ## 👥 Team
+
 - Shady Mohamed Faragallah
+- Mohamed Elsaied Shalaan
