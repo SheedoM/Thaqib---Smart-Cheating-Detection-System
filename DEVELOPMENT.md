@@ -37,12 +37,36 @@
 
 ### Next Tasks 📋
 
-1. **Test & Verify Pipeline** - Run demo with webcam, verify all components work
-2. **Add Suspicious Behavior Persistence** - Track duration of suspicious gaze (2-3s threshold)
-3. **Add Feature Logging** - CSV output for debugging/analysis
-4. **Audio Detection Module** - Microphone input, anomaly detection
-5. **Backend API** - FastAPI with WebSocket for real-time alerts
-6. **Web Dashboard** - React + TypeScript for invigilators
+The project is now structured into distinct functional phases. Each phase has specific deliverables required to reach the Minimum Viable Product (MVP).
+
+#### Phase 1: Video Detection & Core Analytics (Current)
+- [ ] Test & Verify Pipeline - Run demo with webcam, verify all components work seamlessly together.
+- [ ] Add Suspicious Behavior Persistence - Track duration of suspicious gaze (2-3s threshold) to reduce false positives.
+- [ ] Add Feature Logging - Implement robust CSV/database output for feature extraction (debugging/analysis).
+- [ ] Optimize YOLOv8 and ByteTrack integration for sustained 30FPS processing on local hardware.
+- [ ] Finalize Head Pose & Risk Angle confidence scoring logic.
+
+#### Phase 2: Audio Detection & Processing
+- [ ] **Research & Setup**: Identify optimal libraries for real-time audio anomaly detection (e.g., Librosa, PyAudio).
+- [ ] **VAD Implementation**: Implement Voice Activity Detection (WebRTC VAD or Silero) to filter out background noise.
+- [ ] **Anomaly Model**: Develop or integrate a model to classify specific audio anomalies (whispering, sudden spikes, paper rustling).
+- [ ] **Spatial Audio Mapping**: Map microphone inputs to specific hall zones (integration with the `neighbor.py` risk areas).
+- [ ] **Audio Pipeline**: Create an `audio/pipeline.py` orchestrator, similar to the video module.
+
+#### Phase 3: Web Dashboard & Control Room (Frontend)
+- [ ] **Tech Stack Setup**: Initialize React + TypeScript + Vite project for the Admin/Invigilator dashboard.
+- [ ] **UI/UX Implementation**: Build the Hall Grid View, Priority Alert Stack, and active monitoring pages based on the System Architecture.
+- [ ] **State Management**: Integrate Redux Toolkit or Zustand for handling rapid real-time state changes.
+- [x] **Backend API (FastAPI)**: Initialized FastAPI application structure. (REST endpoints for DB pending).
+- [x] **Real-time Comms (PTT)**: Implemented 2-way Push-to-Talk WebSockets to allow communication between Invigilators and Control Room.
+- [ ] **Real-time Comms (Alerts)**: Implement WebSockets to push detection alerts from the backend pipeline to the frontend exactly when detected.
+
+#### Phase 4: Integration & MVP Delivery
+- [ ] Integrate Video and Audio pipelines into a unified core engine.
+- [ ] Connect the core engine to the FastAPI backend to broadcast events.
+- [ ] End-to-End Test: Run a simulated exam session with 1 camera, 1 mic, and the web dashboard monitoring in real-time.
+- [ ] Containerize the application (Docker + Docker Compose) for easy deployment.
+- [ ] Finalize "MVP Version 1.0" release tag.
 
 ---
 
@@ -119,13 +143,12 @@ git log -3   # Recent commits
 
 ---
 
-## Phase Roadmap
+## Phase Roadmap (Path to MVP)
 
-| Phase | Status | Description |
-|-------|--------|-------------|
-| 1. Project Setup | ✅ Done | Structure, deps, git |
-| 2. Video Detection | 🔄 Testing | Camera → Detect → Track → Pose → Neighbor |
-| 3. Audio Detection | ⏳ Pending | Microphones, anomaly detection |
-| 4. Backend API | ⏳ Pending | FastAPI, WebSocket |
-| 5. Dashboard | ⏳ Pending | React, real-time alerts |
-| 6. Integration | ⏳ Pending | End-to-end testing |
+| Phase | Title | Status | Goal / Deliverable |
+|-------|-------|--------|---------------------|
+| 0 | Project Setup | ✅ Done | Initial architecture, environment, and GitHub workflow established. |
+| 1 | Video Detection | 🔄 Active | Robust visual detection pipeline (YOLO + MediaPipe + Spatial modeling) working locally. |
+| 2 | Audio Detection | ⏳ Pending | Processing microphone streams for anomalies (whispers, spikes) mapped to zones. |
+| 3 | Frontend & APIs | ⏳ Pending | Responsive React dashboard connected via WebSockets to the FastAPI backend. |
+| 4 | Integration & MVP | ⏳ Pending | End-to-end system testing, containerization (Docker), and MVP v1.0 release. |

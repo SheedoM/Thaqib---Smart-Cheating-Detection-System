@@ -6,6 +6,11 @@
 3. [Activity Diagrams](#activity-diagrams)
 4. [Alert Processing Flow](#alert-processing-flow)
 5. [Implementation Notes](#implementation-notes)
+   - [5.1 System Installation & Initialization](#system-installation--initialization)
+   - [5.2 Technology Stack Recommendations](#technology-stack-recommendations)
+   - [5.3 Performance Considerations](#performance-considerations)
+   - [5.4 Security Measures](#security-measures)
+   - [5.5 Testing Strategy](#testing-strategy)
 
 ---
 
@@ -1664,7 +1669,28 @@ def create_alert(detection_event, group_event=None):
 
 ## 5. Implementation Notes
 
-### 5.1 Technology Stack Recommendations
+### 5.1 System Installation & Initialization
+
+The Thaqib system follows a modern, container-first deployment strategy to ensure consistency across different environments.
+
+```
+INSTALLATION (Containerized):
+════════════════════════════
+• Deployment Model: The entire system architecture (Backend, Frontend, Workers, Database, and Cache) is packaged as Docker Containers.
+• Infrastructure Agnostic: Can be deployed on-premise (local university servers) or on cloud platforms (AWS, Azure, GCP) using Kubernetes or Docker Compose.
+• Scalability: Services can be horizontally scaled by spinning up additional container instances based on concurrent exam load.
+
+INITIALIZATION (Setup Phase):
+═════════════════════════════
+• Step 1 - Service Deployment: Launch all core containers and establish network connectivity.
+• Step 2 - Institutional Identity: At first launch, the system must be initialized with the Institution's Details:
+  - Name of the Institution (e.g., University Name).
+  - Academic hierarchy (Faculties, Departments).
+  - Primary Administrator credentials.
+• Step 3 - Global Configuration: Set default system-wide thresholds and notification preferences.
+```
+
+### 5.2 Technology Stack Recommendations
 
 ```
 BACKEND:
@@ -1710,7 +1736,7 @@ DEPLOYMENT:
 • Logging: ELK Stack
 ```
 
-### 5.2 Performance Considerations
+### 5.3 Performance Considerations
 
 ```
 REAL-TIME REQUIREMENTS:
@@ -1750,7 +1776,7 @@ WebSocket Connections:
 • Use connection pooling and load balancing
 ```
 
-### 5.3 Security Measures
+### 5.4 Security Measures
 
 ```
 AUTHENTICATION:
@@ -1781,7 +1807,7 @@ COMPLIANCE:
 • Video: 90-day default retention
 ```
 
-### 5.4 Testing Strategy
+### 5.5 Testing Strategy
 
 ```
 UNIT TESTS:
