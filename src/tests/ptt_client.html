@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thaqib PTT Demo</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #121212;
+            color: #fff;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: #1e1e1e;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            margin-top: 0;
+            color: #4CAF50;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #ccc;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #333;
+            background: #2d2d2d;
+            color: #fff;
+            box-sizing: border-box;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+
+        .btn-connect {
+            background: #2196F3;
+            color: white;
+        }
+
+        .btn-connect:hover {
+            background: #1976D2;
+        }
+
+        .btn-ptt {
+            width: 100%;
+            padding: 20px;
+            font-size: 1.2em;
+            background: #555;
+            color: white;
+            margin-top: 20px;
+            user-select: none;
+        }
+
+        .btn-ptt.active {
+            background: #f44336;
+            box-shadow: 0 0 15px rgba(244, 67, 54, 0.6);
+        }
+
+        .btn-ptt.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #status {
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #aaa;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Thaqib Web PTT</h1>
+        <div class="form-group">
+            <label for="clientId">Your Client ID</label>
+            <input type="text" id="clientId" placeholder="e.g., control_room_1" value="control_room_1">
+        </div>
+        <div class="form-group">
+            <label for="targetId">Target Client ID (Leave blank to Broadcast)</label>
+            <input type="text" id="targetId" placeholder="e.g., invigilator_1">
+        </div>
+        <button id="connectBtn" class="btn-connect">Connect WebSocket</button>
+        <div id="status">Status: Disconnected</div>
+
+        <button id="pttBtn" class="btn-ptt disabled" disabled>HOLD TO SPEAK</button>
+    </div>
+
+    <script>
+        let ws;
+        let audioContext;
+        let mediaStream;
+        let scriptNode;
+        let pttActive = false;
+
+        const connectBtn = document.getElementById('connectBtn');
+        const pttBtn = document.getElementById('pttBtn');
+        const statusDiv = document.getElementById('status');
+        const clientIdInput = document.getElementById('clientId');
+        const targetIdInput = document.getElementById('targetId');
+
+        connectBtn.onclick = () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+                return;
+            }
+
+            const clientId = clientIdInput.value.trim() || 'unknown';
+            ws = new WebSocket(`ws://127.0.0.1:8000/api/v1/ptt/ws/${clientId}`);
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = async () => {
+                statusDiv.innerText = `Status: Connected as ${clientId}`;
+                statusDiv.style.color = '#4CAF50';
+                connectBtn.innerText = 'Disconnect';
+
+                // Ask for mic permissions ONCE as soon as connected
+                try {
+                    if (!audioContext) {
+                        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                    }
+
+                    // Request mic permission here, once.
+                    if (!mediaStream) {
+                        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    }
+
+                    const source = audioContext.createMediaStreamSource(mediaStream);
+                    // 4096 frames = ~256ms latency at 16kHz
+                    scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+
+                    source.connect(scriptNode);
+                    scriptNode.connect(audioContext.destination);
+
+                    scriptNode.onaudioprocess = (audioProcessingEvent) => {
+                        // Only process/send audio IF we are actively holding the PTT button
+                        if (!pttActive || ws.readyState !== WebSocket.OPEN) return;
+
+                        const inputBuffer = audioProcessingEvent.inputBuffer;
+                        const inputData = inputBuffer.getChannelData(0);
+
+                        // Convert Float32 (web audio) to Int16 (raw PCM)
+                        const int16Array = new Int16Array(inputData.length);
+                        for (let i = 0; i < inputData.length; i++) {
+                            let s = Math.max(-1, Math.min(1, inputData[i]));
+                            int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                        }
+
+                        // Send binary chunk over WebSocket
+                        ws.send(int16Array.buffer);
+                    };
+
+                    // Now enable the PTT button since mic is ready
+                    pttBtn.classList.remove('disabled');
+                    pttBtn.disabled = false;
+
+                } catch (err) {
+                    console.error("Error accessing mic: ", err);
+                    statusDiv.innerText = "❌ Microphone access denied.";
+                    statusDiv.style.color = '#f44336';
+                }
+            };
+
+            ws.onclose = () => {
+                statusDiv.innerText = `Status: Disconnected`;
+                statusDiv.style.color = '#f44336';
+                connectBtn.innerText = 'Connect WebSocket';
+                pttBtn.classList.add('disabled');
+                pttBtn.disabled = true;
+
+                // Stop mic tracks when completely disconnected
+                if (mediaStream) {
+                    mediaStream.getTracks().forEach(track => track.stop());
+                }
+                if (scriptNode) {
+                    scriptNode.disconnect();
+                }
+            };
+
+            ws.onerror = (e) => {
+                console.error('WebSocket Error:', e);
+            };
+
+            ws.onmessage = async (event) => {
+                if (typeof event.data === 'string') {
+                    const data = JSON.parse(event.data);
+                    console.log('Received JSON:', data);
+                    if (data.type === 'start_speak') {
+                        statusDiv.innerText = `[${data.sender_id}] is speaking...`;
+                    } else if (data.type === 'stop_speak') {
+                        statusDiv.innerText = `Status: Connected as ${clientId}`;
+                    }
+                } else if (event.data instanceof ArrayBuffer) {
+                    // Receive binary audio
+                    playAudioChunk(event.data);
+                }
+            };
+        };
+
+        function playAudioChunk(arrayBuffer) {
+            // Convert received Int16 raw PCM to Float32
+            const int16Array = new Int16Array(arrayBuffer);
+            const float32Array = new Float32Array(int16Array.length);
+            for (let i = 0; i < int16Array.length; i++) {
+                float32Array[i] = int16Array[i] / (int16Array[i] < 0 ? 0x8000 : 0x7FFF);
+            }
+
+            const audioBuffer = audioContext.createBuffer(1, float32Array.length, 16000);
+            audioBuffer.copyToChannel(float32Array, 0);
+
+            const source = audioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioContext.destination);
+            source.start();
+        }
+
+        // Action when button pressed down
+        const startPtt = async () => {
+            if (pttBtn.disabled || !ws) return;
+            pttActive = true;
+            pttBtn.classList.add('active');
+            pttBtn.innerText = "SPEAKING...";
+
+            if (audioContext && audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+
+            const targetId = targetIdInput.value.trim() || null;
+            ws.send(JSON.stringify({
+                type: 'start_speak',
+                target_id: targetId
+            }));
+        };
+
+        // Action when button released
+        const stopPtt = () => {
+            if (pttBtn.disabled || !ws || !pttActive) return;
+            pttActive = false;
+            pttBtn.classList.remove('active');
+            pttBtn.innerText = "HOLD TO SPEAK";
+
+            const targetId = targetIdInput.value.trim() || null;
+            ws.send(JSON.stringify({
+                type: 'stop_speak',
+                target_id: targetId
+            }));
+        };
+
+        // Mouse Events
+        pttBtn.addEventListener('mousedown', startPtt);
+        pttBtn.addEventListener('mouseup', stopPtt);
+        pttBtn.addEventListener('mouseleave', stopPtt);
+
+        // Touch Events (Mobile support)
+        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startPtt(); }, { passive: false });
+        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopPtt(); }, { passive: false });
+
+    </script>
+</body>
+
+</html>
