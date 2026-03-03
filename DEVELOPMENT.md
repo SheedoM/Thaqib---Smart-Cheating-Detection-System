@@ -1,121 +1,162 @@
-# Thaqib Development Context
+# Thaqib — Development Timeline & Roadmap
 
-> This file captures the current development state to enable easy continuation in future sessions.
-
-## Project Overview
-
-**Thaqib** is an AI-powered real-time exam monitoring system that detects cheating behaviors using video and audio analysis.
+> **Last Updated:** 2026-03-03
+>
+> Each phase produces a **full-product MVP** — a working, demonstrable system across all domains. The team works in parallel on their respective domains within each phase, converging at the phase deliverable.
 
 ---
 
-## Current Status (2026-02-04)
+## How to Read This Document
 
-### Completed ✅
+| Symbol | Meaning                          |
+| ------ | -------------------------------- |
+| `[ ]`  | Not started                      |
+| `[/]`  | In progress                      |
+| `[x]`  | Completed                        |
+| 🏁     | Phase MVP — a demo-ready product |
 
-1. **Project Setup**
-   - Created Python package structure (`src/thaqib/`)
-   - Configured `pyproject.toml` with all dependencies
-   - Set up git branching: `main` → `develop` → `feature/video-detection`
-   - Pushed to GitHub
-
-2. **Video Detection Module** (`src/thaqib/video/`)
-   - `camera.py` - Webcam/RTSP camera handler
-   - `detector.py` - YOLOv8 human detection (periodic, 1/sec)
-   - `tracker.py` - ByteTrack tracking with human-in-the-loop selection
-   - `head_pose.py` - MediaPipe FaceLandmarker head pose estimation
-   - `neighbor.py` - Spatial modeling, paper zones, risk angles
-   - `pipeline.py` - Orchestrates all video components
-
-3. **Demo Script** (`scripts/demo_video.py`)
-   - Test the pipeline with webcam
-   - Press `s` to select, `c` to clear, `q` to quit
-
-### In Progress 🔄
-
-- Testing the video pipeline with webcam
-- Tuning detection parameters
-
-### Next Tasks 📋
-
-The project is now structured into distinct functional phases. Each phase has specific deliverables required to reach the Minimum Viable Product (MVP).
-
-#### Phase 1: Video Detection & Core Analytics (Current)
-- [ ] Test & Verify Pipeline - Run demo with webcam, verify all components work seamlessly together.
-- [ ] Add Suspicious Behavior Persistence - Track duration of suspicious gaze (2-3s threshold) to reduce false positives.
-- [ ] Add Feature Logging - Implement robust CSV/database output for feature extraction (debugging/analysis).
-- [ ] Optimize YOLOv8 and ByteTrack integration for sustained 30FPS processing on local hardware.
-- [ ] Finalize Head Pose & Risk Angle confidence scoring logic.
-
-#### Phase 2: Audio Detection & Processing
-- [ ] **Research & Setup**: Identify optimal libraries for real-time audio anomaly detection (e.g., Librosa, PyAudio).
-- [ ] **VAD Implementation**: Implement Voice Activity Detection (WebRTC VAD or Silero) to filter out background noise.
-- [ ] **Anomaly Model**: Develop or integrate a model to classify specific audio anomalies (whispering, sudden spikes, paper rustling).
-- [ ] **Spatial Audio Mapping**: Map microphone inputs to specific hall zones (integration with the `neighbor.py` risk areas).
-- [ ] **Audio Pipeline**: Create an `audio/pipeline.py` orchestrator, similar to the video module.
-
-#### Phase 3: Web Dashboard & Control Room (Frontend)
-- [ ] **Tech Stack Setup**: Initialize React + TypeScript + Vite project for the Admin/Invigilator dashboard.
-- [ ] **UI/UX Implementation**: Build the Hall Grid View, Priority Alert Stack, and active monitoring pages based on the System Architecture.
-- [ ] **State Management**: Integrate Redux Toolkit or Zustand for handling rapid real-time state changes.
-- [x] **Backend API (FastAPI)**: Initialized FastAPI application structure. (REST endpoints for DB pending).
-- [x] **Real-time Comms (PTT)**: Implemented 2-way Push-to-Talk WebSockets to allow communication between Invigilators and Control Room.
-- [ ] **Real-time Comms (Alerts)**: Implement WebSockets to push detection alerts from the backend pipeline to the frontend exactly when detected.
-
-#### Phase 4: Integration & MVP Delivery
-- [ ] Integrate Video and Audio pipelines into a unified core engine.
-- [ ] Connect the core engine to the FastAPI backend to broadcast events.
-- [ ] End-to-End Test: Run a simulated exam session with 1 camera, 1 mic, and the web dashboard monitoring in real-time.
-- [ ] Containerize the application (Docker + Docker Compose) for easy deployment.
-- [ ] Finalize "MVP Version 1.0" release tag.
+**Domains:** 🎥 Video Detection · 🎙️ Audio Detection · 🎨 UI/UX · 🖥️ Front-end · ⚙️ Back-end · 🐳 DevOps
 
 ---
 
-## Key Technical Decisions
+## Phase Overview
 
-| Component | Decision | Rationale |
-|-----------|----------|-----------|
-| Detection | YOLOv8s @ 1/sec | Balance speed/accuracy |
-| Tracking | ByteTrack | Best MOT performance |
-| Head Pose | MediaPipe FaceLandmarker | CPU-friendly, sufficient accuracy |
-| Eye Gaze | **Deferred** | Head pose captures ~85% of gaze direction |
-| Neighbors | k=4 nearest | Covers immediate surrounding students |
-| Risk Angle | ±15° tolerance | Accounts for estimation error |
-| Suspicious | 2-3s duration | Reduces false positives |
+| Phase | MVP Name               | Status    | What You Can Demo                                                      |
+| ----- | ---------------------- | --------- | ---------------------------------------------------------------------- |
+| 0     | Project Foundation     | ✅ Done   | Repo, architecture, dev environment                                    |
+| 1     | Solo Developer Station | 🔄 Active | One person at a desk → detections on screen + audio events in terminal |
+| 2     | Team Exam Simulation   | ⏳        | 3–5 people in a room → neighbor alerts on a live dashboard             |
+| 3     | Full Integrated System | ⏳        | Multi-camera + multi-mic → dashboard with alerts, PTT, session reports |
+| 4     | Premises-Ready Release | ⏳        | Containerized install wizard → deploy to a real exam hall              |
 
 ---
 
-## User Requirements Summary
+## Phase 0 — Project Foundation ✅
 
-- **Deployment**: Single server initially
-- **Cameras**: 3 per hall (1 per column of 12 benches)
-- **Students/Camera**: 12-24 (testing with 5-10 first)
-- **Camera Type**: IP cameras (RTSP), webcam for dev
-- **Dashboard**: Web-based, mobile-friendly
-- **Data Storage**: Anonymized feature logs only (privacy)
+> **Responsible:** All Team Members
+> **Goal:** Project structure, architectural plans, and developer tools ready for the team to start.
+
+- [x] Workspace setup: complete environment, repository, and system architecture plans.
 
 ---
 
-## Project Structure
+## Phase 1 — MVP: Solo Developer Station 🔄
 
-```
-thaqib/
-├── src/thaqib/
-│   ├── config/settings.py    # Pydantic settings from .env
-│   └── video/
-│       ├── camera.py         # CameraStream
-│       ├── detector.py       # HumanDetector (YOLOv8)
-│       ├── tracker.py        # ObjectTracker (ByteTrack)
-│       ├── head_pose.py      # HeadPoseEstimator (MediaPipe)
-│       ├── neighbor.py       # NeighborModeler, risk angles
-│       └── pipeline.py       # VideoPipeline orchestrator
-├── scripts/
-│   └── demo_video.py         # Webcam test script
-├── models/
-│   └── face_landmarker.task  # Auto-downloaded MediaPipe model
-├── pyproject.toml
-├── .env.example
-└── README.md
-```
+> **Goal:** A single developer can test the whole flow at home. Sitting at a desk with a webcam and mic, the system identifies the person, detects where they are looking, and highlights suspicious sounds. A basic dashboard shows these events live on the same computer.
+
+- [ ] 🎥 **Video Detection**: Complete solo gaze detection pipeline (tracking, head pose, and looking-away rules).
+- [ ] 🎙️ **Audio Detection**: Setup real-time audio capture, silence filtering, and basic whisper detection.
+- [ ] 🎨 **UI/UX**: Finalize the core design system and wireframes for the "Main Monitoring" page.
+- [ ] 🖥️ **Front-end**: Build the **Monitoring Dashboard (V1)** showing a real-time event feed of alerts.
+- [ ] ⚙️ **Back-end**: Set up the event ingestion API and live broadcast logic for pushing alerts to the front-end.
+- [ ] 🐳 **DevOps**: Create the "Solo Station" launcher to start the full stack on a single machine.
+
+---
+
+## Phase 1 — Testing Summary
+
+| Target        | Simulation Requirement                        | Success Goal                                     |
+| ------------- | --------------------------------------------- | ------------------------------------------------ |
+| **People**    | Developer sitting alone at a desk             | AI detects and tracks the person immediately     |
+| **Vision**    | Look at a phone/neighbor (simulated) > 3s     | A "Suspicious Gaze" alert shows on the dashboard |
+| **Sound**     | Whisper or make noise near the mic            | An "Audio Anomaly" alert appears                 |
+| **Accuracy**  | Normal behavior (writing, thinking) for 5 min | Very few or zero false alerts                    |
+| **Speed**     | Monitor the system "heartbeat" (FPS)          | System stays responsive without lag              |
+| **Integrity** | Start the whole system together               | No technical crashes for a 10-minute session     |
+
+---
+
+## Phase 2 — MVP: Team Exam Simulation ⏳
+
+> **Goal:** The team simulates a mini-exam. Multiple cameras track 3–5 people, identifying who is sitting next to whom. Looking at a neighbor's desk triggers a specific "neighbor alert." The audio system knows which mic (which zone) detected a sound. The dashboard now has full camera feeds, a historical timeline, and database storage.
+
+- [ ] 🎥 **Video Detection**: Multi-person tracking and spatial "risk angle" modeling for neighbor detection.
+- [ ] 🎙️ **Audio Detection**: Implement "Audio Zones" to isolate whispers using multiple microphone inputs.
+- [ ] 🎨 **UI/UX**: Design the **Hall Overview** (multi-hall grid) and the **Alert Management** flows.
+- [ ] 🖥️ **Front-end**: Develop the **Hall Grid Page** and the **Detailed Hall View (V1)** with video grid thumbnails.
+- [ ] ⚙️ **Back-end**: Implement the permanent database (PostgreSQL) and APIs for Hall/Device management.
+- [ ] 🐳 **DevOps**: Package the team environment for multi-camera and multi-mic simulation testing.
+
+---
+
+## Phase 2 — Testing Summary
+
+| Target             | Simulation Requirement                  | Success Goal                                      |
+| ------------------ | --------------------------------------- | ------------------------------------------------- |
+| **Crowd Control**  | 3–5 people moving around naturally      | System never mixes up their IDs                   |
+| **Neighbor Alert** | Person A looks at Person B's desk       | Correct alert with both names appears in < 5s     |
+| **Sound Location** | Whisper near Mic #1                     | Alert is specifically linked to "Zone 1" students |
+| **Room Ambience**  | Loud general noise (clap or door slam)  | System ignores it as "Environment Noise"          |
+| **Supervisor UI**  | Login, view hall, and use Voice Chat    | All buttons and voice features work smoothly      |
+| **Data Storage**   | Start an exam, trigger alerts, end exam | All data is saved in the database correctly       |
+
+---
+
+## Phase 3 — MVP: Full Integrated System ⏳
+
+> **Goal:** The "Gold Standard" of the system. All pieces are connected and talk to each other perfectly. Video and audio data are merged to detect complex cheating. Supervisors receive high-priority alerts when multiple bad signs happen at once. At the end of an exam, a full "Summary Report" is generated automatically.
+
+- [ ] 🎥 **Video Detection**: High-speed production pipeline with resilient multi-camera handling.
+- [ ] 🎙️ **Audio Detection**: Professional multi-mic integration with perfect time-sync to video events.
+- [ ] 🎨 **UI/UX**: Design the **Session Report** templates and the **System Settings** interface.
+- [ ] 🖥️ **Front-end**: Build the **History & Reports Page** and the **Admin Management Panel**.
+- [ ] ⚙️ **Back-end**: Develop the "Multi-modal Correlation" engine and the automated Report Generator (PDF).
+- [ ] 🐳 **DevOps**: Centralized log monitoring and health-check system for the entire stack.
+
+---
+
+## Phase 3 — Testing Summary
+
+| Target          | Simulation Requirement                        | Success Goal                                     |
+| --------------- | --------------------------------------------- | ------------------------------------------------ |
+| **Full Flow**   | Actual behavior → Pipeline → Server → Web UI  | Alert surfaces on dashboard within 3 seconds     |
+| **Correlation** | Look at neighbor AND whisper at the same time | System upgrades this to a "Tier 2 / Critical"    |
+| **Resilience**  | Unplug a camera while the session is running  | System remains stable; UI shows "Camera Offline" |
+| **End of Exam** | Click "End Session"                           | System generates a report with maps and stats    |
+| **Endurance**   | Run the system for 2+ hours                   | No slowdowns, no crashes, no overheating         |
+
+---
+
+## Phase 4 — MVP: Premises-Ready Release ⏳
+
+> **Goal:** The final project deliverable. A "One-Click Install" package ready to be handed to a university. It includes a "Setup Wizard" for non-technical users to configure their halls and cameras. This is the version that will be tested on real IP cameras in a real exam hall for the graduation project final demo.
+
+- [ ] 🎥 **Video Detection**: Production hardware support (RTSP cameras) and GPU-accelerated processing.
+- [ ] 🎙️ **Audio Detection**: Final room-calibration tools and professional microphone hardware support.
+- [ ] 🎨 **UI/UX**: Conduct a final usability audit and polish all mobile-responsive views.
+- [ ] 🖥️ **Front-end**: Implement the **Mobile Invigilator App (V1)** with real-time haptic alerts.
+- [ ] ⚙️ **Back-end**: Security hardening (rate limiting, auth refresh) and disaster recovery backups.
+- [ ] 🐳 **DevOps**: Build the **Thaqib Setup Wizard** for automated building and hall registration.
+
+---
+
+## Phase 4 — Testing Summary
+
+| Target             | Simulation Requirement                       | Success Goal                                     |
+| ------------------ | -------------------------------------------- | ------------------------------------------------ |
+| **Retail Setup**   | Run the "Setup Wizard" on a clean computer   | System is configured and ready in < 5 mins       |
+| **Real Hardware**  | Connect to university IP cameras             | Video is clear and AI detects students correctly |
+| **Real Scale**     | 3 Cameras + 3 Mics + 10+ Students            | System stays stable for the entire 2-hour exam   |
+| **Staff Mobility** | Login via phone while walking between aisles | Real-time alerts vibrate phone correctly         |
+| **Recovery**       | Restart the server mid-exam (Crash test)     | All session data is recovered upon restart       |
+| **Final Demo**     | Graduation project committee walkthrough     | Smooth, professional end-to-end presentation     |
+
+---
+
+## Detailed Dashboard Page Roadmap
+
+This section defines which pages the **Front-end** and **UI/UX** specialists will deliver at each phase.
+
+| Phase | Page / Feature              | Description                                                                  |
+| ----- | --------------------------- | ---------------------------------------------------------------------------- |
+| **1** | **Live Alerts Feed**        | Centralized list showing real-time video/audio events with severity colors.  |
+| **2** | **Hall Grid Overview**      | A dashboard showing status cards for all halls (e.g., Hall A12: 🟢 Online).  |
+| **2** | **Detailed Hall View (V1)** | Live thumbnails/feeds from multiple cameras + Real-time event timeline.      |
+| **3** | **History & Reports**       | Searchable database of past exam sessions with drill-down to specific dates. |
+| **3** | **Settings & Management**   | UI for adding/editing halls, devices (IP/Port), and supervisor accounts.     |
+| **3** | **Session Summary Report**  | Automatically generated page/PDF showing total alerts, charts, and maps.     |
+| **4** | **Mobile Invigilator View** | Responsive version with notification centers for supervisors on the walk.    |
+| **4** | **Setup Wizard**            | Interactive multi-step guide for initial system installation and dry-run.    |
 
 ---
 
@@ -130,7 +171,7 @@ cd "f:\University\Graduation project_Smart Cheating System\Thaqib---Smart-Cheati
 python scripts/demo_video.py --source 0
 
 # Git status
-git branch   # Should be on feature/video-detection
+git branch   # Should be on develop
 git log -3   # Recent commits
 ```
 
@@ -140,15 +181,3 @@ git log -3   # Recent commits
 
 1. **MediaPipe Version**: Must use 0.10.30+ (Tasks API, not legacy solutions)
 2. **Model Download**: `face_landmarker.task` auto-downloads to `models/` folder on first run
-
----
-
-## Phase Roadmap (Path to MVP)
-
-| Phase | Title | Status | Goal / Deliverable |
-|-------|-------|--------|---------------------|
-| 0 | Project Setup | ✅ Done | Initial architecture, environment, and GitHub workflow established. |
-| 1 | Video Detection | 🔄 Active | Robust visual detection pipeline (YOLO + MediaPipe + Spatial modeling) working locally. |
-| 2 | Audio Detection | ⏳ Pending | Processing microphone streams for anomalies (whispers, spikes) mapped to zones. |
-| 3 | Frontend & APIs | ⏳ Pending | Responsive React dashboard connected via WebSockets to the FastAPI backend. |
-| 4 | Integration & MVP | ⏳ Pending | End-to-end system testing, containerization (Docker), and MVP v1.0 release. |
