@@ -37,6 +37,9 @@ dependencies = [
     "sqlalchemy>=2.0.0",         # Database ORM
     "alembic>=1.12.0",           # Database migrations
     "python-dotenv>=1.0.0",      # Environment variables
+    "pyjwt>=2.8.0",              # JWT Tokens
+    "passlib[bcrypt]>=1.7.4",    # Password Hashing
+    "python-multipart>=0.0.9",   # OAuth2 Forms
 ]
 
 [project.optional-dependencies]
