@@ -69,6 +69,11 @@ class Settings(BaseSettings):
 
     # WebSocket
     ws_heartbeat_interval: int = 30
+    
+    # Security
+    secret_key: str = "super_secret_temporary_key_for_dev_only"
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
 
     @property
     def camera_source_parsed(self) -> int | str:
