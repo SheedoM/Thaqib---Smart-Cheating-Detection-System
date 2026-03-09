@@ -87,9 +87,9 @@ class FaceMeshExtractor:
             ),
             running_mode=vision.RunningMode.IMAGE,
             num_faces=1,
-            min_face_detection_confidence=0.5,
-            min_face_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
+            min_face_detection_confidence=0.80,
+            min_face_presence_confidence=0.80,
+            min_tracking_confidence=0.80,
             output_face_blendshapes=False,
             output_facial_transformation_matrixes=True,
         )
@@ -153,17 +153,16 @@ class FaceMeshExtractor:
 
         raw = detection.face_landmarks[0]  # First (and only) face
 
-        landmarks_2d: list[tuple[int, int]] = []
-        landmarks_3d: list[tuple[float, float, float]] = []
+        # Convert landmarks to a (478, 3) numpy array directly
+        lm_array = np.array([[lm.x, lm.y, lm.z] for lm in raw], dtype=float)
 
-        for lm in raw:
-            # Normalized [0,1] → crop pixels → shift by crop origin → full-frame pixels
-            px = int(lm.x * crop_w) + x1
-            py = int(lm.y * crop_h) + y1
+        # Vectorized math for 2D coords
+        # Normalized [0,1] -> crop pixels -> add anchor offset
+        px_py = lm_array[:, :2] * np.array([crop_w, crop_h]) + np.array([x1, y1])
+        px_py = px_py.astype(int)
 
-            # 3D: pure normalized coordinates (x, y, z in [0, 1])
-            landmarks_2d.append((px, py))
-            landmarks_3d.append((lm.x, lm.y, lm.z))
+        landmarks_2d = [tuple(pt) for pt in px_py]
+        landmarks_3d = [tuple(pt) for pt in lm_array]
 
         # Extract head transformation matrix if available
         if detection.facial_transformation_matrixes:

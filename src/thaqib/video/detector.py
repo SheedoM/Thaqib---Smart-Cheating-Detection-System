@@ -152,7 +152,7 @@ class HumanDetector:
             if boxes is None or len(boxes) == 0:
                 continue
 
-            xyxy_arr = boxes.xyxy.cpu().numpy().astype(float)
+            xyxy_arr = boxes.xyxy.cpu().numpy().astype(int)
             conf_arr = boxes.conf.cpu().numpy()
             cls_arr = boxes.cls.cpu().numpy().astype(int)
 
@@ -160,10 +160,10 @@ class HumanDetector:
                 detections.append(
                     Detection(
                         bbox=(
-                            int(xyxy_arr[i][0]),
-                            int(xyxy_arr[i][1]),
-                            int(xyxy_arr[i][2]),
-                            int(xyxy_arr[i][3])
+                            xyxy_arr[i][0],
+                            xyxy_arr[i][1],
+                            xyxy_arr[i][2],
+                            xyxy_arr[i][3]
                         ),
                         confidence=float(conf_arr[i]),
                         class_id=int(cls_arr[i]),

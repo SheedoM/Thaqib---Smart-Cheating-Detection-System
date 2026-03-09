@@ -89,21 +89,23 @@ class ObjectTracker:
 
         self.max_distance = max_distance or settings.tracking_max_distance
         self.max_age = max_age or settings.tracking_max_age
+        
+        self.reid_weights_path = getattr(settings, "reid_weights_path", "models/osnet_x0_25_msmt17.pt")
 
         self._tracker = BoTSORT(
-    reid_weights=Path("models/osnet_x0_25_msmt17.pt"),
-    device="cuda",
-    half=True,
-    with_reid=False,
-    fuse_first_associate=True,
-    track_high_thresh=0.4,
-    track_low_thresh=0.1,
-    new_track_thresh=0.8,
-    track_buffer=600,
-    match_thresh=0.9,
-    proximity_thresh=0.7,
-    appearance_thresh=0.25,
-)
+            reid_weights=Path(self.reid_weights_path),
+            device="cuda",
+            half=True,
+            with_reid=False,
+            fuse_first_associate=True,
+            track_high_thresh=0.25,  
+            track_low_thresh=0.10,   
+            new_track_thresh=0.20,   
+            track_buffer=120,
+            match_thresh=0.9,
+            proximity_thresh=0.7,
+            appearance_thresh=0.25,
+        )
 
         # Per-track smoothed bbox (EMA)
         self._smoothed_bboxes: dict[int, tuple[int, int, int, int]] = {}
@@ -182,6 +184,11 @@ class ObjectTracker:
                 conf_val = float(t[5]) if len(t) > 5 else 1.0
                 raw_bbox = (int(t[0]), int(t[1]), int(t[2]), int(t[3]))
 
+                # Prevent bbox collapse (width or height < 10)
+                if raw_bbox[2] - raw_bbox[0] < 10 or raw_bbox[3] - raw_bbox[1] < 10:
+                    if track_id in self._last_known_bbox:
+                        raw_bbox = self._last_known_bbox[track_id]
+
                 # EMA bbox smoothing (0.7 × prev + 0.3 × current)
                 if track_id in self._smoothed_bboxes:
                     pb = self._smoothed_bboxes[track_id]
@@ -238,14 +245,14 @@ class ObjectTracker:
 
     def reset(self) -> None:
         self._tracker = BoTSORT(
-            reid_weights=Path("models/osnet_x0_25_msmt17.pt"),
+            reid_weights=Path(self.reid_weights_path),
             device="cpu",
             half=False,
             with_reid=True,
             track_high_thresh=0.25,
             track_low_thresh=0.05,
             new_track_thresh=0.4,
-            track_buffer=300,
+            track_buffer=120,
             match_thresh=0.8
         )
         self._smoothed_bboxes.clear()

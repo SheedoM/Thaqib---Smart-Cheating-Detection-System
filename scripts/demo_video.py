@@ -80,15 +80,16 @@ def main():
                     break
 
                 elif key == ord("s"):
-                    # Select all visible tracks
-                    all_ids = [t.track_id for t in pipeline_frame.tracking_result.tracks]
-                    pipeline.select_students(all_ids)
-                    logger.info(f"Selected all {len(all_ids)} tracks")
+                    # One-time Snapshot Selection
+                    if pipeline_frame.registry:
+                        active_ids = [state.track_id for state in pipeline_frame.registry.get_all() if getattr(state, "is_active", True)]
+                        pipeline.select_students(active_ids)
+                        logger.info(f"Snapshot taken: {len(active_ids)} students registered for monitoring.")
 
                 elif key == ord("c"):
                     # Clear selection
-                    pipeline.select_students([])
-                    logger.info("Cleared selection")
+                    pipeline.clear_selection()
+                    logger.info("Cleared selection and disabled monitoring")
 
                 elif key == ord("t"):
                     # Toggle neighbor graph

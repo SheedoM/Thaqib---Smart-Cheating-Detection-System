@@ -18,6 +18,7 @@ class StudentSpatialState:
     track_id: int
     bbox: tuple[int, int, int, int]
     center: tuple[int, int]
+    paper_center: tuple[int, int]
     frame_index: int
     timestamp: float
 
@@ -35,6 +36,7 @@ class StudentSpatialState:
     # Dynamically added fields by NeighborComputer
     neighbors: list[int] = field(default_factory=list)
     neighbor_distances: dict[int, float] = field(default_factory=dict)
+    neighbor_papers: dict[int, tuple[int, int]] = field(default_factory=dict)
 
     def update_embedding(self, new_embedding: np.ndarray) -> None:
         """
@@ -68,10 +70,14 @@ class GlobalStudentRegistry:
 
         # 1. Update or add new tracks
         for track in tracks:
+            # Bottom-middle of bbox for paper location
+            paper_center = ((track.bbox[0] + track.bbox[2]) // 2, track.bbox[3])
+            
             if track.track_id in self._states:
                 state = self._states[track.track_id]
                 state.bbox = track.bbox
                 state.center = track.center
+                state.paper_center = paper_center
                 state.frame_index = frame_index
                 state.timestamp = timestamp
                 state.last_seen_frame = frame_index
@@ -82,6 +88,7 @@ class GlobalStudentRegistry:
                     track_id=track.track_id,
                     bbox=track.bbox,
                     center=track.center,
+                    paper_center=paper_center,
                     frame_index=frame_index,
                     timestamp=timestamp,
                     last_seen_frame=frame_index,

@@ -130,86 +130,88 @@ class VideoVisualizer:
 
     def _draw_gaze(self, frame: np.ndarray, state) -> None:
         """
-        Draw a single combined gaze arrow using:
-          - head pose Z-axis from MediaPipe facial transformation matrix
-          - eye gaze vector from 3D iris/eye-corner landmarks
-
-        Landmark indexes:
-          168 → midpoint between eyes   (2D screen origin)
-          468 → left iris center        (3D eye gaze)
-          33  → left eye outer corner   } 3D eye center average
-          133 → left eye inner corner   }
+        Draw a combined 3D gaze arrow using MediaPipe's rotation matrix
+        and 2D iris landmarks, with strictly aligned coordinate systems.
         """
         if state.face_mesh is None:
             return
 
         lm2d = state.face_mesh.landmarks_2d
-        lm3d = state.face_mesh.landmarks_3d
-        if len(lm2d) < 474 or len(lm3d) < 474:
+        if len(lm2d) < 474:
             return
 
-        def pt3d(idx):
-            return np.array(lm3d[idx], dtype=float)
+        def pt2d(idx):
+            return np.array(lm2d[idx], dtype=float)
 
         head_matrix = state.face_mesh.head_matrix
         if head_matrix is None:
             return
 
-        # Step 1 — Local Eye Vector
-        eye_center_local = (pt3d(33) + pt3d(133)) / 2.0
-        eye_local = pt3d(468) - eye_center_local
-
-        # Step 2 — Rotation Matrix
+        # 1. Base 3D Head Direction (MediaPipe 3D Space: +X is Left, -X is Right)
         R = head_matrix[:3, :3]
+        head_3d = R @ np.array([0.0, 0.0, -1.0])
 
-        # Step 3 — Transform into world space
-        eye_world = R @ eye_local
-
-        # Step 4 — Normalize
-        norm = np.linalg.norm(eye_world)
-        if norm < 1e-6:
-            return
-        eye_world /= norm
-
-        # Step 5 — project onto screen from landmark 168 (2D origin)
+        # 2. Eye Deviation (Screen Space: +X is Right, -X is Left)
+        l_center = (pt2d(33) + pt2d(133)) / 2.0
+        l_pupil = pt2d(468)
+        l_dev = l_pupil - l_center
         
-        # ============================================
-        # Production-grade adaptive gaze arrow length
-        # ============================================
+        r_center = (pt2d(263) + pt2d(362)) / 2.0
+        r_pupil = pt2d(473)
+        r_dev = r_pupil - r_center
+        
+        avg_eye_dev = (l_dev + r_dev) / 2.0
+        
+        # Normalize by eye width
+        eye_width = np.linalg.norm(pt2d(33) - pt2d(133))
+        if eye_width > 1e-6:
+            avg_eye_dev /= eye_width
 
-        # Height of face bounding box
+        # 3. Combine in 3D Space (Coordinate Alignment)
+        # CRITICAL FIX: Invert Eye X-axis to match MediaPipe's 3D Space
+        eye_x_3d = -avg_eye_dev[0] 
+        eye_y_3d = avg_eye_dev[1]
+        
+        EYE_STRENGTH = 3.0 # Increase/Decrease to make eyes more/less sensitive
+        eye_3d = np.array([eye_x_3d, eye_y_3d, 0.0]) * EYE_STRENGTH
+        
+        combined_3d = head_3d + eye_3d
+
+        # Normalize to maintain the 3D unit vector property (Depth illusion)
+        norm = np.linalg.norm(combined_3d)
+        if norm > 1e-6:
+            combined_3d /= norm
+
+        # 4. Project to 2D Screen Space (Convert +X=Left back to +X=Right for drawing)
+        dir_x = -combined_3d[0]
+        dir_y = combined_3d[1]
+
+        # 5. Draw (Improved non-linear scale)
         bbox_height = state.bbox[3] - state.bbox[1]
+        
+        # Enlarge arrow for far students (small bbox), scale down for close ones
+        base_scale = bbox_height * 1.0 if bbox_height < 100 else bbox_height * 0.6
+        SCALE = int(max(60, min(base_scale, 200))) # Clamp between 60 and 200
 
-        # adaptive scale based on face size
-        SCALE = bbox_height * 0.30
-
-        # clamp to safe limits
-        SCALE = max(25, min(SCALE, 80))
-
-        # smoothing to prevent jitter
         if not hasattr(state, "_gaze_scale"):
             state._gaze_scale = SCALE
         else:
+            # Smooth the scale to avoid flickering
             state._gaze_scale = int(0.8 * state._gaze_scale + 0.2 * SCALE)
-
         SCALE = state._gaze_scale
-        GAZE_COLOR = (0, 0, 255)
+        
+        GAZE_COLOR = (0, 0, 255) # Red
 
         origin = tuple(lm2d[168])
-        end = (int(origin[0] + eye_world[0] * SCALE),
-               int(origin[1] + eye_world[1] * SCALE))
+        end = (
+            int(origin[0] + dir_x * SCALE),
+            int(origin[1] + dir_y * SCALE)
+        )
 
         cv2.circle(frame, origin, 4, GAZE_COLOR, -1, cv2.LINE_AA)
-        
-        # Glow effect (thick background line)
-        cv2.line(frame, origin, end, GAZE_COLOR, 6, cv2.LINE_AA)
-        # Main arrow
-        cv2.line(frame, origin, end, GAZE_COLOR, 3, cv2.LINE_AA)
-
-        # draw arrow head manually
+        cv2.line(frame, origin, end, GAZE_COLOR, 5, cv2.LINE_AA)
+        cv2.line(frame, origin, end, (0, 255, 255), 2, cv2.LINE_AA)
         cv2.circle(frame, end, 4, GAZE_COLOR, -1, cv2.LINE_AA)
-
-
     # ------------------------------------------------------------------
     # Feature 3 — neighbor graph
     # ------------------------------------------------------------------
@@ -220,7 +222,7 @@ class VideoVisualizer:
 
         For each student, draws a line to each of its k-nearest neighbors.
         """
-        all_states = registry.get_all()
+        all_states = [s for s in registry.get_all() if getattr(s, "is_active", True)]
 
         for state in all_states:
             if not state.neighbors:
@@ -231,7 +233,7 @@ class VideoVisualizer:
 
             for neighbor_id in state.neighbors:
                 neighbor_state = registry.get(neighbor_id)
-                if neighbor_state is None:
+                if neighbor_state is None or not getattr(neighbor_state, "is_active", True):
                     continue
 
                 dst_center = neighbor_state.center

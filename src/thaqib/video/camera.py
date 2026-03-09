@@ -132,6 +132,7 @@ class CameraStream:
         """Background thread to read frames without blocking pipeline."""
         fps = self.target_fps if self.target_fps else 30.0
         frame_time_target = 1.0 / fps
+        failed_frames = 0
 
         while not self._stop_event.is_set() and self._is_opened:
             start_time = time.time()
@@ -152,6 +153,7 @@ class CameraStream:
                     self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
                     self._cap.set(cv2.CAP_PROP_FPS, self.target_fps)
                     logger.info("Camera reconnected successfully.")
+                    failed_frames = 0
                     continue
                 else:
                     logger.error("Reconnection failed. Retrying in 2 seconds...")
@@ -160,12 +162,16 @@ class CameraStream:
                 
             ret, frame = self._cap.read()
             if not ret:
-                logger.warning("Failed to read frame. Reconnecting...")
-                if self._cap is not None:
-                    self._cap.release()
-                self._cap = None
+                failed_frames += 1
+                if failed_frames > 15:
+                    logger.warning(f"Failed to read {failed_frames} consecutive frames. Reconnecting...")
+                    if self._cap is not None:
+                        self._cap.release()
+                    self._cap = None
+                    failed_frames = 0
                 continue
                 
+            failed_frames = 0
             self._frame_index += 1
             fd = FrameData(
                 frame=frame,
@@ -177,10 +183,11 @@ class CameraStream:
             self._frame_queue.append(fd)
             
             # Pace video files so they don't immediately exhaust the deque
-            elapsed = time.time() - start_time
-            sleep_time = frame_time_target - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+            if isinstance(self.source, str):
+                elapsed = time.time() - start_time
+                sleep_time = frame_time_target - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
         self._stop_event.set()
 

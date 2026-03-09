@@ -209,14 +209,13 @@ class OSNetReID:
 
         with self._torch.no_grad():
             features = self._model(t)  # Output shape: (N, 512)
+            # Native PyTorch L2 normalisation on the GPU
+            features = self._torch.nn.functional.normalize(features, p=2, dim=1)
 
         features_np = features.cpu().numpy()
 
-        # L2 normalise and map back to the correct index
+        # Map back to the correct index
         for j, idx in enumerate(valid_indices):
-            feat = features_np[j]
-            norm = np.linalg.norm(feat)
-            if norm > 1e-6:
-                results[idx] = feat / norm
+            results[idx] = features_np[j]
 
         return results
