@@ -39,9 +39,11 @@ class StudentState:
 
     track_id: int
     center: tuple[int, int]
+    paper_center: tuple[int, int]
     bbox: tuple[int, int, int, int]
     neighbors: list[int] = field(default_factory=list)
     neighbor_distances: dict[int, float] = field(default_factory=dict)
+    neighbor_papers: dict[int, tuple[int, int]] = field(default_factory=dict)
     face_mesh: FaceMeshResult | None = None
 
 
@@ -260,9 +262,11 @@ class VideoPipeline:
 
         
         # Check for new detection async result
+        new_detection = False
         try:
             detection_result = self._detection_queue.get_nowait()
             self._last_detection_result = detection_result
+            new_detection = True
             logger.debug(f"Detection: {self._last_detection_result.count} persons")
         except Empty:
             detection_result = self._last_detection_result
@@ -270,8 +274,8 @@ class VideoPipeline:
         t1 = time.perf_counter()
 
         # Update tracking
-        if self._last_detection_result is not None:
-            tracking_result = self._tracker.update(self._last_detection_result, frame_data.frame)
+        if new_detection and detection_result is not None:
+            tracking_result = self._tracker.update(detection_result, frame_data.frame)
         else:
             # Create empty detection result for tracking
             tracking_result = TrackingResult(
@@ -283,15 +287,19 @@ class VideoPipeline:
         t2 = time.perf_counter()
 
         # Apply Detection Stability Filter
-        # Use Kalman-predicted bbox for selected tracks missing for < 15 frames
+        # Use Kalman-predicted bbox for selected tracks missing for < tolerance frames
         active_track_ids = {t.track_id for t in tracking_result.tracks}
+        tolerance = 300  # Highly increased to keep tracks stable during heavy async processing
         for state in self._registry.get_all():
             if state.track_id not in active_track_ids and state.is_active:
                 frames_missing = frame_data.frame_index - state.last_seen_frame
-                if 0 < frames_missing < 15:
+                if 0 < frames_missing < tolerance:
                     # Prefer Kalman-predicted position, fall back to last known
                     predicted_bbox = self._tracker.get_predicted_bbox(state.track_id)
                     bbox = predicted_bbox if predicted_bbox is not None else state.bbox
+                    
+                    
+
                     mock_track = TrackedObject(
                         track_id=state.track_id,
                         bbox=bbox,
@@ -303,23 +311,13 @@ class VideoPipeline:
 
         # Apply Re-ID and ID mapping
         for track in tracking_result.tracks:
-            # First apply any existing mapping
             mapped_id = self._id_map.get(track.track_id, track.track_id)
-            
-            # If the track ID from ByteTrack is permanently locked, never remap it away
             if self._tracker.is_locked(track.track_id):
                 mapped_id = track.track_id
 
-            if mapped_id != track.track_id:
-                track.track_id = mapped_id
-                track.is_selected = mapped_id in self._selected_ids
-                continue
-            
-            # ------------------------------------
-            # The actual OSNet extraction and tracking Re-ID is now deferred 
-            # to the background thread pool `_process_student_parallel` to maximize FPS.
-            # We simply mark the track as known here to prevent infinite loop checking.
-            # ------------------------------------
+            track.track_id = mapped_id
+            track.is_selected = track.track_id in self._selected_ids
+
             if track.track_id not in self._known_tracks:
                 self._known_tracks.add(track.track_id)
 
@@ -339,26 +337,41 @@ class VideoPipeline:
             # 1. Build initial student states (sequential)
             for track in selected_tracks:
                 spatial = self._registry.get(track.track_id)
+                paper_center = ((track.bbox[0] + track.bbox[2]) // 2, track.bbox[3])
                 state = StudentState(
                     track_id=track.track_id,
                     center=track.center,
+                    paper_center=paper_center,
                     bbox=track.bbox,
                     neighbors=spatial.neighbors if spatial else [],
                     neighbor_distances=spatial.neighbor_distances if spatial else {},
-                    face_mesh=None,  # Will be populated in parallel
+                    neighbor_papers=spatial.neighbor_papers if spatial else {},
+                    face_mesh=spatial.face_mesh if spatial else None, 
                 )
                 student_states.append(state)
 
-# 2. Extract face mesh in parallel (run every 2 frames for speed)
-            future_map = {}
+            # 2. Extract face mesh in background without blocking the main thread
             if frame_data.frame_index % 2 == 0:
+                def make_callback(track_id):
+                    def callback(future):
+                        try:
+                            _, result = future.result()
+                            if result is not None:
+                                reg_state = self._registry.get(track_id)
+                                if reg_state is not None:
+                                    reg_state.face_mesh = result
+                        except Exception as e:
+                            logger.debug(f"Face mesh parallel error: {e}")
+                    return callback
+
                 for state in student_states:
+                    # Pass a COPY of the frame so it's safely processed in the background thread
                     future = self._face_executor.submit(
                         self._process_student_parallel,
-                        frame_data.frame,
+                        frame_data.frame.copy(),
                         state
                     )
-                    future_map[future] = state
+                    future.add_done_callback(make_callback(state.track_id))
 
             # 3. Batch process OSNet Embeddings
             osnet_embeddings = []
@@ -368,17 +381,6 @@ class VideoPipeline:
                 osnet_embeddings = self._osnet.extract_batch(frame_data.frame, bboxes)
             else:
                 osnet_embeddings = [None] * len(student_states)
-
-            # 4. Collect parallel Face Mesh results and update states
-            for future in as_completed(future_map):
-                state = future_map[future]
-                _, result = future.result()
-                state.face_mesh = result
-
-                # Update face-landmark gallery (fallback / face confidence)
-                if result is not None:
-                    is_match = self._reid.register_embedding(state.track_id, result)
-                    self._tracker.verify_embedding_match(state.track_id, is_match)
 
             # 5. Process the OSNet Embeddings we got from the batch
             for state, osnet_emb in zip(student_states, osnet_embeddings):
@@ -397,7 +399,7 @@ class VideoPipeline:
                             match = self._osnet.match_against_gallery(
                                 osnet_emb, 
                                 {k:v for k,v in self._osnet_gallery.items() if k != state.track_id}, 
-                                threshold=0.80
+                                threshold=0.96  # Increased to prevent false ID merging
                             )
                             if match is not None:
                                 matched_id, _ = match
@@ -470,10 +472,19 @@ class VideoPipeline:
 
     def get_all_tracks(self) -> list[TrackedObject]:
         """Get all currently tracked objects (for selection UI)."""
-        if self._last_detection_result and self._current_frame_data is not None:
-            result = self._tracker.update(self._last_detection_result, self._current_frame_data.frame)
-            return result.tracks
-        return []
+        tracks = []
+        for state in self._registry.get_all():
+            if getattr(state, "is_active", True):
+                tracks.append(
+                    TrackedObject(
+                        track_id=state.track_id,
+                        bbox=state.bbox,
+                        confidence=1.0,
+                        is_selected=state.track_id in self._selected_ids,
+                        is_predicted=False,
+                    )
+                )
+        return tracks
 
     @property
     def is_running(self) -> bool:
