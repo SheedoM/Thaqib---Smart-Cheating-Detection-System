@@ -14,11 +14,6 @@ from dataclasses import dataclass, field
 from typing import Callable, Generator
 
 from thaqib.video.reid import FaceReIdentifier
-try:
-    from thaqib.video.osnet_reid import OSNetReID as _OSNetReID
-    _OSNET_AVAILABLE = True
-except ImportError:
-    _OSNET_AVAILABLE = False
 
 import numpy as np
 
@@ -124,20 +119,6 @@ class VideoPipeline:
         self._face_extractor = FaceMeshExtractor()
         self._reid = FaceReIdentifier()
 
-        # OSNet appearance ReID (primary identity model; falls back to face reid)
-        self._osnet: _OSNetReID | None = None
-        if _OSNET_AVAILABLE:
-            try:
-                self._osnet = _OSNetReID()
-                logger.info("OSNet-x0.25 ReID active.")
-            except Exception as e:
-                logger.warning(f"OSNet ReID unavailable: {e}. Using face-landmark fallback.")
-        else:
-            logger.info("torchreid not installed — using face-landmark ReID.")
-
-        # OSNet embedding gallery: track_id → 512-dim L2 normalised embedding
-        self._osnet_gallery: dict[int, np.ndarray] = {}
-        
         # Parallel executor for per-student processing
         optimal_workers = os.cpu_count() or 8
         self._face_executor = ThreadPoolExecutor(max_workers=optimal_workers)
@@ -151,10 +132,6 @@ class VideoPipeline:
         self._last_detection_result: DetectionResult | None = None
 
         self._selected_ids: set[int] = set()
-        
-        # Identity maps
-        self._id_map: dict[int, int] = {}  # new_track_id -> old_track_id
-        self._known_tracks: set[int] = set()
 
     def _detection_worker(self) -> None:
         """Background thread running YOLO detection."""
@@ -298,7 +275,28 @@ class VideoPipeline:
                     predicted_bbox = self._tracker.get_predicted_bbox(state.track_id)
                     bbox = predicted_bbox if predicted_bbox is not None else state.bbox
                     
-                    
+                    # IoU Overlap Check against active tracks to detect ghost tracks
+                    is_overlapping = False
+                    for active_track in tracking_result.tracks:
+                        xA = max(bbox[0], active_track.bbox[0])
+                        yA = max(bbox[1], active_track.bbox[1])
+                        xB = min(bbox[2], active_track.bbox[2])
+                        yB = min(bbox[3], active_track.bbox[3])
+                        interArea = max(0, xB - xA) * max(0, yB - yA)
+                        if interArea > 0:
+                            boxAArea = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                            boxBArea = (active_track.bbox[2] - active_track.bbox[0]) * (active_track.bbox[3] - active_track.bbox[1])
+                            iou = interArea / float(boxAArea + boxBArea - interArea)
+                            if iou > 0.4:  # Using 0.4 as standard IoU threshold
+                                is_overlapping = True
+                                break
+
+                    if is_overlapping:
+                        # Completely purge the old ghost ID from the entire backend system
+                        state.is_active = False
+                        state.last_seen_time = 0.0  # Forces registry to delete it immediately
+                        self._selected_ids.discard(state.track_id)
+                        continue
 
                     mock_track = TrackedObject(
                         track_id=state.track_id,
@@ -311,15 +309,7 @@ class VideoPipeline:
 
         # Apply Re-ID and ID mapping
         for track in tracking_result.tracks:
-            mapped_id = self._id_map.get(track.track_id, track.track_id)
-            if self._tracker.is_locked(track.track_id):
-                mapped_id = track.track_id
-
-            track.track_id = mapped_id
             track.is_selected = track.track_id in self._selected_ids
-
-            if track.track_id not in self._known_tracks:
-                self._known_tracks.add(track.track_id)
 
 
         # Update spatial registry and compute neighbors for ALL tracks
@@ -356,10 +346,9 @@ class VideoPipeline:
                     def callback(future):
                         try:
                             _, result = future.result()
-                            if result is not None:
-                                reg_state = self._registry.get(track_id)
-                                if reg_state is not None:
-                                    reg_state.face_mesh = result
+                            reg_state = self._registry.get(track_id)
+                            if reg_state is not None:
+                                reg_state.face_mesh = result  # Explicitly allow None to clear stale meshes
                         except Exception as e:
                             logger.debug(f"Face mesh parallel error: {e}")
                     return callback
@@ -373,44 +362,7 @@ class VideoPipeline:
                     )
                     future.add_done_callback(make_callback(state.track_id))
 
-            # 3. Batch process OSNet Embeddings
-            osnet_embeddings = []
-            if self._osnet is not None:
-                bboxes = [state.bbox for state in student_states]
-                # Process all bounding boxes in one forward pass
-                osnet_embeddings = self._osnet.extract_batch(frame_data.frame, bboxes)
-            else:
-                osnet_embeddings = [None] * len(student_states)
 
-            # 5. Process the OSNet Embeddings we got from the batch
-            for state, osnet_emb in zip(student_states, osnet_embeddings):
-                if osnet_emb is not None:
-                    if state.track_id in self._osnet_gallery:
-                        prev = self._osnet_gallery[state.track_id]
-                        blended = 0.8 * prev + 0.2 * osnet_emb
-                        norm = np.linalg.norm(blended)
-                        if norm > 1e-6:
-                            blended /= norm
-                        self._osnet_gallery[state.track_id] = blended
-                    else:
-                        self._osnet_gallery[state.track_id] = osnet_emb
-                        # Attempt matching against gallery for new tracks
-                        if self._osnet is not None:
-                            match = self._osnet.match_against_gallery(
-                                osnet_emb, 
-                                {k:v for k,v in self._osnet_gallery.items() if k != state.track_id}, 
-                                threshold=0.96  # Increased to prevent false ID merging
-                            )
-                            if match is not None:
-                                matched_id, _ = match
-                                self._id_map[state.track_id] = matched_id
-                                state.track_id = matched_id
-                                
-                    # Also update registry
-                    if frame_data.frame_index % 10 == 0:
-                        reg_state = self._registry.get(state.track_id)
-                        if reg_state is not None:
-                            reg_state.update_embedding(osnet_emb)
 
         t5 = time.perf_counter()
         
