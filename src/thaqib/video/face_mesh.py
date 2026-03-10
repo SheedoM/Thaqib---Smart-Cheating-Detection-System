@@ -188,7 +188,7 @@ class FaceMeshExtractor:
         """Helper to get a cached mesh if valid (under 2 seconds old)."""
         if track_id is not None and track_id in self._mesh_cache:
             cache_time, cached_mesh = self._mesh_cache[track_id]
-            if time.time() - cache_time <= 2.0:
+            if time.time() - cache_time <= 0.3:
                 return cached_mesh
         return None
 

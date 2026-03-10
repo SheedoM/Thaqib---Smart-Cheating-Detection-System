@@ -29,31 +29,10 @@ class StudentSpatialState:
     face_mesh: FaceMeshResult | None = None
     is_active: bool = True
 
-    # Appearance embedding (EMA-smoothed)
-    appearance_embedding: np.ndarray | None = None
-    embedding_count: int = 0
-
     # Dynamically added fields by NeighborComputer
     neighbors: list[int] = field(default_factory=list)
     neighbor_distances: dict[int, float] = field(default_factory=dict)
     neighbor_papers: dict[int, tuple[int, int]] = field(default_factory=dict)
-
-    def update_embedding(self, new_embedding: np.ndarray) -> None:
-        """
-        Blend a new embedding into the appearance model via exponential
-        moving average:  E_new = 0.8 * E_old + 0.2 * current
-        First observation is stored directly.
-        """
-        if self.appearance_embedding is None:
-            self.appearance_embedding = new_embedding.copy()
-        else:
-            blended = 0.8 * self.appearance_embedding + 0.2 * new_embedding
-            norm = np.linalg.norm(blended)
-            if norm > 1e-6:
-                blended /= norm
-            self.appearance_embedding = blended
-        self.embedding_count += 1
-
 
 class GlobalStudentRegistry:
     """Registry system that stores the spatial state of all tracked students."""
