@@ -2,7 +2,7 @@
 
 > **Methodology:** Agile Scrum
 > **Sprint Duration:** 1 week
-> **Last Updated:** 2026-03-12
+> **Last Updated:** 2026-03-13
 
 ---
 
@@ -36,22 +36,15 @@
 
 | ID | Story | Status | Assignee | Deadline |
 |----|-------|--------|----------|----------|
-| US-101 | Camera stream capture with webcam & RTSP support | 🔄 In Progress | | |
-| US-102 | Human detection using YOLOv8 (periodic detection) | 🔄 In Progress | | |
-| US-103 | Multi-object tracking with identity continuity (BoT-SORT) | 🔄 In Progress | | |
-| US-104 | Facial geometry construction & head pose estimation (yaw/pitch/roll) | 🔄 In Progress | | |
-| US-105 | Local eye gaze estimation & final gaze direction fusion | 🔄 In Progress | | |
-| US-106 | Neighbor identification & distance-based proximity modeling | 🔄 In Progress | | |
-| US-107 | Risk angle computation for neighbor paper zones | 🔄 In Progress | | |
-| US-108 | Integrated video pipeline (detection → tracking → pose → gaze → risk) | 🔄 In Progress | | |
-| US-109 | Student re-identification across frames | 🔄 In Progress | | |
-| US-110 | Real-time visualization overlay (bounding boxes, gaze arrows, alerts) | 🔄 In Progress | | |
-| US-111 | Human-in-the-loop candidate selection (select monitored students) | 📋 To Do | | |
-| US-112 | Student paper zone localization | 📋 To Do | | |
-| US-113 | Feature logging to CSV (per-student temporal data) | 📋 To Do | | |
-| US-114 | Suspicious gaze detection rules (duration threshold, match ratio) | 📋 To Do | | |
-| US-115 | Multi-camera support and camera switching | 📋 To Do | | |
-| US-116 | GPU-accelerated inference for production | 📋 To Do | | |
+| US-101 | As an **invigilator**, I want the system to capture stable video from webcams and RTSP cameras so that exam halls are continuously monitored | 🔄 In Progress | | |
+| US-102 | As an **invigilator**, I want the system to detect and track students across frames (YOLOv8 + BoT-SORT) with consistent identity so that each student's behavior is monitored individually without ID swaps | 🔄 In Progress | | |
+| US-103 | As an **invigilator**, I want the system to estimate each student's head pose (yaw/pitch/roll) and eye gaze direction so that I can determine where a student is looking | 🔄 In Progress | | |
+| US-104 | As an **invigilator**, I want the system to identify neighboring students, compute proximity, and determine risk angles toward neighbor paper zones so that potential cheating interactions are flagged | 🔄 In Progress | | |
+| US-105 | As a **developer**, I want an integrated video pipeline (detection → tracking → pose → gaze → neighbor risk) so that all vision stages run end-to-end in a single processing loop | 🔄 In Progress | | |
+| US-106 | As an **invigilator**, I want real-time visualization overlays (bounding boxes, gaze arrows, risk highlights) on the video feed so that I can visually assess the exam hall at a glance | 🔄 In Progress | | |
+| US-107 | As an **invigilator**, I want to select specific students for monitoring and have the system localize their paper zones so that detection is focused on candidates of concern | 📋 To Do | | |
+| US-108 | As a **developer**, I want per-student features and suspicious gaze events (duration thresholds, match ratios) logged to CSV so that detection data is available for analysis and model refinement | 📋 To Do | | |
+| US-109 | As an **admin**, I want multi-camera support with camera switching and GPU-accelerated inference so that the system scales to large exam halls in production | 📋 To Do | | |
 
 ### Acceptance Criteria
 
@@ -71,17 +64,11 @@
 
 | ID | Story | Status | Assignee | Deadline |
 |----|-------|--------|----------|----------|
-| US-201 | Real-time audio capture from USB microphones | 🔄 In Progress | | |
-| US-202 | Audio temporal segmentation into fixed-duration windows | 🔄 In Progress | | |
-| US-203 | Low-level audio feature extraction (intensity, activity detection) | 🔄 In Progress | | |
-| US-204 | Silence filtering & baseline ambient noise modeling | 📋 To Do | | |
-| US-205 | Whisper / speech detection classifier | 📋 To Do | | |
-| US-206 | Microphone-to-student-group spatial mapping (audio zones) | 📋 To Do | | |
-| US-207 | Cross-microphone validation (local vs. global noise) | 📋 To Do | | |
-| US-208 | Audio event characterization (duration, repetition, patterns) | 📋 To Do | | |
-| US-209 | Keyword-based audio indicators (optional) | 📋 To Do | | |
-| US-210 | Audio feature logging to CSV (per-microphone temporal data) | 📋 To Do | | |
-| US-211 | Multi-microphone support with zone-based attribution | 📋 To Do | | |
+| US-201 | As a **developer**, I want the system to capture real-time audio from USB microphones and segment it into fixed-duration windows so that audio can be processed in discrete, analyzable chunks | 🔄 In Progress | | |
+| US-202 | As a **developer**, I want the system to extract low-level audio features (intensity, activity detection) and filter silence against a baseline ambient noise model so that only meaningful audio is passed to classifiers | 🔄 In Progress | | |
+| US-203 | As an **invigilator**, I want the system to detect whispers and speech using a trained classifier, with optional keyword-based indicators, so that verbal cheating attempts are identified | 📋 To Do | | |
+| US-204 | As an **invigilator**, I want microphones spatially mapped to student groups (audio zones) with cross-microphone validation so that detected audio events are attributed to the correct area and distinguished from ambient noise | 📋 To Do | | |
+| US-205 | As a **developer**, I want audio events characterized (duration, repetition, patterns) and logged to CSV per microphone so that temporal audio data is available for analysis and fusion with video events | 📋 To Do | | |
 
 ### Acceptance Criteria
 
@@ -98,26 +85,17 @@
 
 | ID | Story | Status | Assignee | Deadline |
 |----|-------|--------|----------|----------|
-| US-301 | FastAPI application setup with CORS middleware | ✅ Done | | |
-| US-302 | Configuration management with pydantic-settings & .env | ✅ Done | | |
-| US-303 | Push-to-Talk WebSocket endpoint (2-way audio routing) | ✅ Done | | |
-| US-304 | WebSocket connection manager (connect, disconnect, broadcast) | ✅ Done | | |
-| US-305 | Database schema — all core models (Institution, Hall, Device, User, ExamSession, Assignment, DetectionEvent, GroupEvent, Alert, AuditLog) | 🔄 In Progress | | |
-| US-306 | Alembic migration setup & initial migration | 🔄 In Progress | | |
-| US-307 | Authentication API (JWT login, token refresh) | 🔄 In Progress | | |
-| US-308 | Role-based access control (admin, referee, invigilator) | 🔄 In Progress | | |
-| US-309 | System installation/setup API endpoint | 🔄 In Progress | | |
-| US-310 | Institution CRUD API | 🔄 In Progress | | |
-| US-311 | Hall CRUD API | 🔄 In Progress | | |
-| US-312 | Device registration & health-check API | 📋 To Do | | |
-| US-313 | User / staff management API | 📋 To Do | | |
-| US-314 | Exam session CRUD & scheduling API | 📋 To Do | | |
-| US-315 | Invigilator assignment API | 📋 To Do | | |
-| US-316 | Detection event ingestion API (receive alerts from pipelines) | 📋 To Do | | |
-| US-317 | Real-time alert broadcast via WebSocket (push to dashboard) | 📋 To Do | | |
-| US-318 | Multi-modal correlation engine (video + audio event fusion) | 📋 To Do | | |
-| US-319 | Session report generator (PDF export) | 📋 To Do | | |
-| US-320 | Security hardening (rate limiting, auth refresh, input validation) | 📋 To Do | | |
+| US-301 | As a **developer**, I want a FastAPI application with CORS middleware and pydantic-settings configuration (.env) so that the backend is properly bootstrapped and configurable | ✅ Done | | |
+| US-302 | As an **invigilator**, I want a Push-to-Talk WebSocket endpoint with a connection manager (connect, disconnect, broadcast) so that two-way audio communication works in real time between the control room and exam halls | ✅ Done | | |
+| US-303 | As a **developer**, I want the full database schema (Institution, Hall, Device, User, ExamSession, Assignment, DetectionEvent, GroupEvent, Alert, AuditLog) with Alembic migrations so that all data is persisted and the schema is version-controlled | 🔄 In Progress | | |
+| US-304 | As an **admin**, I want JWT-based authentication with token refresh and role-based access control (admin, referee, invigilator) so that only authorized users can access their permitted resources | 🔄 In Progress | | |
+| US-305 | As an **admin**, I want a system installation/setup API endpoint so that the institution and initial admin account can be created during first-time setup | 🔄 In Progress | | |
+| US-306 | As an **admin**, I want CRUD APIs for institutions, halls, devices (with health-check), and users/staff so that all organizational resources can be managed through the dashboard | 🔄 In Progress | | |
+| US-307 | As an **admin**, I want exam session CRUD, scheduling, and invigilator assignment APIs so that exams can be planned and staffed through the system | 📋 To Do | | |
+| US-308 | As a **developer**, I want a detection event ingestion API and real-time alert broadcast via WebSocket so that pipeline alerts are persisted and pushed to the dashboard instantly | 📋 To Do | | |
+| US-309 | As a **developer**, I want a multi-modal correlation engine that fuses video and audio events so that combined evidence produces more accurate cheating alerts | 📋 To Do | | |
+| US-310 | As an **admin**, I want a session report generator with PDF export so that post-exam reports can be reviewed and archived | 📋 To Do | | |
+| US-311 | As a **developer**, I want security hardening (rate limiting, auth refresh, input validation) so that the API is protected against abuse and common attack vectors | 📋 To Do | | |
 
 ### Acceptance Criteria
 
@@ -141,26 +119,17 @@
 
 | ID | Story | Status | Assignee | Deadline |
 |----|-------|--------|----------|----------|
-| US-401 | Vite + React + Tailwind project setup | ✅ Done | | |
-| US-402 | Installation / Setup Wizard (institution + admin creation) | 🔄 In Progress | | |
-| US-403 | Login page | 📋 To Do | | |
-| US-404 | Admin dashboard home (overview, stats, quick actions) | 📋 To Do | | |
-| US-405 | Hall management page (list, add, edit, delete halls) | 📋 To Do | | |
-| US-406 | Device registration page (cameras & mics per hall, health status) | 📋 To Do | | |
-| US-407 | Staff / user management page (CRUD invigilators, role assignment) | 📋 To Do | | |
-| US-408 | Exam session scheduling page (create, assign hall & invigilator) | 📋 To Do | | |
-| US-409 | Live monitoring dashboard — control room (hall grid overview) | 📋 To Do | | |
-| US-410 | Individual hall monitoring page (camera feeds + event timeline) | 📋 To Do | | |
-| US-411 | Real-time alert feed & timeline component | 📋 To Do | | |
-| US-412 | PTT controls component (push-to-talk UI for WebSocket audio) | 📋 To Do | | |
-| US-413 | History & reports page (past sessions, searchable) | 📋 To Do | | |
-| US-414 | Session detail / summary report page | 📋 To Do | | |
-| US-415 | Settings & management panel (detection thresholds, system config) | 📋 To Do | | |
-| US-416 | Invigilator schedule view ("My Schedule" dashboard) | 📋 To Do | | |
-| US-417 | Mobile invigilator view (responsive, haptic alerts) | 📋 To Do | | |
-| US-418 | React Router setup & navigation (sidebar, role-based routes) | 📋 To Do | | |
-| US-419 | API integration layer (Axios/fetch service, auth interceptors) | 📋 To Do | | |
-| US-420 | Global state management (auth context, WebSocket context) | 📋 To Do | | |
+| US-401 | As a **developer**, I want the Vite + React + Tailwind project scaffolded with React Router, an API integration layer (Axios/fetch with auth interceptors), and global state management (auth & WebSocket contexts) so that the frontend has a solid foundation for all features | ✅ Done | | |
+| US-402 | As an **admin**, I want an Installation/Setup Wizard page so that I can configure the institution and create the first admin account on initial deployment | 🔄 In Progress | | |
+| US-403 | As a **user**, I want a login page with JWT authentication so that I can securely access the system based on my role | 📋 To Do | | |
+| US-404 | As an **admin**, I want a dashboard home page with overview stats, quick actions, and KPI widgets so that I can see the system status at a glance | 📋 To Do | | |
+| US-405 | As an **admin**, I want management pages for halls, devices (cameras & mics per hall with health status), and staff/users (CRUD with role assignment) so that I can configure all organizational resources from the dashboard | 📋 To Do | | |
+| US-406 | As an **admin**, I want an exam session scheduling page to create sessions and assign halls & invigilators so that exams are properly planned within the system | 📋 To Do | | |
+| US-407 | As an **invigilator**, I want a live monitoring control room with a hall grid overview and per-hall camera feeds with an event timeline so that I can observe all exam halls and drill into individual halls in real time | 📋 To Do | | |
+| US-408 | As an **invigilator**, I want a real-time alert feed/timeline and push-to-talk audio controls so that I can receive cheating alerts instantly and communicate with halls | 📋 To Do | | |
+| US-409 | As an **admin**, I want a history & reports page with search and a session detail/summary report view so that past exam sessions can be reviewed and audited | 📋 To Do | | |
+| US-410 | As an **admin**, I want a settings & management panel for detection thresholds and system configuration so that I can tune the system's sensitivity and behavior | 📋 To Do | | |
+| US-411 | As an **invigilator**, I want a personal schedule view ("My Schedule" dashboard) and a responsive mobile view with haptic alerts so that I can check my assignments and receive notifications on the go | 📋 To Do | | |
 
 ### Page / Component Checklist
 
@@ -212,16 +181,11 @@ Use this checklist to track individual UI page and component completion:
 
 | ID | Story | Status | Assignee | Deadline |
 |----|-------|--------|----------|----------|
-| US-501 | "Solo Station" launcher (start full stack on one machine) | 📋 To Do | | |
-| US-502 | Docker Compose setup (backend + frontend + database) | 📋 To Do | | |
-| US-503 | Environment configuration & secrets management | 📋 To Do | | |
-| US-504 | Automated device health-check system | 📋 To Do | | |
-| US-505 | Centralized logging & error monitoring | 📋 To Do | | |
-| US-506 | CI/CD pipeline (lint, test, build) | 📋 To Do | | |
-| US-507 | Production deployment guide | 📋 To Do | | |
-| US-508 | RTSP camera & USB mic hardware integration testing | 📋 To Do | | |
-| US-509 | System endurance testing (2+ hour sessions) | 📋 To Do | | |
-| US-510 | Disaster recovery & session data backup | 📋 To Do | | |
+| US-501 | As a **developer**, I want a "Solo Station" launcher and Docker Compose setup (backend + frontend + database) with environment/secrets management so that the full system can be started with a single command on one machine | 📋 To Do | | |
+| US-502 | As a **developer**, I want automated device health checks, centralized logging, and error monitoring so that system issues are detected and diagnosed quickly | 📋 To Do | | |
+| US-503 | As a **developer**, I want a CI/CD pipeline (lint, test, build) and a production deployment guide so that releases are automated and deployments are reproducible | 📋 To Do | | |
+| US-504 | As a **developer**, I want RTSP camera & USB mic hardware integration testing and system endurance testing (2+ hour sessions) so that the system is validated against real hardware under sustained load | 📋 To Do | | |
+| US-505 | As an **admin**, I want disaster recovery procedures and session data backup so that exam data is protected against system failures | 📋 To Do | | |
 
 ### Acceptance Criteria
 
