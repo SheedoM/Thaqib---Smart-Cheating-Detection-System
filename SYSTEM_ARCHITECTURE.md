@@ -1,3 +1,5 @@
+# THIS IS AN OUTDATED DOC, THIS SHOULD NOT BE USED AS A REFERENCE, PLEASE REVIEW "SRS" FOR REFERENCE.
+
 # Thaqib System Architecture Documentation
 
 ## Table of Contents
