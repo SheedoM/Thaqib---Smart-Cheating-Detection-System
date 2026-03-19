@@ -38,8 +38,9 @@ dependencies = [
     "alembic>=1.12.0",           # Database migrations
     "python-dotenv>=1.0.0",      # Environment variables
     "pyjwt>=2.8.0",              # JWT Tokens
-    "passlib[bcrypt]>=1.7.4",    # Password Hashing
+    "bcrypt>=4.0.0",              # Password Hashing
     "python-multipart>=0.0.9",   # OAuth2 Forms
+    "email-validator>=2.1.0",    # Email Validation
 ]
 
 [project.optional-dependencies]

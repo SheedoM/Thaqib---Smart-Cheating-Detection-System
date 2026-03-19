@@ -5,7 +5,7 @@ from typing import Any
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.users import User
-from src.thaqib.core.security import verify_password, create_access_token
+from src.thaqib.core.security import verify_password, create_access_token, create_refresh_token
 from src.thaqib.schemas.users import Token, UserResponse
 from src.thaqib.api.dependencies import get_current_active_user
 
@@ -32,9 +32,23 @@ def login_access_token(
             detail="Inactive user"
         )
     
-    access_token = create_access_token(subject=user.username)
+    # The AuthContext expects username, role, etc. in the decoded token.
+    # Since create_access_token currently only takes 'subject', we'll pass a dictionary
+    # as the subject, which will be encoded into the token.
+    access_token_data = {
+        "sub": str(user.id),
+        "username": user.username,
+        "email": user.email,
+        "role": user.role,
+        "full_name": user.full_name
+    }
+    
+    access_token = create_access_token(data=access_token_data)
+    refresh_token = create_refresh_token(data=access_token_data)
+    
     return {
         "access_token": access_token,
+        "refresh_token": refresh_token,
         "token_type": "bearer"
     }
 

@@ -2,23 +2,23 @@
 
 @theme {
   --color-thaqib-primary: #44006E;
-  --font-cairo: "Cairo", sans-serif;
+  --color-thaqib-hover: #5A0091;
+  --font-ibm-plex: "IBM Plex Sans Arabic", sans-serif;
 }
 
-@layer base {
-  body {
-    background-color: #f9fafb;
-    margin: 0;
-    padding: 0;
-  }
+/* Base styles with @apply */
+html, body {
+  @apply font-ibm-plex bg-gray-50 text-gray-900;
+  margin: 0;
+  padding: 0;
 }
 
 @layer components {
   .input-field {
-    @apply w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-thaqib-primary focus:border-transparent transition-all;
+    @apply w-full px-4 py-3 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-[#44006E]/20 focus:border-[#44006E] transition-all bg-white;
   }
 
   .btn-primary {
-    @apply w-full bg-thaqib-primary text-white py-3 rounded-lg font-bold hover:opacity-90 transition-all active:scale-[0.98];
+    @apply w-full bg-[#44006E] text-white py-3 rounded-xl font-bold hover:bg-[#5A0091] transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed;
   }
 }

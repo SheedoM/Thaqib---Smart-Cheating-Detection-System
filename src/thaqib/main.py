@@ -8,6 +8,13 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Automated Database Initialization (Dev/Setup convenience)
+from src.thaqib.db.database import engine
+from src.thaqib.db.models import Base
+import src.thaqib.db.models # Ensure all models are imported for metadata
+
+Base.metadata.create_all(bind=engine)
+
 # Apply CORS Middleware for Frontend Access
 app.add_middleware(
     CORSMiddleware,

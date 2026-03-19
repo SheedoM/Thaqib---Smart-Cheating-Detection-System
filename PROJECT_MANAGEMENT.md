@@ -2,7 +2,7 @@
 
 > **Methodology:** Agile Scrum
 > **Sprint Duration:** 1 week
-> **Last Updated:** 2026-03-13
+> **Last Updated:** 2026-03-19
 
 ---
 
@@ -87,9 +87,9 @@
 |----|-------|--------|----------|----------|
 | US-301 | As a **developer**, I want a FastAPI application with CORS middleware and pydantic-settings configuration (.env) so that the backend is properly bootstrapped and configurable | ✅ Done | | |
 | US-302 | As an **invigilator**, I want a Push-to-Talk WebSocket endpoint with a connection manager (connect, disconnect, broadcast) so that two-way audio communication works in real time between the control room and exam halls | ✅ Done | | |
-| US-303 | As a **developer**, I want the full database schema (Institution, Hall, Device, User, ExamSession, Assignment, DetectionEvent, GroupEvent, Alert, AuditLog) with Alembic migrations so that all data is persisted and the schema is version-controlled | 🔄 In Progress | | |
-| US-304 | As an **admin**, I want JWT-based authentication with token refresh and role-based access control (admin, referee, invigilator) so that only authorized users can access their permitted resources | 🔄 In Progress | | |
-| US-305 | As an **admin**, I want a system installation/setup API endpoint so that the institution and initial admin account can be created during first-time setup | 🔄 In Progress | | |
+| US-303 | Database Schema | Backend | ✅ Done | Phase 1 | `feat/backend-setup-api` | Full schema with models; automated creation on startup |
+| US-304 | JWT Authentication | Backend | ✅ Done | Phase 1 | `feat/backend-setup-api` | JWT with RBAC, refresh tokens, and bcrypt hashing |
+| US-305 | Setup/Installation API | Backend | ✅ Done | Phase 1 | `feat/backend-setup-api` | One-time setup endpoint for institution & admin |
 | US-306 | As an **admin**, I want CRUD APIs for institutions, halls, devices (with health-check), and users/staff so that all organizational resources can be managed through the dashboard | 🔄 In Progress | | |
 | US-307 | As an **admin**, I want exam session CRUD, scheduling, and invigilator assignment APIs so that exams can be planned and staffed through the system | 📋 To Do | | |
 | US-308 | As a **developer**, I want a detection event ingestion API and real-time alert broadcast via WebSocket so that pipeline alerts are persisted and pushed to the dashboard instantly | 📋 To Do | | |
@@ -121,7 +121,7 @@
 |----|-------|--------|----------|----------|
 | US-401 | As a **developer**, I want the Vite + React + Tailwind project scaffolded with React Router, an API integration layer (Axios/fetch with auth interceptors), and global state management (auth & WebSocket contexts) so that the frontend has a solid foundation for all features | ✅ Done | | |
 | US-402 | As an **admin**, I want an Installation/Setup Wizard page so that I can configure the institution and create the first admin account on initial deployment | 🔄 In Progress | | |
-| US-403 | As a **user**, I want a login page with JWT authentication so that I can securely access the system based on my role | 📋 To Do | | |
+| US-403 | Login Page & JWT Auth | Frontend | ✅ Done | Phase 1 | `feat/frontend-login-page` | Secure login with AuthContext & RBAC routing |
 | US-404 | As an **admin**, I want a dashboard home page with overview stats, quick actions, and KPI widgets so that I can see the system status at a glance | 📋 To Do | | |
 | US-405 | As an **admin**, I want management pages for halls, devices (cameras & mics per hall with health status), and staff/users (CRUD with role assignment) so that I can configure all organizational resources from the dashboard | 📋 To Do | | |
 | US-406 | As an **admin**, I want an exam session scheduling page to create sessions and assign halls & invigilators so that exams are properly planned within the system | 📋 To Do | | |
