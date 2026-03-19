@@ -1,7 +1,8 @@
 """
 Expose all models here so that Alembic can properly autogenerate migrations
-by simply importing `from src.thaqib.db.models import Base`
+by simply importing `from thaqib.db.models import Base`
 """
+
 from .base import Base
 from .infrastructure import Institution, Hall, Device
 from .users import User
@@ -21,5 +22,5 @@ __all__ = [
     "DetectionEvent",
     "GroupEvent",
     "Alert",
-    "AuditLog"
+    "AuditLog",
 ]
