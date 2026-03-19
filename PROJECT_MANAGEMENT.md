@@ -87,7 +87,7 @@
 |----|-------|--------|----------|----------|
 | US-301 | As a **developer**, I want a FastAPI application with CORS middleware and pydantic-settings configuration (.env) so that the backend is properly bootstrapped and configurable | ✅ Done | | |
 | US-302 | As an **invigilator**, I want a Push-to-Talk WebSocket endpoint with a connection manager (connect, disconnect, broadcast) so that two-way audio communication works in real time between the control room and exam halls | ✅ Done | | |
-| US-303 | As a **developer**, I want the full database schema (Institution, Hall, Device, User, ExamSession, Assignment, DetectionEvent, GroupEvent, Alert, AuditLog) with Alembic migrations so that all data is persisted and the schema is version-controlled | 🔄 In Progress | | |
+| US-303 | As a **developer**, I want the full database schema (Institution, Hall, Device, User, ExamSession, Assignment, DetectionEvent, GroupEvent, Alert, AuditLog) with Alembic migrations so that all data is persisted and the schema is version-controlled | ✅ Done | | |
 | US-304 | As an **admin**, I want JWT-based authentication with token refresh and role-based access control (admin, referee, invigilator) so that only authorized users can access their permitted resources | 🔄 In Progress | | |
 | US-305 | As an **admin**, I want a system installation/setup API endpoint so that the institution and initial admin account can be created during first-time setup | 🔄 In Progress | | |
 | US-306 | As an **admin**, I want CRUD APIs for institutions, halls, devices (with health-check), and users/staff so that all organizational resources can be managed through the dashboard | 🔄 In Progress | | |
