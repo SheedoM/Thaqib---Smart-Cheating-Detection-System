@@ -5,8 +5,8 @@ from typing import Any
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.users import User
-from src.thaqib.core.security import verify_password, create_access_token
-from src.thaqib.schemas.users import Token, UserResponse
+from src.thaqib.core.security import verify_password, create_access_token, create_refresh_token, decode_token
+from src.thaqib.schemas.users import Token, UserResponse, TokenData
 from src.thaqib.api.dependencies import get_current_active_user
 
 router = APIRouter()
@@ -33,8 +33,43 @@ def login_access_token(
         )
     
     access_token = create_access_token(subject=user.username)
+    refresh_token = create_refresh_token(subject=user.username)
     return {
         "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
+
+@router.post("/refresh", response_model=Token)
+def refresh_token(
+    refresh_token: str,
+    db: Session = Depends(get_db)
+) -> Any:
+    """
+    Exchange a refresh token for a new access token.
+    """
+    payload = decode_token(refresh_token)
+    if not payload or payload.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+        )
+    
+    username = payload.get("sub")
+    user = db.query(User).filter(User.username == username).first()
+    if not user or user.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+        )
+        
+    new_access_token = create_access_token(subject=user.username)
+    # We can also rotate the refresh token here if desired
+    new_refresh_token = create_refresh_token(subject=user.username)
+    
+    return {
+        "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
         "token_type": "bearer"
     }
 
