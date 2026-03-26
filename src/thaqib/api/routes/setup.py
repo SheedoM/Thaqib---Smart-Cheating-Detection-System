@@ -19,6 +19,15 @@ class SetupSystemPayload(BaseModel):
     admin: str = Field(..., min_length=2, max_length=100)
     logo_url: str | None = Field(None, max_length=500)
 
+@router.get("/status")
+def get_setup_status(db: Session = Depends(get_db)) -> Any:
+    """
+    Check if the system has been initialized.
+    """
+    inst_count = db.query(Institution).count()
+    user_count = db.query(User).count()
+    return {"is_installed": inst_count > 0 and user_count > 0}
+
 @router.post("/install", status_code=status.HTTP_201_CREATED)
 @limiter.limit("3/minute")
 def install_system(

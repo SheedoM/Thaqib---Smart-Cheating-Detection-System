@@ -40,6 +40,8 @@ dependencies = [
     "pyjwt>=2.8.0",              # JWT Tokens
     "passlib[bcrypt]>=1.7.4",    # Password Hashing
     "python-multipart>=0.0.9",   # OAuth2 Forms
+    "psycopg2-binary>=2.9.0",    # PostgreSQL driver
+    "slowapi>=0.1.9",            # Rate limiting
 ]
 
 [project.optional-dependencies]
