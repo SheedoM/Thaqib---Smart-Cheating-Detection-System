@@ -16,20 +16,19 @@ require_admin = RequireRole(["admin"])
 @router.post("/", response_model=HallResponse, status_code=status.HTTP_201_CREATED)
 def create_hall(
     hall: HallCreate, 
-    institution_id: uuid.UUID,
     db: Session = Depends(get_db),
     _ = Depends(require_admin)
 ) -> Any:
     """
     Create a new hall. Admin only.
     """
-    inst = db.query(Institution).filter(Institution.id == institution_id).first()
+    inst = db.query(Institution).filter(Institution.id == hall.institution_id).first()
     if not inst:
         raise HTTPException(status_code=404, detail="Institution not found")
         
     db_obj = db.query(Hall).filter(
         Hall.name == hall.name, 
-        Hall.institution_id == institution_id
+        Hall.institution_id == hall.institution_id
     ).first()
     
     if db_obj:
@@ -39,7 +38,7 @@ def create_hall(
         )
         
     new_hall = Hall(
-        institution_id=institution_id,
+        institution_id=hall.institution_id,
         name=hall.name,
         building=hall.building,
         floor=hall.floor,
