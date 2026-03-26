@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+@theme {
+  --color-thaqib-primary: #44006E;
+  --font-cairo: "Cairo", sans-serif;
+}
+
+@layer base {
+  body {
+    background-color: #f9fafb;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+@layer components {
+  .input-field {
+    @apply w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-thaqib-primary focus:border-transparent transition-all;
+  }
+
+  .btn-primary {
+    @apply w-full bg-thaqib-primary text-white py-3 rounded-lg font-bold hover:opacity-90 transition-all active:scale-[0.98];
+  }
+}

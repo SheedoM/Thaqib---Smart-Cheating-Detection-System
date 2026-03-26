@@ -16,6 +16,7 @@ from .base import Base, SoftDeleteMixin, TimestampMixin, UUIDMixin
 if TYPE_CHECKING:
     from .events import Alert, DetectionEvent, GroupEvent
     from .infrastructure import Hall
+    from .users import User
 
 # SRS §5.2: Hall (M) <-> (N) ExamSession — many-to-many junction table
 # One exam can span multiple halls (FR-04.2)
