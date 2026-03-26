@@ -7,7 +7,7 @@ Uses synchronous SQLAlchemy with SQLite for MVP (SRS §2.3).
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from thaqib.config.settings import get_settings
+from src.thaqib.config.settings import get_settings
 
 settings = get_settings()
 
@@ -26,6 +26,11 @@ SessionLocal = sessionmaker(
 
 def get_db():
     """FastAPI dependency that yields a database session."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
     db = SessionLocal()
     try:
         yield db

@@ -90,12 +90,9 @@
 | US-303 | As a **developer**, I want the full database schema (Institution, Hall, Device, User, ExamSession, Assignment, DetectionEvent, GroupEvent, Alert, AuditLog) with Alembic migrations so that all data is persisted and the schema is version-controlled | ✅ Done | | |
 | US-304 | As an **admin**, I want JWT-based authentication with token refresh and role-based access control (admin, referee, invigilator) so that only authorized users can access their permitted resources | ✅ Done | | |
 | US-305 | As an **admin**, I want a system installation/setup API endpoint so that the institution and initial admin account can be created during first-time setup | ✅ Done | | |
-| US-306 | As an **admin**, I want CRUD APIs for institutions, halls, devices (with health-check), and users/staff so that all organizational resources can be managed through the dashboard | 🔄 In Progress | | |
-| US-307 | As an **admin**, I want exam session CRUD, scheduling, and invigilator assignment APIs so that exams can be planned and staffed through the system | 📋 To Do | | |
-| US-308 | As a **developer**, I want a detection event ingestion API and real-time alert broadcast via WebSocket so that pipeline alerts are persisted and pushed to the dashboard instantly | 📋 To Do | | |
-| US-309 | As a **developer**, I want a multi-modal correlation engine that fuses video and audio events so that combined evidence produces more accurate cheating alerts | 📋 To Do | | |
-| US-310 | As an **admin**, I want a session report generator with PDF export so that post-exam reports can be reviewed and archived | 📋 To Do | | |
-| US-311 | As a **developer**, I want security hardening (rate limiting, auth refresh, input validation) so that the API is protected against abuse and common attack vectors | 📋 To Do | | |
+| US-306 | As an **admin**, I want CRUD APIs for institutions, halls, devices (with health-check), and users/staff so that all organizational resources can be managed through the dashboard | ✅ Done | | |
+| US-307 | As an **admin**, I want exam session CRUD, scheduling, and invigilator assignment APIs so that exams can be planned and staffed through the system | ✅ Done | | |
+| US-308 | As a **developer**, I want a detection event ingestion API and real-time alert broadcast via WebSocket so that pipeline alerts are persisted and pushed to the dashboard instantly | ✅ Done | | |
 
 ### Acceptance Criteria
 
@@ -233,7 +230,7 @@ A user story is considered **Done** when:
 | `main` | Stable release branch | Base |
 | `feature/video-detection` | Advanced video pipeline (BoT-SORT, face mesh, re-ID, visualizer) | 🔄 Active |
 | `audio-model` | Audio detection model development | 🔄 Active |
-| `feat/backend-setup-api` | DB schema, Auth, RBAC, Installation APIs | 🔄 Active |
+| `feat/backend-setup-api` | DB schema, Auth, RBAC, Installation APIs | ✅ Merged |
 | `feat/frontend-installation-page` | React installation UI + backend setup | 🔄 Active |
 
 ---
