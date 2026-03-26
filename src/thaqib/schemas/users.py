@@ -1,6 +1,6 @@
 import uuid
 from typing import Optional
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, ConfigDict, Field
 
 # Token Schemas
 class Token(BaseModel):
@@ -13,13 +13,13 @@ class TokenData(BaseModel):
 
 # User Schemas
 class UserBase(BaseModel):
-    username: str
+    username: str = Field(..., min_length=3, max_length=50, pattern="^[a-zA-Z0-9_.-]+$")
     email: EmailStr
-    full_name: str
-    role: str
+    full_name: str = Field(..., min_length=2, max_length=100)
+    role: str = Field(..., pattern="^(admin|invigilator|referee)$")
 
 class UserCreate(UserBase):
-    password: str
+    password: str = Field(..., min_length=8, max_length=72)
     institution_id: uuid.UUID
 
 class UserUpdate(BaseModel):

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import Any
@@ -8,11 +8,14 @@ from src.thaqib.db.models.users import User
 from src.thaqib.core.security import verify_password, create_access_token, create_refresh_token, decode_token
 from src.thaqib.schemas.users import Token, UserResponse, TokenData
 from src.thaqib.api.dependencies import get_current_active_user
+from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
 @router.post("/login", response_model=Token)
+@limiter.limit("5/minute")
 def login_access_token(
+    request: Request,
     db: Session = Depends(get_db), 
     form_data: OAuth2PasswordRequestForm = Depends()
 ) -> Any:
@@ -41,7 +44,9 @@ def login_access_token(
     }
 
 @router.post("/refresh", response_model=Token)
+@limiter.limit("5/minute")
 def refresh_token(
+    request: Request,
     refresh_token: str,
     db: Session = Depends(get_db)
 ) -> Any:

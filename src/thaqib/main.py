@@ -1,12 +1,20 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.thaqib.core.limiter import limiter
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
 # Initialize FastAPI App
 app = FastAPI(
     title="Thaqib Smart Cheating Detection System API",
     description="Backend API and WebSocket services for real-time exam monitoring.",
     version="1.0.0"
 )
+
+# Attach Limiter to app and set exception handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Apply CORS Middleware for Frontend Access
 app.add_middleware(
