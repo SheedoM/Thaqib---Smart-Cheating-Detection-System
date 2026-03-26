@@ -1,6 +1,6 @@
 import uuid
 from typing import List, Any
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
@@ -8,11 +8,14 @@ from src.thaqib.db.models.events import DetectionEvent
 from src.thaqib.db.models.exams import ExamSession
 from src.thaqib.schemas.events import DetectionEventCreate, DetectionEventResponse
 from src.thaqib.api.ws_manager import manager
+from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
 @router.post("/", response_model=DetectionEventResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("60/minute")
 async def ingest_event(
+    request: Request,
     event_in: DetectionEventCreate, 
     db: Session = Depends(get_db)
 ) -> Any:
@@ -61,7 +64,9 @@ async def ingest_event(
     return new_event
 
 @router.get("/", response_model=List[DetectionEventResponse])
+@limiter.limit("30/minute")
 def read_events(
+    request: Request,
     exam_session_id: uuid.UUID,
     skip: int = 0, 
     limit: int = 100, 
