@@ -12,7 +12,7 @@ class HallBase(BaseModel):
     status: Optional[str] = "not_ready"
 
 class HallCreate(HallBase):
-    pass
+    institution_id: uuid.UUID
 
 class HallUpdate(HallBase):
     name: Optional[str] = None
@@ -41,5 +41,33 @@ class InstitutionUpdate(InstitutionBase):
 
 class InstitutionResponse(InstitutionBase):
     id: uuid.UUID
+
+    model_config = ConfigDict(from_attributes=True)
+
+# Device Schemas
+class DeviceBase(BaseModel):
+    type: str
+    identifier: str
+    ip_address: Optional[str] = None
+    stream_url: str
+    position: dict
+    coverage_area: Optional[dict] = None
+    status: Optional[str] = "offline"
+
+class DeviceCreate(DeviceBase):
+    hall_id: uuid.UUID
+
+class DeviceUpdate(BaseModel):
+    identifier: Optional[str] = None
+    ip_address: Optional[str] = None
+    stream_url: Optional[str] = None
+    position: Optional[dict] = None
+    coverage_area: Optional[dict] = None
+    status: Optional[str] = None
+
+class DeviceResponse(DeviceBase):
+    id: uuid.UUID
+    hall_id: uuid.UUID
+    last_health_check: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

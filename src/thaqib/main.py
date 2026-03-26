@@ -17,14 +17,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include Routers
-from src.thaqib.api.routes import ptt, auth, institutions, halls, setup
+from src.thaqib.api.routes import ptt, auth, institutions, halls, setup, devices, users, exams
 
 app.include_router(ptt.router, prefix="/api/v1/ptt")
 app.include_router(setup.router, prefix="/api/setup", tags=["Setup"])
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(institutions.router, prefix="/api/institutions", tags=["Institutions"])
 app.include_router(halls.router, prefix="/api/halls", tags=["Halls"])
+app.include_router(devices.router, prefix="/api/devices", tags=["Devices"])
+app.include_router(users.router, prefix="/api/users", tags=["Users"])
+app.include_router(exams.router, prefix="/api/sessions", tags=["Exam Sessions"])
 
 @app.get("/")
 async def root():

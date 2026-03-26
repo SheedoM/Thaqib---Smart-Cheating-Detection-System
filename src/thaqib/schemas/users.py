@@ -22,6 +22,13 @@ class UserCreate(UserBase):
     password: str
     institution_id: uuid.UUID
 
+class UserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    role: Optional[str] = None
+    status: Optional[str] = None
+    ptt_id: Optional[str] = None
+
 class UserResponse(UserBase):
     id: uuid.UUID
     status: str
