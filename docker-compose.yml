@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: thaqib-db
+    restart: always
+    environment:
+      POSTGRES_USER: thaqib_admin
+      POSTGRES_PASSWORD: development_password
+      POSTGRES_DB: thaqib_production
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: thaqib-pgadmin
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@thaqib.ai
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
+
+volumes:
+  postgres_data:
