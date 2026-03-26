@@ -1,12 +1,13 @@
 import uuid
 from typing import List, Any
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.infrastructure import Institution
 from src.thaqib.schemas.infrastructure import InstitutionCreate, InstitutionResponse, InstitutionUpdate
 from src.thaqib.api.dependencies import RequireRole
+from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
@@ -14,7 +15,9 @@ router = APIRouter()
 require_admin = RequireRole(["admin"])
 
 @router.post("/", response_model=InstitutionResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 def create_institution(
+    request: Request,
     institution: InstitutionCreate, 
     db: Session = Depends(get_db),
     _ = Depends(require_admin)
@@ -68,7 +71,9 @@ def read_institution(
     return inst
 
 @router.put("/{institution_id}", response_model=InstitutionResponse)
+@limiter.limit("10/minute")
 def update_institution(
+    request: Request,
     institution_id: uuid.UUID, 
     institution_in: InstitutionUpdate,
     db: Session = Depends(get_db),
@@ -91,7 +96,9 @@ def update_institution(
     return inst
 
 @router.delete("/{institution_id}", response_model=InstitutionResponse)
+@limiter.limit("5/minute")
 def delete_institution(
+    request: Request,
     institution_id: uuid.UUID, 
     db: Session = Depends(get_db),
     _ = Depends(require_admin)

@@ -1,6 +1,6 @@
 import uuid
 from typing import List, Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
@@ -9,12 +9,15 @@ from src.thaqib.db.models.infrastructure import Hall
 from src.thaqib.db.models.users import User
 from src.thaqib.schemas.exams import ExamSessionCreate, ExamSessionResponse, ExamSessionUpdate, AssignmentCreate, AssignmentResponse
 from src.thaqib.api.dependencies import RequireRole
+from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 require_admin = RequireRole(["admin"])
 
 @router.post("/", response_model=ExamSessionResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 def create_exam_session(
+    request: Request,
     session_data: ExamSessionCreate, 
     db: Session = Depends(get_db),
     _ = Depends(require_admin)
@@ -75,7 +78,9 @@ def read_exam_session(
     return session
 
 @router.put("/{session_id}", response_model=ExamSessionResponse)
+@limiter.limit("10/minute")
 def update_exam_session(
+    request: Request,
     session_id: uuid.UUID, 
     session_in: ExamSessionUpdate,
     db: Session = Depends(get_db),
@@ -98,7 +103,9 @@ def update_exam_session(
     return session
 
 @router.delete("/{session_id}", response_model=ExamSessionResponse)
+@limiter.limit("5/minute")
 def delete_exam_session(
+    request: Request,
     session_id: uuid.UUID, 
     db: Session = Depends(get_db),
     _ = Depends(require_admin)
@@ -115,7 +122,9 @@ def delete_exam_session(
     return session
 
 @router.post("/{session_id}/assignments", response_model=AssignmentResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("20/minute")
 def assign_invigilator(
+    request: Request,
     session_id: uuid.UUID,
     assignment: AssignmentCreate,
     db: Session = Depends(get_db),

@@ -1,12 +1,13 @@
 import uuid
 from typing import List, Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.infrastructure import Device, Hall
 from src.thaqib.schemas.infrastructure import DeviceCreate, DeviceResponse, DeviceUpdate
 from src.thaqib.api.dependencies import RequireRole
+from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
@@ -14,7 +15,9 @@ router = APIRouter()
 require_admin = RequireRole(["admin"])
 
 @router.post("/", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 def create_device(
+    request: Request,
     device: DeviceCreate, 
     db: Session = Depends(get_db),
     _ = Depends(require_admin)
@@ -97,7 +100,9 @@ def read_device(
     return device
 
 @router.put("/{device_id}", response_model=DeviceResponse)
+@limiter.limit("20/minute")
 def update_device(
+    request: Request,
     device_id: uuid.UUID, 
     device_in: DeviceUpdate,
     db: Session = Depends(get_db),
@@ -123,7 +128,9 @@ def update_device(
     return device
 
 @router.delete("/{device_id}", response_model=DeviceResponse)
+@limiter.limit("10/minute")
 def delete_device(
+    request: Request,
     device_id: uuid.UUID, 
     db: Session = Depends(get_db),
     _ = Depends(require_admin)

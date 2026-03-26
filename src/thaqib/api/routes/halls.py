@@ -1,12 +1,13 @@
 import uuid
 from typing import List, Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.infrastructure import Hall, Institution
 from src.thaqib.schemas.infrastructure import HallCreate, HallResponse, HallUpdate
 from src.thaqib.api.dependencies import RequireRole
+from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
@@ -14,7 +15,9 @@ router = APIRouter()
 require_admin = RequireRole(["admin"])
 
 @router.post("/", response_model=HallResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 def create_hall(
+    request: Request,
     hall: HallCreate, 
     db: Session = Depends(get_db),
     _ = Depends(require_admin)
@@ -84,7 +87,9 @@ def read_hall(
     return hall
 
 @router.put("/{hall_id}", response_model=HallResponse)
+@limiter.limit("10/minute")
 def update_hall(
+    request: Request,
     hall_id: uuid.UUID, 
     hall_in: HallUpdate,
     db: Session = Depends(get_db),
@@ -107,7 +112,9 @@ def update_hall(
     return hall
 
 @router.delete("/{hall_id}", response_model=HallResponse)
+@limiter.limit("5/minute")
 def delete_hall(
+    request: Request,
     hall_id: uuid.UUID, 
     db: Session = Depends(get_db),
     _ = Depends(require_admin)

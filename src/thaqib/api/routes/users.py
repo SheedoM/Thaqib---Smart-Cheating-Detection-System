@@ -1,6 +1,6 @@
 import uuid
 from typing import List, Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
@@ -9,6 +9,7 @@ from src.thaqib.db.models.infrastructure import Institution
 from src.thaqib.schemas.users import UserCreate, UserResponse, UserUpdate
 from src.thaqib.api.dependencies import RequireRole
 from src.thaqib.core.security import get_password_hash
+from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
@@ -16,7 +17,9 @@ router = APIRouter()
 require_admin = RequireRole(["admin"])
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 def create_user(
+    request: Request,
     user: UserCreate, 
     db: Session = Depends(get_db),
     _ = Depends(require_admin)
@@ -85,7 +88,9 @@ def read_user(
     return user
 
 @router.put("/{user_id}", response_model=UserResponse)
+@limiter.limit("20/minute")
 def update_user(
+    request: Request,
     user_id: uuid.UUID, 
     user_in: UserUpdate,
     db: Session = Depends(get_db),
@@ -108,7 +113,9 @@ def update_user(
     return user
 
 @router.delete("/{user_id}", response_model=UserResponse)
+@limiter.limit("10/minute")
 def delete_user(
+    request: Request,
     user_id: uuid.UUID, 
     db: Session = Depends(get_db),
     _ = Depends(require_admin)
