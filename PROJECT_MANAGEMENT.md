@@ -93,6 +93,9 @@
 | US-306 | As an **admin**, I want CRUD APIs for institutions, halls, devices (with health-check), and users/staff so that all organizational resources can be managed through the dashboard | ✅ Done | | |
 | US-307 | As an **admin**, I want exam session CRUD, scheduling, and invigilator assignment APIs so that exams can be planned and staffed through the system | ✅ Done | | |
 | US-308 | As a **developer**, I want a detection event ingestion API and real-time alert broadcast via WebSocket so that pipeline alerts are persisted and pushed to the dashboard instantly | ✅ Done | | |
+| US-309 | As a **developer**, I want a multi-modal correlation engine that fuses video and audio events so that combined evidence produces more accurate cheating alerts | 📋 To Do | | |
+| US-310 | As an **admin**, I want a session report generator with PDF export so that post-exam reports can be reviewed and archived | 📋 To Do | | |
+| US-311 | As a **developer**, I want security hardening (rate limiting, auth refresh, input validation) so that the API is protected against abuse and common attack vectors | ✅ Done | | |
 
 ### Acceptance Criteria
 
