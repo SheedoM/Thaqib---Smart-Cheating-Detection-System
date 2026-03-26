@@ -2,7 +2,7 @@ import uuid
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.infrastructure import Institution
@@ -14,17 +14,22 @@ router = APIRouter()
 # Schema specifically for the one-time setup payload
 class SetupSystemPayload(BaseModel):
     # Institution Info
-    institution_name: str
-    logo_url: str = None
+    institution_name: str = Field(..., min_length=2, max_length=150)
+    logo_url: str = Field(None, max_length=500)
     
     # Admin Info
-    admin_full_name: str
-    admin_username: str
+    admin_full_name: str = Field(..., min_length=2, max_length=100)
+    admin_username: str = Field(..., min_length=3, max_length=50, pattern="^[a-zA-Z0-9_.-]+$")
     admin_email: EmailStr
-    admin_password: str
+    admin_password: str = Field(..., min_length=8, max_length=72)
+
+from src.thaqib.core.limiter import limiter
+from fastapi import Request
 
 @router.post("/install", status_code=status.HTTP_201_CREATED)
+@limiter.limit("3/minute")
 def install_system(
+    request: Request,
     payload: SetupSystemPayload, 
     db: Session = Depends(get_db)
 ) -> Any:

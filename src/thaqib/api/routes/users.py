@@ -40,9 +40,7 @@ def create_user(
         username=user.username,
         full_name=user.full_name,
         email=user.email,
-        phone=user.phone,
         role=user.role,
-        status=user.status,
         password_hash=get_password_hash(user.password)
     )
     db.add(new_user)
