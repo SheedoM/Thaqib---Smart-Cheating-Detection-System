@@ -33,6 +33,11 @@ class StudentSpatialState:
     neighbors: list[int] = field(default_factory=list)
     neighbor_distances: dict[int, float] = field(default_factory=dict)
     neighbor_papers: dict[int, tuple[int, int]] = field(default_factory=dict)
+    detected_paper: tuple[int, int] | None = None
+    surrounding_papers: list[tuple[int, int]] = field(default_factory=list)
+    is_cheating: bool = False
+    suspicious_start_time: float = 0.0
+    is_alert_recording: bool = False
 
 class GlobalStudentRegistry:
     """Registry system that stores the spatial state of all tracked students."""

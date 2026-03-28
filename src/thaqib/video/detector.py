@@ -109,7 +109,7 @@ class HumanDetector:
 
         logger.info(f"Loading YOLO model: {self.model_name}")
 
-        self._model = YOLO(f"{self.model_name}.pt")
+        self._model = YOLO(f"{self.model_name}")
         self._model.to("cuda")
 
         self._is_loaded = True
