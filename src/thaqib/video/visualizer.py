@@ -30,6 +30,8 @@ class VideoVisualizer:
 
     def __init__(self) -> None:
         self.show_neighbors: bool = False
+        self.show_phone: bool = True
+        self.show_paper: bool = True
 
     def toggle_neighbors(self) -> None:
         """Toggle neighbor graph rendering on/off."""
@@ -58,6 +60,9 @@ class VideoVisualizer:
 
         self._draw_unselected_tracks(annotated, pipeline_frame)
         self._draw_selected_students(annotated, pipeline_frame)
+
+        self._draw_cheating_tools(annotated, pipeline_frame)
+        self._draw_surrounding_papers(annotated, pipeline_frame)
 
         if self.show_neighbors and registry is not None:
             self.draw_neighbors(annotated, registry)
@@ -94,9 +99,15 @@ class VideoVisualizer:
         """Draw selected students with unique per-ID colors."""
         for state in pipeline_frame.student_states:
             x1, y1, x2, y2 = state.bbox
-            color = _track_color(state.track_id)
+            
+            if getattr(state, "is_cheating", False):
+                color = (0, 0, 255)  # RED
+                thickness = 3
+            else:
+                color = _track_color(state.track_id)
+                thickness = 2
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
             cv2.putText(
                 frame,
                 f"ID:{state.track_id}",
@@ -104,7 +115,7 @@ class VideoVisualizer:
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 color,
-                2,
+                thickness,
                 cv2.LINE_AA,
             )
 
@@ -118,7 +129,54 @@ class VideoVisualizer:
             self._draw_gaze(frame, state)
 
     # ------------------------------------------------------------------
-    # Feature 2a — face mesh
+    # Feature 2 — Cheating Tools & Spatial Papers
+    # ------------------------------------------------------------------
+
+    def _draw_cheating_tools(self, frame: np.ndarray, pipeline_frame: PipelineFrame) -> None:
+        """Draw bounding boxes for detected tools (books, phones)."""
+        if pipeline_frame.tools_result is None:
+            return
+
+        for tool in pipeline_frame.tools_result.tools:
+            x1, y1, x2, y2 = tool.bbox
+            
+            # Format label with confidence
+            label = f"{tool.label} {tool.confidence:.2f}"
+            
+            if tool.label in ['phone', 'Using_phone'] and self.show_phone:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)  # RED for phone
+                cv2.putText(
+                    frame, label, (x1, y1 - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2, cv2.LINE_AA
+                )
+            elif tool.label == 'book' and self.show_paper:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2) # YELLOW for book
+                cv2.putText(
+                    frame, label, (x1, y1 - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2, cv2.LINE_AA
+                )
+
+    def _draw_surrounding_papers(self, frame: np.ndarray, pipeline_frame: PipelineFrame) -> None:
+        """Draw cyan lines connecting a student to their k-nearest surrounding papers."""
+        if not self.show_paper:
+            return
+
+        for state in pipeline_frame.student_states:
+            for paper_coord in state.surrounding_papers:
+                # Draw a thin Cyan line
+                cv2.line(
+                    frame,
+                    state.center,
+                    paper_coord,
+                    (255, 255, 0),  # Cyan
+                    1,
+                    cv2.LINE_AA,
+                )
+                # Draw a small circle at the paper coordinate to mark it
+                cv2.circle(frame, paper_coord, 3, (255, 255, 0), -1, cv2.LINE_AA)
+
+    # ------------------------------------------------------------------
+    # Feature 3a — face mesh
     # ------------------------------------------------------------------
 
     def _draw_face_mesh(self, frame: np.ndarray, state) -> None:

@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # Detection
     detection_interval: float = 1.0  # Seconds between full detection runs
-    yolo_model: str = "yolov8m"
+    yolo_model: str = "models/yolo11m.pt"
     detection_confidence: float = 0.15
 
     # Tracking

@@ -24,6 +24,8 @@ from thaqib.video.tracker import ObjectTracker, TrackingResult, TrackedObject
 from thaqib.video.registry import GlobalStudentRegistry, StudentSpatialState
 from thaqib.video.neighbors import NeighborComputer
 from thaqib.video.face_mesh import FaceMeshExtractor, FaceMeshResult
+from thaqib.video.tools_detector import ToolsDetector, ToolsDetectionResult
+
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,9 @@ class StudentState:
     neighbors: list[int] = field(default_factory=list)
     neighbor_distances: dict[int, float] = field(default_factory=dict)
     neighbor_papers: dict[int, tuple[int, int]] = field(default_factory=dict)
+    surrounding_papers: list[tuple[int, int]] = field(default_factory=list)
     face_mesh: FaceMeshResult | None = None
+    is_cheating: bool = False
 
 
 @dataclass
@@ -50,11 +54,11 @@ class PipelineFrame:
     frame_index: int
     timestamp: float
     detection_result: DetectionResult | None
-    tracking_result: TrackingResult
+    tracking_result: TrackingResult                     # ⬅️ جبنا ده فوق
+    tools_result: ToolsDetectionResult | None = None    # ⬅️ ونزلنا ده تحت
     registry: GlobalStudentRegistry | None = None
     student_states: list[StudentState] = field(default_factory=list)
     processing_time_ms: float = 0.0
-
     @property
     def tracked_count(self) -> int:
         """Number of tracked objects."""
@@ -113,11 +117,13 @@ class VideoPipeline:
         # Initialize components
         self._camera = CameraStream(source=source)
         self._detector = HumanDetector()
+        self._tools_detector = ToolsDetector()
         self._tracker = ObjectTracker()
         self._registry = GlobalStudentRegistry()
         self._neighbor_computer = NeighborComputer()
         self._face_extractor = FaceMeshExtractor()
         self._reid = FaceReIdentifier()
+
 
         # Parallel executor for per-student processing
         optimal_workers = os.cpu_count() or 8
@@ -126,10 +132,11 @@ class VideoPipeline:
         self._is_running = False
         
         # Async Detection State
-        self._detection_queue: Queue[DetectionResult] = Queue(maxsize=1)
+        self._detection_queue: Queue[tuple[DetectionResult, ToolsDetectionResult]] = Queue(maxsize=1)
         self._current_frame_data: FrameData | None = None
         self._detection_thread: threading.Thread | None = None
         self._last_detection_result: DetectionResult | None = None
+        self._last_tools_result: ToolsDetectionResult | None = None
 
         self._selected_ids: set[int] = set()
 
@@ -142,12 +149,21 @@ class VideoPipeline:
                 # Grab a reference to the latest frame
                 frame_data = self._current_frame_data
                 if frame_data is not None:
-                    # Run YOLO inference
+                    # Run both inferences (Human + Tools)
+                    f_copy = frame_data.frame.copy()
+                    
                     detection_result = self._detector.detect(
-                        frame_data.frame.copy(),
+                        f_copy,
                         frame_data.frame_index,
                         frame_data.timestamp,
                     )
+                    
+                    tools_result = self._tools_detector.detect(
+                        f_copy,
+                        frame_data.frame_index,
+                        frame_data.timestamp,
+                    )
+                    
                     last_detect_time = time.time()
                     
                     # Update queue (drop old if present)
@@ -158,7 +174,7 @@ class VideoPipeline:
                         pass
                     
                     try:
-                        self._detection_queue.put_nowait(detection_result)
+                        self._detection_queue.put_nowait((detection_result, tools_result))
                     except Exception:
                         pass
             
@@ -181,6 +197,7 @@ class VideoPipeline:
             return False
 
         self._detector.load()
+        self._tools_detector.load()
 
         self._is_running = True
         
@@ -241,12 +258,14 @@ class VideoPipeline:
         # Check for new detection async result
         new_detection = False
         try:
-            detection_result = self._detection_queue.get_nowait()
+            detection_result, tools_result = self._detection_queue.get_nowait()
             self._last_detection_result = detection_result
+            self._last_tools_result = tools_result
             new_detection = True
-            logger.debug(f"Detection: {self._last_detection_result.count} persons")
+            logger.debug(f"Detection: {self._last_detection_result.count} persons, {self._last_tools_result.count} tools")
         except Empty:
             detection_result = self._last_detection_result
+            tools_result = self._last_tools_result
             
         t1 = time.perf_counter()
 
@@ -317,6 +336,12 @@ class VideoPipeline:
         t3 = time.perf_counter()
         
         self._neighbor_computer.compute_neighbors(self._registry, k=4)
+        
+        # Compute paper neighbors specifically (excluding the student's closest paper)
+        if tools_result is not None:
+            paper_centers = [tool.center for tool in tools_result.tools if tool.label == 'book']
+            self._neighbor_computer.compute_paper_neighbors(self._registry, paper_centers)
+        
         t4 = time.perf_counter()
 
         # Process selected students only
@@ -336,7 +361,9 @@ class VideoPipeline:
                     neighbors=spatial.neighbors if spatial else [],
                     neighbor_distances=spatial.neighbor_distances if spatial else {},
                     neighbor_papers=spatial.neighbor_papers if spatial else {},
-                    face_mesh=spatial.face_mesh if spatial else None, 
+                    surrounding_papers=spatial.surrounding_papers if spatial else [],
+                    face_mesh=spatial.face_mesh if spatial else None,
+                    is_cheating=spatial.is_cheating if spatial else False,
                 )
                 student_states.append(state)
 
@@ -349,6 +376,8 @@ class VideoPipeline:
                             reg_state = self._registry.get(track_id)
                             if reg_state is not None:
                                 reg_state.face_mesh = result  # Explicitly allow None to clear stale meshes
+                                # Immediately evaluate cheating off the main thread
+                                self._evaluate_cheating_async(track_id)
                         except Exception as e:
                             logger.debug(f"Face mesh parallel error: {e}")
                     return callback
@@ -382,6 +411,7 @@ class VideoPipeline:
             frame_index=frame_data.frame_index,
             timestamp=frame_data.timestamp,
             detection_result=detection_result,
+            tools_result=tools_result,
             tracking_result=tracking_result,
             registry=self._registry,
             student_states=student_states,
@@ -421,6 +451,72 @@ class VideoPipeline:
         """
         face_mesh = self._face_extractor.extract(frame, state.bbox, state.track_id)
         return state, face_mesh
+
+    def _evaluate_cheating_async(self, track_id: int) -> None:
+        """Evaluate cheating rules asynchronously when face mesh is ready."""
+        state = self._registry.get(track_id)
+        if not state or not state.face_mesh or not state.surrounding_papers:
+            if state: state.suspicious_start_time = 0.0
+            return
+
+        lm2d = state.face_mesh.landmarks_2d
+        head_matrix = state.face_mesh.head_matrix
+        if len(lm2d) < 474 or head_matrix is None:
+            state.suspicious_start_time = 0.0
+            return
+
+        def pt2d(idx):
+            return np.array(lm2d[idx], dtype=float)
+
+        # 1. Calculate 3D Gaze Vector and project to 2D
+        R = head_matrix[:3, :3]
+        head_3d = R @ np.array([0.0, 0.0, -1.0])
+        
+        l_center, r_center = (pt2d(33) + pt2d(133)) / 2.0, (pt2d(263) + pt2d(362)) / 2.0
+        avg_eye_dev = ((pt2d(468) - l_center) + (pt2d(473) - r_center)) / 2.0
+        
+        eye_width = np.linalg.norm(pt2d(33) - pt2d(133))
+        if eye_width > 1e-6:
+            avg_eye_dev /= eye_width
+
+        eye_3d = np.array([-avg_eye_dev[0], avg_eye_dev[1], 0.0]) * 3.0
+        combined_3d = head_3d + eye_3d
+        
+        gaze_dir = np.array([-combined_3d[0], combined_3d[1]])
+        norm_gaze = np.linalg.norm(gaze_dir)
+        if norm_gaze < 1e-6:
+            return
+        gaze_dir = gaze_dir / norm_gaze
+
+        # 2. Check intersection with surrounding papers
+        student_head_pos = pt2d(168)
+        is_looking_at_paper = False
+
+        for paper_pt in state.surrounding_papers:
+            paper_vec = np.array(paper_pt) - student_head_pos
+            dist = np.linalg.norm(paper_vec)
+            if dist < 1e-6:
+                continue
+                
+            paper_dir = paper_vec / dist
+            dot_product = np.dot(gaze_dir, paper_dir)
+            
+            if dot_product > 0.92:
+                is_looking_at_paper = True
+                break
+
+        # 3. Apply the 2-second rule
+        current_time = time.time()
+        
+        if is_looking_at_paper:
+            if state.suspicious_start_time == 0.0:
+                state.suspicious_start_time = current_time
+            elif current_time - state.suspicious_start_time >= 2.0:
+                state.is_cheating = True
+        else:
+            state.suspicious_start_time = 0.0
+            if not state.is_alert_recording:
+                state.is_cheating = False
 
     def get_all_tracks(self) -> list[TrackedObject]:
         """Get all currently tracked objects (for selection UI)."""
