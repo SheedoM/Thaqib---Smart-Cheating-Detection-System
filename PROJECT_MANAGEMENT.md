@@ -2,7 +2,7 @@
 
 > **Methodology:** Agile Scrum
 > **Sprint Duration:** 1 week
-> **Last Updated:** 2026-03-19
+> **Last Updated:** 2026-03-26
 
 ---
 
@@ -120,7 +120,7 @@
 | ID | Story | Status | Assignee | Deadline |
 |----|-------|--------|----------|----------|
 | US-401 | As a **developer**, I want the Vite + React + Tailwind project scaffolded with React Router, an API integration layer (Axios/fetch with auth interceptors), and global state management (auth & WebSocket contexts) so that the frontend has a solid foundation for all features | ✅ Done | | |
-| US-402 | As an **admin**, I want an Installation/Setup Wizard page so that I can configure the institution and create the first admin account on initial deployment | 🔄 In Progress | | |
+| US-402 | As an **admin**, I want an Installation/Setup Wizard page so that I can configure the institution and create the first admin account on initial deployment | ✅ Done | | |
 | US-403 | As a **user**, I want a login page with JWT authentication so that I can securely access the system based on my role | ✅ Done | | |
 | US-404 | As an **admin**, I want a dashboard home page with overview stats, quick actions, and KPI widgets so that I can see the system status at a glance | 📋 To Do | | |
 | US-405 | As an **admin**, I want management pages for halls, devices (cameras & mics per hall with health status), and staff/users (CRUD with role assignment) so that I can configure all organizational resources from the dashboard | 📋 To Do | | |
@@ -136,8 +136,8 @@
 Use this checklist to track individual UI page and component completion:
 
 #### Pages
-- [ ] Installation / Setup Wizard
-- [ ] Login Page
+- [x] Installation / Setup Wizard
+- [x] Login Page
 - [ ] Admin Dashboard Home
 - [ ] Hall Management (List + CRUD)
 - [ ] Device Registration (per-hall)
@@ -243,3 +243,18 @@ A user story is considered **Done** when:
 1. **MediaPipe Version**: Must use 0.10.30+ (Tasks API, not legacy solutions)
 2. **Model Download**: `face_landmarker.task` auto-downloads to `models/` folder on first run
 3. **Audio branch divergence**: `audio-model` branch is heavily diverged from `main` — needs careful merge strategy
+
+---
+
+## Research & Adaptation Insights
+
+These insights are adapted from competitive analysis and should be prioritized for post-MVP development.
+
+### 🔍 Multi-Phase Identity Pipeline
+- **Insight:** Verifying students twice (at the gate/building entrance and then at the actual seat) prevents hall-swapping and identity fraud.
+- **Goal:** Implement "Gate-to-Seat" verification flow once core system components are stable.
+
+### 🗄️ Database Vector Search (pgvector)
+- **Insight:** PostgreSQL 16 + `pgvector` extension is the industry standard for fast similarity searches for face encodings without a separate vector database.
+- **Goal:** Transition face identification storage to `pgvector` to avoid infrastructure bloat.
+

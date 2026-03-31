@@ -586,6 +586,10 @@ In institutions with multiple control departments (e.g., one per academic level)
 
 MVP tracks students by **seat number/position** only. Future versions may link detections to student records by integrating with the institution's student information system.
 
+**Technical Recommendation:**
+- Use **PostgreSQL with the `pgvector` extension** to store and search face encodings directly in the database. This allows for fast similarity searches and industry-standard face re-identification without requiring a separate vector database (like Pinecone or Milvus).
+
+
 ### 8.4 Smartwatch / Haptic Alerts
 
 In-hall invigilators could receive discreet haptic notifications on a smartwatch instead of (or in addition to) PTT voice. Deprioritized for MVP.
@@ -601,6 +605,15 @@ Support for cloud-hosted deployment (AWS, Azure, GCP) as an alternative to on-pr
 ### 8.7 Speech Recognition / Keyword Detection
 
 Optional analysis of localized audio for exam-related keywords. Treated as a supplementary indicator, never used in isolation.
+
+### 8.8 Multi-Phase Identity Verification (Gate vs. Seat)
+
+To prevent student impersonation and hall swapping, a two-phase verification pipeline is planned:
+- **Phase 1 (Gate Verification):** Conducted at the exam center/building entrance. Uses barcode/ID scanning + face scan to verify the student is at the correct building at the scheduled time.
+- **Phase 2 (Seat Verification):** Conducted at the assigned desk within the exam hall to ensure the student who entered the gate is the same one sitting for the exam, preventing "swapping" with a friend inside.
+
+**Benefit:** Significant reduction in identity fraud and improved logistics management for crowded hall entries.
+
 
 ---
 
