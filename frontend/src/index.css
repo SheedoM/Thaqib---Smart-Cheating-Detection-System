@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@theme {
+  --color-thaqib-primary: #44006e;
+  --color-thaqib-light: #9351bb;
+  --font-ibm: "IBM Plex Sans Arabic", sans-serif;
+}
+
+@layer base {
+  body {
+    @apply font-ibm;
+  }
+}
+
+/* Custom styles for inputs to standardize the look */
+@layer components {
+  .thaqib-input {
+    @apply bg-white border border-[#eee] rounded-[12px] h-[60px] px-6 py-4 w-full text-base outline-none transition-colors duration-200 placeholder:opacity-30 placeholder:text-[#333] font-medium;
+  }
+  
+  .thaqib-input:focus {
+    @apply border-[rgba(68,0,110,0.5)] shadow-[0_4px_8px_rgba(68,0,110,0.1)];
+  }
+
+  .thaqib-button {
+    @apply bg-thaqib-primary text-white rounded-[12px] h-[50px] w-full flex items-center justify-center font-medium text-base transition-all active:scale-[0.98] hover:opacity-90;
+  }
+}

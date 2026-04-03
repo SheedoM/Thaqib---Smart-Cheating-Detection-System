@@ -1,0 +1,1101 @@
+﻿Thaqib
+SMART EXAMS MONITORING SYSTEM
+Summary
+Sentinel is an intelligent cheating detection system designed to automate and enhance examination integrity. While traditional invigilation relies on human supervisors, it is often hindered by physical and psychological limitations.
+
+Acknowledgment
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Table of Contents
+
+
+Acknowledgment        1
+Table of Contents        2
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+List of Figures
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+List of Tables
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+________________
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Chapter 1
+Introduction
+
+
+
+
+
+
+
+
+
+
+
+
+Chapter 1: Introduction
+1.1 Background
+With the rapid growth in the number of students and the increasing reliance on technology in education, maintaining fairness and integrity during examinations has become a major challenge. Traditional invigilation methods depend heavily on human supervisors, which may not always be sufficient to detect cheating behaviors, especially in large examination halls. Human invigilators can be affected by fatigue, distraction, and limited visibility, which may allow some cheating incidents to go unnoticed.
+Recent advances in Artificial Intelligence (AI), particularly in computer vision and audio signal processing, have enabled the development of intelligent monitoring systems capable of analyzing human behavior in real time. These technologies provide an opportunity to enhance examination supervision by assisting human invigilators rather than replacing them. This project proposes a Smart Cheating Detection System that utilizes cameras and microphones to detect suspicious behaviors during exams in real time, ensuring fairness while respecting legal and ethical constraints.
+1.2 Motivation
+Cheating during examinations negatively affects the credibility of educational institutions and undermines the concept of equal opportunity among students. In many cases, detecting cheating after the examination session has ended is not legally acceptable, as decisions must be taken during the exam itself. Therefore, systems based on recorded data reviewed later may lead to legal and ethical issues.
+The motivation behind this project is to design a real-time cheating detection system that provides immediate assistance to invigilators during the exam. Similar to the Video Assistant Referee (VAR) system used in football, the proposed system does not make final decisions but highlights suspicious situations, allowing the human invigilator to take the appropriate action. This approach reduces legal risks, enhances monitoring efficiency, and supports fair decision-making.
+1.3 Problem Statement
+Despite the presence of invigilators, detecting cheating behaviors such as unauthorized communication, suspicious head movements, or abnormal audio patterns remains a difficult task. The problem becomes more complex in crowded exam halls where multiple students are present, background noise exists, and visual occlusions occur.
+The main challenge addressed in this project is how to accurately detect cheating-related behaviors in real time using both visual and audio data, while minimizing false alarms and ensuring that the system operates within ethical and legal boundaries.
+1.4  Proposed Solution 
+This project proposes a Smart Cheating Detection System based on Artificial Intelligence techniques. The system integrates data from cameras and microphones installed inside examination halls. Computer vision algorithms are used to analyze visual cues such as head movements, gaze direction, and abnormal gestures, while audio analysis techniques are applied to detect suspicious sounds or verbal communication.
+The system processes all data in real time and generates alerts only when suspicious behavior is detected. These alerts are sent to the invigilator as decision support, without storing recorded video or audio. This ensures privacy preservation and legal compliance.
+
+
+1.5 Objectives of the Project
+The main objectives of this project are:
+* To design an AI-based system capable of detecting cheating-related behaviors in real time.
+
+* To utilize computer vision and audio analysis techniques for intelligent monitoring.
+
+* To assist invigilators by providing real-time alerts rather than automatic decisions.
+
+* To ensure ethical use of technology by avoiding data recording and preserving student privacy.
+
+* To improve fairness and integrity in examination environments.
+
+1.6  Scope of the Project
+The scope of this project is limited to monitoring students during examination sessions inside examination halls. The system acts as a decision support tool and does not replace human invigilators. It operates only in real time and does not store or review recorded data (except data needed for future optimization and system accuracy enhancement)  after the exam. The project focuses on detecting suspicious behaviors rather than confirming cheating with absolute certainty.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Chapter 2:System Methodology and Behavioral Data Extraction Framework
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+2.1 Overview
+This chapter presents the conceptual methodology and system design of the proposed real-time multimodal proctoring system for monitoring examination sessions using video and audio streams. The system aims to transform raw, continuous multimedia inputs into structured temporal features that support online behavioral assessment and decision-making.
+Unlike offline approaches that analyze recordings after the examination ends, the proposed system operates in real time, where data extraction and behavioral monitoring are performed concurrently with the running exam. This design enables immediate detection of suspicious patterns and timely alert generation, while maintaining modular separation between feature extraction and behavioral inference.
+The system is organized into three main stages. First, the system performs multimodal data extraction, where video and audio streams are processed through two parallel pipelines. The video-based pipeline focuses on real-time student localization, temporal tracking, neighbor modeling, and gaze estimation. In parallel, the audio-based pipeline extracts short-term acoustic indicators, distinguishes localized activity from global hall noise, and generates time-aligned audio features. Second, all extracted data are stored in structured formats to support review, debugging, and future improvements. Third, the system performs behavioral modeling and decision making, where a selected subset of critical features is used to evaluate suspicious behavior using temporal consistency rules and event-level reasoning.
+This chapter focuses on describing the methodology of the real-time data extraction stage, the structure of the extracted representations, and the key features forwarded to the modeling stage. The decision rules, alerting strategy, and system evaluation are presented in subsequent sections.
+________________
+
+
+2.2 Data Extraction
+This section describes the data extraction processes applied to the real-time examination streams. The objective of this stage is to transform raw video and audio inputs into structured, time-aligned representations that can be used for subsequent behavioral modeling and decision-making. Data extraction is performed independently for each modality to ensure modularity and clarity in the processing pipeline.
+________________
+
+
+2.2.1 Video-Based Data Extraction
+The video-based data extraction pipeline focuses on analyzing the visual stream to capture student-related spatial and behavioral features. This pipeline is designed to generate structured, frame-level representations by progressively extracting information related to student presence, spatial relationships, and visual attention.
+The video processing pipeline is organized into three main stages: global student detection, neighbor modeling and risk angle construction, and student gaze estimation.
+________________
+
+
+2.2.1.1 Global Student Detection (Real-Time)
+The purpose of this stage is to identify human subjects within the camera field of view and establish stable candidate representations that can be monitored during the examination. Due to real-time constraints, this stage adopts a hybrid strategy that combines periodic detection with continuous tracking, followed by a human-in-the-loop selection mechanism to define the final set of monitored students.
+The global student detection process consists of the following steps:
+________________
+
+
+1) Human Detection (Periodic Detection)
+Human detection represents the initial step of the video-based pipeline. Conceptually, this stage aims to identify the spatial locations of all human subjects within the examination scene.
+Methodologically, the system performs object detection at fixed intervals (e.g., once per second) to locate regions corresponding to human figures and represent them using bounding regions that approximate their spatial extent. This step focuses solely on detecting human presence and does not perform identity assignment or behavioral interpretation. The resulting bounding regions provide the primary spatial reference for subsequent tracking and monitoring stages.
+________________
+
+
+2) Temporal Tracking and Identity Continuity
+To maintain consistent representations between detection cycles, the system applies temporal tracking to propagate detected human regions across intermediate frames. Conceptually, tracking ensures identity continuity and stable localization over time without requiring repeated full detection at every frame.
+Methodologically, each detected human candidate is associated across frames based on spatial continuity and motion consistency, enabling the assignment of a persistent tracking identity that remains stable during the monitoring period. This step supports real-time processing efficiency and reduces detection overhead while preserving temporal coherence for later analysis.
+________________
+
+
+3) Human-in-the-Loop Candidate Selection
+To prevent monitoring non-target individuals such as invigilators and to reduce unnecessary computation, the system introduces a human-in-the-loop selection mechanism. In this stage, all tracked human candidates are displayed to an external monitoring operator, who selects the individuals that should be treated as valid students for further analysis.
+Only selected candidates are promoted to monitored targets, meaning that subsequent stages such as neighbor modeling and gaze estimation operate exclusively on the chosen student set. This strategy improves reliability and supports scalable real-time monitoring.
+________________
+
+
+4) Student Paper Localization
+Student paper localization focuses on defining the spatial region corresponding to each monitored student’s examination paper. Conceptually, this stage defines a fixed reference area associated with the student that represents the primary target of visual attention during normal exam behavior.
+Methodologically, a paper zone is defined relative to the student’s localized bounding region, based on consistent spatial assumptions regarding typical paper placement. This region is treated as a stable spatial reference and is later used to interpret gaze direction and spatial interactions with neighboring students.
+ 
+________________
+
+
+2.2.1.2 Neighbor Modeling and Risk Angle Definition
+This stage focuses on modeling the spatial relationships between monitored students and defining visually sensitive directions that may indicate non-academic behavior. Instead of analyzing each student independently, this step constructs a spatial context by identifying nearby students and representing their relative orientation with respect to a target student.
+In the proposed real-time framework, neighbor modeling is performed only for the selected student set, i.e., students approved by the human-in-the-loop proctoring stage. This ensures that non-target individuals (e.g., invigilators) are excluded from the spatial reasoning process.
+The neighbor modeling process includes the following components:
+________________
+
+
+1) Neighbor Identification and Distance Computation
+Each student is represented by the center point of the bounding box in the image plane:
+(Eq. 1)
+  
+where   and   denote the horizontal and vertical coordinates of the student location.
+The distance between two students   and   is computed using the Euclidean distance:
+(Eq. 2)
+  
+A student   is considered a neighbor of student   if:
+(Eq. 3)
+  
+where   is a predefined distance threshold.
+Alternatively, the system may select the closest   neighbors (e.g.,   ) for each student based on the smallest distances.
+________________
+
+
+2) Relative Angular Relationship Estimation
+After identifying neighbors based on spatial proximity, this component determines the relative spatial orientation of each neighbor with respect to the target student. Conceptually, this step describes where each neighbor lies around the target student in terms of direction.
+Let the target student location be:
+(Eq. 4)
+  
+and the neighboring location be:
+(Eq. 5)
+  
+The relative direction vector from the target student to the neighbor is defined as:
+(Eq. 6)
+  
+The relative angular position of the neighbor is computed using:
+(Eq. 7)
+  
+This angle provides a consistent geometric representation of neighbor orientation in the image plane. Based on   , neighbors can be interpreted as occupying relative regions such as left, right, or front with respect to the target student.
+________________
+
+
+3) Neighbor Paper Risk Angle Definition
+The purpose of this component is to define visually sensitive directions that correspond specifically to the examination papers of neighboring students. This formulation is motivated by the fact that suspicious behavior is more strongly associated with looking toward a neighbor’s paper rather than toward the neighbor’s face or body.
+For each target student   , the paper region of a neighboring student   is treated as a spatial target represented by its paper zone. Let the center of the paper zone be:
+(Eq. 8)
+   
+The direction from student   to the neighbor’s paper is defined by:
+(Eq. 9)
+   
+The corresponding risk angle is computed as:
+(Eq. 10)
+   
+To account for natural gaze variability and estimation noise, the risk angle is represented as an angular interval:
+(Eq. 11)
+   
+where   defines the angular tolerance around the risk direction.
+Methodologically, the set of risk angle intervals constructed for all neighbors forms a student-specific risk angle map, which is later used to evaluate whether the estimated gaze direction of the target student aligns with any neighboring paper direction.
+________________
+
+
+2.2.1.3 Student Gaze Estimation
+The goal of this stage is to estimate the true visual attention of each monitored student by modeling both head orientation and eye movement. This stage produces a precise representation of where a student is looking within the scene, which can later be compared against predefined risk angle regions associated with neighboring students.
+In the proposed real-time framework, gaze estimation is performed only for the selected student set determined by the human-in-the-loop proctoring stage to maintain computational efficiency.
+The gaze estimation process consists of the following steps:
+________________
+
+
+(1) Facial Geometry Construction and Head Pose Estimation
+Head pose estimation describes the orientation of the student’s head in three-dimensional space. The head orientation is commonly represented using three rotational angles: yaw (horizontal rotation), pitch (vertical rotation), and roll (in-plane rotation). Let the head orientation be defined as:
+  
+
+
+
+
+These angles provide a robust estimate of the general viewing direction and serve as the global reference for gaze estimation.
+________________
+
+
+(2) Local Eye Gaze Estimation
+Local eye gaze estimation focuses on capturing fine-grained eye movements relative to the head coordinate system. Conceptually, this step determines how the eyes deviate from the head’s forward direction. The local eye gaze direction can be represented as:
+  
+
+
+
+where   and   describe horizontal and vertical eye deviations within the head reference frame.
+________________
+
+
+(3) Final Gaze Direction Construction
+To obtain the true gaze direction in the scene, head pose and local eye gaze are combined into a single global representation. Conceptually, this fusion accounts for both coarse head orientation and fine eye movement. The final gaze direction   is obtained by transforming the local eye gaze vector using the head orientation:
+  
+
+
+where   denotes the rotation matrix derived from the head pose angles. The resulting vector   represents the final gaze direction of the student in the scene and can be directly compared with predefined risk angle regions to assess whether the student is looking toward a neighboring examination paper.
+________________
+
+
+2.2.2 Video-Based Feature Representation
+This stage organizes all visual information extracted from the video stream into a structured temporal representation. The objective is to convert frame-level visual analysis into numerical data that can be efficiently stored, reviewed, and analyzed without requiring direct access to the raw video.
+For each monitored student, the system generates a dedicated structured log where each row corresponds to a single video frame, while columns store the extracted features from the different stages of the video pipeline. The stored features include:
+This stage organizes all visual information extracted from the video stream into a structured temporal representation. The objective is to convert frame-level visual analysis into numerical data that can be efficiently stored, reviewed, and analyzed without requiring direct access to the raw video.
+For each monitored student, the system generates a dedicated structured log where each row corresponds to a single video frame, while columns store the extracted features from the different stages of the video pipeline. The stored features include:
+·        Frame Information
+o   Frame index
+o   Timestamp
+·        Student Localization
+o   Student ID
+o         Bounding box center coordinates   
+o   Bounding box dimensions
+·        Paper Localization
+o   Paper zone center coordinates
+o   Paper zone dimensions
+·        Neighbor Modeling
+o   IDs of neighboring students
+o   Distance to each neighbor
+o   Relative angular position of each neighbor
+·        Risk Angle Representation
+o   Risk angle center for each neighboring paper
+o         Risk angle range   
+·        Head Pose Estimation
+o   Yaw angle
+o   Pitch angle
+o   Roll angle
+·        Eye and Gaze Estimation
+o   Local eye gaze direction
+o   Final gaze direction (global gaze angle or vector)
+This structured representation preserves the temporal evolution of student behavior while remaining compact and interpretable. In the proposed real-time system, all extracted features are stored in CSV logs to support post-exam auditing, monitoring quality assessment, and investigating the causes of system errors such as incorrect tracking associations or inaccurate gaze estimation. These logs also provide valuable data for future system improvement and performance tuning.
+However, the real-time modeling and decision-making stage does not require the full logged feature set. Instead, only a subset of important features is forwarded to the processing stage responsible for detecting cheating behavior. This subset includes student ID, timestamp/frame index, final gaze direction, head pitch angle, neighbor IDs, and neighbor paper risk angles. This design ensures that the system remains computationally efficient in real time while maintaining full traceability through comprehensive stored logs.
+This structured representation preserves the temporal evolution of student behavior while remaining compact and interpretable. In the proposed real-time system, all extracted features are stored in CSV logs to support post-exam auditing, monitoring quality assessment, and investigating the causes of system errors such as incorrect tracking associations or inaccurate gaze estimation. These logs also provide valuable data for future system improvement and performance tuning.
+However, the real-time modeling and decision-making stage does not require the full logged feature set. Instead, only a subset of important features is forwarded to the processing stage responsible for detecting cheating behavior. This subset includes student ID, timestamp/frame index, final gaze direction, head pitch angle, neighbor IDs, and neighbor paper risk angles. This design ensures that the system remains computationally efficient in real time while maintaining full traceability through comprehensive stored logs.
+________________
+
+
+2.2.3 Audio-Based Data Extraction
+The audio-based data extraction pipeline is designed to transform raw acoustic signals into structured indicators that support behavioral analysis. The system explicitly accounts for the realistic acoustic conditions of examination halls, where background noise is expected and complete silence cannot be assumed. Consequently, audio signals are analyzed using both spatial and temporal constraints to distinguish meaningful local activity from global ambient noise.
+________________
+
+
+1) Spatial Microphone Layout
+The examination hall is divided into three inclined sections separated by walkways. Within each section, microphones are spatially distributed in fixed positions. Each microphone is assigned to a predefined group of three adjacent students seated in consecutive rows. This spatial configuration enables localized audio sensing and limits the scope of attribution for detected sound events.
+________________
+
+
+2) Microphone-to-Student Group Mapping
+Each microphone is permanently associated with a specific student group. Any audio activity captured by a microphone is initially attributed to the corresponding group of students. This mapping is established prior to analysis and remains constant throughout the examination session, providing a spatial reference for all subsequent audio processing stages.
+________________
+
+
+3) Audio Temporal Segmentation
+The continuous audio signal recorded by each microphone is segmented into short, fixed-duration time windows. Each window represents a temporally isolated audio segment, allowing fine-grained temporal analysis and synchronization with video frames. This segmentation enables the system to analyze sound activity at specific moments rather than over the entire recording.
+________________
+
+
+4) Low-Level Audio Feature Extraction
+For each time window, a set of low-level acoustic features is extracted to describe the physical characteristics of the audio signal. These features do not capture linguistic content but instead characterize general sound properties such as intensity, duration, and activity presence. The extracted features provide a compact numerical representation of audio behavior.
+________________
+
+
+5) Cross-Microphone Validation
+To differentiate localized audio activity from global hall noise, the system employs cross-microphone validation. When audio activity is detected in a given microphone, neighboring microphones are examined within the same time window. If similar activity with comparable intensity is observed across multiple adjacent microphones, the sound is classified as global ambient noise. Conversely, activity confined to a single microphone or a limited spatial region is classified as localized audio activity associated with a specific student group.
+________________
+
+
+6) Audio Event Characterization
+Localized audio activity is further analyzed to characterize audio events in terms of their temporal behavior. Event attributes such as duration, repetition frequency, and temporal patterns are computed. Audio events are treated as probabilistic behavioral indicators rather than definitive evidence of misconduct.
+________________
+
+
+7) Keyword-Based Audio Indicators (Optional)
+For localized and persistent audio events, an optional keyword-based analysis stage may be applied. This stage does not perform full speech recognition; instead, it searches for short verbal cues commonly associated with examination-related communication. Detected keywords are treated as supporting indicators and are not used in isolation for decision-making.
+________________
+
+
+8) Audio Feature Representation
+All extracted audio features are organized into a structured temporal representation. A dedicated CSV file is generated for each microphone, where each row corresponds to a time window. Stored attributes include microphone identifier, associated student group, temporal boundaries, audio activity classification, event characteristics, and optional keyword indicators. This representation is designed for efficient fusion with video-based features in subsequent analysis stages
+ 
+
+
+
+
+2.3 Hardware 
+The proposed real-time cheating detection system is designed using a multimodal hardware architecture that combines both video and audio sensing to improve detection accuracy. Wired Ethernet communication is adopted to ensure reliable, low-latency data transmission between examination halls and the processing server.
+________________
+
+
+2.3.1 IP Cameras
+IP cameras are used as the primary visual sensing devices to capture live video streams inside the examination hall. The cameras transmit real-time video data to the processing server over a local area network using Ethernet cables. This wired connection ensures stable transmission and minimizes packet loss and latency.
+
+
+Camera specifications:
+•        Resolution: 720p / 1080p
+•        Frame rate: 25–30 FPS
+•        RTSP streaming support
+•        Ethernet (LAN) interface
+
+
+ 
+  
+
+                                       figure 2.1 
+
+
+2.3.2 Ethernet Cables
+Ethernet cables are used to connect IP cameras to the network infrastructure. Wired communication provides higher bandwidth, lower latency, and greater reliability compared to wireless connections, making it suitable for real-time video analysis applications.
+Cable types:
+•        Cat5e or Cat6
+•        Data rate up to 1 Gbps
+
+
+
+
+
+
+
+
+
+
+  
+
+                                    figure 2.2 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+2.3.3 Network Switch
+A network switch is used to interconnect multiple IP cameras within the local area network and route video streams efficiently to the processing server. The switch allows system scalability and ensures synchronized data transmission from multiple sources.
+
+
+Switch features:
+•        Multiple Ethernet ports (5 or 8 ports)
+•        Gigabit Ethernet support
+•        Plug-and-play operation
+
+
+
+
+  
+
+                                       figure 2.3 
+
+
+
+
+
+
+
+
+
+
+2.3.4 Microphones
+Microphones are integrated into the system to capture audio signals within the examination hall, such as whispering or verbal communication between students. These audio cues complement visual data and enhance cheating detection accuracy. The microphones are connected directly to the server via USB interfaces to achieve low-latency audio transmission.
+Microphone features:
+•        USB interface
+•        High sensitivity
+•        Noise reduction support
+Audio analysis focuses on detecting abnormal sound activity without recording or storing speech content, thereby preserving privacy.
+ 
+2.3.5 Processing Server
+The processing server acts as the core computational unit of the system. It receives video streams from IP cameras and audio signals from microphones, then applies computer vision and artificial intelligence algorithms to detect suspicious behaviors and generate alerts in real time.
+Recommended specifications:
+•        CPU: Intel Core i5 or higher
+•        RAM: 16 GB
+•        Storage: SSD
+•        Operating System: Windows or Linux
+________________
+
+
+2.3.6 Alert System
+When suspicious behavior is detected through visual or audio analysis, the system generates real-time alerts to notify invigilators. Alerts are displayed on the monitoring interface and may also include audio warnings or system flags.
+Alert methods include:
+•        On-screen notifications
+•        Audio alerts
+•        System flags
+ 
+4.3.7 System Connectivity Overview
+All hardware components are connected through a wired Ethernet-based local area network to ensure stable and real-time communication.
+IP Cameras ─┐
+             ├─ Ethernet → Network Switch → Server →Alert System 
+Microphones ─┘           (USB)
+ 
+
+
+3. Related Work
+Several existing studies and commercial systems have explored the use of video surveillance and artificial intelligence for cheating detection and examination monitoring. Online proctoring platforms such as ProctorU, ExamSoft, and Respondus Monitor rely on webcams and microphones combined with cloud-based AI models to monitor examinees during remote online examinations. These systems primarily focus on individual users and require continuous internet connectivity.
+In traditional examination environments, CCTV-based surveillance systems are widely used to monitor students. However, these systems are usually supervised manually and lack automated behavior analysis, real-time decision-making, and intelligent alert generation. As a result, their effectiveness decreases in large examination halls.
+Recent research has highlighted the importance of multimodal monitoring approaches that combine visual and audio data to enhance abnormal behavior detection. Unlike existing systems, the proposed approach focuses on real-time, on-premises processing using IP cameras and microphones connected via a wired local network. This design reduces dependency on internet connectivity while enabling immediate alert generation and scalable deployment in physical examination halls.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Chapter 3
+System Analysis and Design
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Chapter 3: System Analysis and Design
+3.1 Introduction
+This chapter presents the system analysis and design of the proposed Smart Cheating Detection System, focusing on how the system is structured, developed, and validated to meet its objectives.
+The analysis phase defines the system’s functional scope, user roles, constraints, and interactions. It identifies the core problems addressed by the system, including the limitations of traditional examination monitoring and the high dependency on human invigilators.
+The design phase translates these requirements into a structured technical blueprint. It covers system architecture, data flow, component interactions, and design models that collectively describe how the system operates internally and externally. Visual artifacts such as use case diagrams, sequence diagrams, and database schemas are used to clarify system behavior and interactions.
+This chapter ensures that the system is well-defined, scalable, maintainable, and aligned with real-world academic examination environments, providing a solid foundation for implementation.
+3.2 Development Methodology - Agile model
+The Smart Cheating Detection System is developed using an Agile, sprint-based methodology, managed through a structured digital workspace that separates planning, execution, and tracking into three interconnected components: Sprints, User Stories, and Tasks.
+This management model ensures traceability from high-level requirements down to executable work units, while maintaining flexibility throughout the development lifecycle.
+3.2.1 Agile Management Structure
+The Agile workflow is organized around three core entities:
+1. Sprints
+Sprints represent fixed development intervals, each with a defined timeline and delivery goal.
+Each sprint focuses on a coherent system capability (e.g., monitoring, detection, reporting).
+Sprints are managed on a timeline view, allowing clear visualization of:
+   * Sprint duration
+   * Overlaps and dependencies
+   * Current active sprint
+Only one sprint is marked as the current sprint at any given time, as shown in Figure 21.  
+Figure 21: Sprints timeline
+2. User Stories
+User stories define system requirements from the perspective of end users and stakeholders.
+They act as the bridge between system requirements and implementation, ensuring that all development work delivers functional value.
+Each user story follows the format:
+As a [user role], I want [goal] so that [benefit].
+User stories progress through the following states:
+   * Backlog: Approved but not scheduled
+   * Planning: Selected for an upcoming sprint
+   * In Progress: Actively being implemented
+   * Testing: Under validation
+   * Done: Completed and verified
+Each user story is explicitly linked to:
+   * One sprint
+   * Multiple tasks
+Figure 22 illustrates an example of a user story for t,,Ihe Smart Cheating Detection System, highlighting parent sprint and child tasks.
+ 
+ 
+
+Figure 22: User Story
+3. Tasks
+Tasks represent the smallest executable units of work.
+They are technical, actionable, and assigned to individuals.
+Tasks inherit context from their parent user story and are tracked independently to ensure granular progress visibility.
+Task grouping is performed by user story, as shown in Figure 23, enforcing requirement-driven execution rather than ad-hoc task creation.
+  
+
+Figure 23: Tasks list & Grouping
+
+
+3.3 Requirements:
+        3.3.1  Functional Requirements:
+        
+In systems engineering, functional requirements are directly concerned with the system services, where a function is described as a specification of behavior. In this subsection, we list the functions required in our system. We, also, provide a description for each function.
+
+
+
+
+
+
+
+
+#
+	Functional Requirement
+	Description
+	1
+	User Authentication
+	The system shall allow authorized users (admins and invigilators) to log in securely and restrict access based on user roles.
+	2
+	Student Registration
+	The system shall register students with personal and exam-related details and store them securely in the database.
+	3
+	Real-Time Video Monitoring
+[a]	
+The system shall capture and monitor live video streams of students during the exam in real time.
+	4
+	Face Detection and Tracking
+	The system shall detect and track student faces and identify face disappearance or multiple faces in one frame.
+	5
+	Eye and Head Movement Detection
+	The system shall analyze eye direction and head movements to detect abnormal or suspicious behavior.
+	6
+	Object Detection
+	The system shall detect unauthorized objects such as mobile phones, books, or notes using computer vision techniques.
+	7
+	Audio Monitoring
+	The system shall monitor audio input to detect suspicious sounds such as talking or whispering.
+	8
+	Cheating Alert System
+[b]	
+The system shall generate real-time alerts when suspicious behavior is detected and assign a risk score to each student.
+	9
+	Logging and Report Generation
+	The system shall log all suspicious activities and generate exam reports for instructors and administrators.
+	10
+	Data Storage and Review
+	The system shall securely store video recordings, images, and logs and allow review of past exam sessions.
+	
+
+
+
+
+
+
+________________
+
+        3.3.2  Non-Functional Requirements:
+        The system needs to operate efficiently and meet the requirements. Any failure of the components of the systems may lead to one or more of functions to stop or be misused. A non-functional requirement is a requirement that specifies criteria that can be used to judge the operation of a system.
+
+
+
+
+
+
+#
+	Non-Functional Requirement
+	Description
+	1
+	Performance
+	The system shall process video and audio data in real time with minimal detection delay.
+	2
+	Accuracy
+	The system shall provide high detection accuracy while minimizing false positives and false negatives.
+	3
+	Security
+	The system shall protect sensitive data through encryption and secure access control mechanisms.
+	4
+	Scalability
+	The system shall support an increasing number of students, cameras, and exam sessions.
+	5
+	Reliability
+	The system shall operate continuously during exams without unexpected failures.
+	6
+	Usability
+	The system shall provide a simple and intuitive interface for invigilators and administrators.
+	7
+	Maintainability
+	The system shall be easy to update, modify, and maintain through a modular design.
+	8
+	Compatibility
+	The system shall work on common operating systems and support standard camera and microphone devices.
+	9
+	Privacy and Ethics
+	The system shall ensure student privacy and comply with data protection policies.
+	10
+	Availability
+	The system shall remain available for the full duration of exam sessions with minimal downtime.
+	
+
+
+
+
+
+3.4  System Analysis 
+3.4.1 Use-Case Diagram   
+
+
+  
+
+
+
+
+
+3.4.2 Sequence Diagrams  
+
+
+  
+
+
+
+
+
+3.4.3 Activity Diagram   
+
+
+  
+
+
+
+
+
+3.4.4 State Diagram  
+
+
+  
+
+
+
+
+
+3.4.5 Class Diagram  
+
+
+  
+
+
+
+
+
+3.4.6 Context Diagram  
+
+
+  
+
+[a]No, the system is not real time
+[b]No real time
