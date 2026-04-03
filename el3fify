@@ -1,0 +1,144 @@
+هيكل المشروع
+thaqib-frontend
+│
+├── index.html
+├── css
+│   └── style.css
+├── js
+│   └── main.js
+├── pages
+│   ├── login.html
+│   └── dashboard.html
+└── assets
+    ├── images
+    └── logo.png
+
+
+
+كود صفحة الإدخال
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="UTF-8">
+<title>THAQIB</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+
+<div class="container">
+
+<div class="left">
+
+<h2>👋 مرحباً بك</h2>
+<p>قم بإضافة المعلومات حول الكلية</p>
+
+<input type="text" placeholder="اسم الكلية">
+
+<input type="text" placeholder="الادمن">
+
+<input type="file">
+
+<button>حفظ</button>
+
+</div>
+
+
+<div class="right">
+
+<h1>THAQIB</h1>
+
+<h2>مرحبا بك فى ثاقب</h2>
+
+<p>
+رؤية ذكية تدعم دقة القرار لضمان تكافؤ الفرص
+وحماية النزاهة الأكاديمية
+</p>
+
+</div>
+
+</div>
+
+</body>
+</html>
+
+
+
+body{
+font-family: Arial;
+margin:0;
+}
+
+.container{
+display:flex;
+height:100vh;
+}
+
+.left{
+width:50%;
+padding:80px;
+background:#f3f3f3;
+}
+
+.right{
+width:50%;
+background:#4b0082;
+color:white;
+display:flex;
+flex-direction:column;
+justify-content:center;
+align-items:center;
+}
+
+input{
+display:block;
+margin:15px 0;
+padding:12px;
+width:80%;
+}
+
+button{
+background:#4b0082;
+color:white;
+padding:12px;
+border:none;
+width:85%;
+cursor:pointer;
+}
+
+
+كود للداشبورد
+<div class="dashboard">
+
+<div class="sidebar">
+<h2>THAQIB</h2>
+
+<ul>
+<li>Dashboard</li>
+<li>Students</li>
+<li>Exams</li>
+<li>Reports</li>
+<li>Settings</li>
+</ul>
+
+</div>
+
+<div class="main">
+
+<h1>Dashboard</h1>
+
+<div class="cards">
+
+<div class="card">Students: 1200</div>
+
+<div class="card">Exams: 35</div>
+
+<div class="card">Cheating Alerts: 5</div>
+
+</div>
+
+</div>
+
+</div>
+
+
