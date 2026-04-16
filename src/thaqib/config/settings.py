@@ -38,15 +38,23 @@ class Settings(BaseSettings):
     detection_interval: float = 1.0  # Seconds between full detection runs
     yolo_model: str = "models/yolo11m.pt"
     detection_confidence: float = 0.15
+    tools_target_labels: list[str] = ["book"]  # Configurable tool labels (e.g. "book", "phone")
+    tools_model: str = "models/thaqib_best.pt"  # Custom model trained on exam scenarios
+    detection_imgsz: int = 640  # YOLO inference resolution (640 for speed, 1280 for accuracy)
 
     # Tracking
     tracking_max_distance: int = 100
     tracking_max_age: int = 30
+    neighbor_k: int = 6  # Number of nearest neighbors per student
 
     # Risk Detection
     risk_angle_tolerance: float = 15.0  # Degrees
     suspicious_duration_threshold: float = 2.0  # Seconds
     suspicious_match_ratio: float = 0.7
+
+    # Performance
+    face_mesh_workers: int = 4  # Max parallel face mesh threads
+    torch_num_threads: int | None = None  # PyTorch CPU threads (None = use default)
 
     # Data Storage
     data_dir: Path = Field(default=Path("./data"))

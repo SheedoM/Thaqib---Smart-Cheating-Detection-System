@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
+import cv2
 from boxmot.trackers.botsort.bot_sort import BoTSORT
 
 from thaqib.config import get_settings
@@ -36,6 +37,11 @@ class TrackedObject:
     def center(self) -> tuple[int, int]:
         x1, y1, x2, y2 = self.bbox
         return ((x1 + x2) // 2, (y1 + y2) // 2)
+
+    @property
+    def paper_center(self) -> tuple[int, int]:
+        """Bottom-center of bbox — estimated paper pickup location."""
+        return ((self.bbox[0] + self.bbox[2]) // 2, self.bbox[3])
 
     @property
     def width(self) -> int:
@@ -92,26 +98,10 @@ class ObjectTracker:
         
         self.reid_weights_path = getattr(settings, "reid_weights_path", "models/osnet_x0_25_msmt17.pt")
 
-        self._tracker = BoTSORT(
-            reid_weights=Path(self.reid_weights_path),
-            device="cuda",
-            half=True,
-            with_reid=False,
-            fuse_first_associate=True,
-            track_high_thresh=0.25,  
-            track_low_thresh=0.10,   
-            new_track_thresh=0.20,   
-            track_buffer=120,
-            match_thresh=0.9,
-            proximity_thresh=0.7,
-            appearance_thresh=0.25,
-        )
+        self._tracker = self._make_tracker()
 
         # Per-track smoothed bbox (EMA)
         self._smoothed_bboxes: dict[int, tuple[int, int, int, int]] = {}
-
-        # Last-known bbox for the detection stability filter
-        self._last_known_bbox: dict[int, tuple[int, int, int, int]] = {}
 
         # Track selection state
         self._selected_ids: set[int] = set()
@@ -120,16 +110,6 @@ class ObjectTracker:
         # ID locking (requires 10 consecutive embedding matches)
         self._locked_ids: set[int] = set()
         self._match_counts: dict[int, int] = {}
-
-    # ------------------------------------------------------------------
-    # Predicted bbox (for detection stability filter in pipeline)
-    # ------------------------------------------------------------------
-
-    def get_predicted_bbox(self, track_id: int) -> tuple[int, int, int, int] | None:
-        """
-        Return the last-known smoothed bbox for a temporarily missing track.
-        """
-        return self._last_known_bbox.get(track_id)
 
     # ------------------------------------------------------------------
     # ID locking
@@ -174,7 +154,19 @@ class ObjectTracker:
                 for d in detection_result.detections
             ], dtype=float)
 
-        tracked = self._tracker.update(dets, frame)
+        # Downscale frame for BoT-SORT's internal CMC (ECC algorithm).
+        # CMC is O(n²) with pixel count — 4K (8.3M pixels) takes ~2.5s,
+        # 1080p (2M pixels) takes ~0.15s. Bbox coords stay in original resolution
+        # since BoT-SORT uses the `dets` array, not the frame, for bbox tracking.
+        h, w = frame.shape[:2]
+        max_h = 1080
+        if h > max_h:
+            scale = max_h / h
+            small_frame = cv2.resize(frame, (int(w * scale), max_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            small_frame = frame
+
+        tracked = self._tracker.update(dets, small_frame)
 
         tracks: list[TrackedObject] = []
 
@@ -186,22 +178,21 @@ class ObjectTracker:
 
                 # Prevent bbox collapse (width or height < 10)
                 if raw_bbox[2] - raw_bbox[0] < 10 or raw_bbox[3] - raw_bbox[1] < 10:
-                    if track_id in self._last_known_bbox:
-                        raw_bbox = self._last_known_bbox[track_id]
+                    if track_id in self._smoothed_bboxes:
+                        raw_bbox = self._smoothed_bboxes[track_id]
 
-                # EMA bbox smoothing (0.7 × prev + 0.3 × current)
+                # EMA bbox smoothing (0.2 × prev + 0.8 × current) - favors current frame
                 if track_id in self._smoothed_bboxes:
                     pb = self._smoothed_bboxes[track_id]
-                    sx1 = int(0.7 * pb[0] + 0.3 * raw_bbox[0])
-                    sy1 = int(0.7 * pb[1] + 0.3 * raw_bbox[1])
-                    sx2 = int(0.7 * pb[2] + 0.3 * raw_bbox[2])
-                    sy2 = int(0.7 * pb[3] + 0.3 * raw_bbox[3])
+                    sx1 = int(0.2 * pb[0] + 0.8 * raw_bbox[0])
+                    sy1 = int(0.2 * pb[1] + 0.8 * raw_bbox[1])
+                    sx2 = int(0.2 * pb[2] + 0.8 * raw_bbox[2])
+                    sy2 = int(0.2 * pb[3] + 0.8 * raw_bbox[3])
                     smoothed = (sx1, sy1, sx2, sy2)
                 else:
                     smoothed = raw_bbox
 
                 self._smoothed_bboxes[track_id] = smoothed
-                self._last_known_bbox[track_id] = smoothed
 
                 tracks.append(TrackedObject(
                     track_id=track_id,
@@ -243,20 +234,26 @@ class ObjectTracker:
     def get_selected_ids(self) -> set[int]:
         return self._selected_ids.copy()
 
-    def reset(self) -> None:
-        self._tracker = BoTSORT(
+    def _make_tracker(self) -> BoTSORT:
+        """Factory method — single source of truth for BoT-SORT config."""
+        return BoTSORT(
             reid_weights=Path(self.reid_weights_path),
-            device="cpu",
-            half=False,
-            with_reid=True,
+            device="cuda",
+            half=True,
+            with_reid=False,
+            fuse_first_associate=True,
             track_high_thresh=0.25,
-            track_low_thresh=0.05,
-            new_track_thresh=0.4,
+            track_low_thresh=0.10,
+            new_track_thresh=0.20,
             track_buffer=120,
-            match_thresh=0.8
+            match_thresh=0.9,
+            proximity_thresh=0.7,
+            appearance_thresh=0.25,
         )
+
+    def reset(self) -> None:
+        self._tracker = self._make_tracker()
         self._smoothed_bboxes.clear()
-        self._last_known_bbox.clear()
         self._selected_ids.clear()
         self._track_labels.clear()
         self._locked_ids.clear()

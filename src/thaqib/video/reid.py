@@ -48,6 +48,15 @@ class FaceReIdentifier:
         """
         self._threshold = match_threshold
         self._embeddings: dict[int, np.ndarray] = {}  # track_id -> normalized embedding vector
+        self._logged_matches: set[int] = set()  # Avoid flooding logs with repeated matches
+
+    def remove_embeddings(self, track_ids: list[int]) -> None:
+        """
+        Remove embeddings for purged track IDs to prevent memory leaks.
+        """
+        for tid in track_ids:
+            self._embeddings.pop(tid, None)
+            self._logged_matches.discard(tid)
 
     def compute_embedding(self, face_mesh: FaceMeshResult) -> np.ndarray | None:
         """
@@ -131,9 +140,12 @@ class FaceReIdentifier:
                 best_id = track_id
 
         if best_score >= self._threshold and best_id is not None:
-            logger.info(
-                f"ReID match found! Restoring track ID {best_id} (Score: {best_score:.3f})"
-            )
+            # Only log first match per ID to avoid flooding
+            if best_id not in self._logged_matches:
+                logger.info(
+                    f"ReID match found! Restoring track ID {best_id} (Score: {best_score:.3f})"
+                )
+                self._logged_matches.add(best_id)
             return best_id, best_score
 
         return None

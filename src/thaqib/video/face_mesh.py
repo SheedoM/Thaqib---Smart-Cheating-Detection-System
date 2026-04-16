@@ -120,23 +120,41 @@ class FaceMeshExtractor:
         """
         x1, y1, x2, y2 = bbox
 
+        # Crop only the HEAD region (upper 40% of person bbox).
+        # MediaPipe needs the face, not the full body — this reduces crop
+        # area by ~60%, improving both speed and accuracy.
+        body_height = y2 - y1
+        y2 = y1 + int(body_height * 0.40)
+
+        # Calculate dynamic 15% padding around the head crop
+        width = x2 - x1
+        height = y2 - y1
+        pad_w = int(width * 0.15)
+        pad_h = int(height * 0.15)
+
+        # Expand coordinates
+        x1 -= pad_w
+        y1 -= pad_h
+        x2 += pad_w
+        y2 += pad_h
+
         # Clamp to frame bounds
         fh, fw = frame.shape[:2]
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(fw, x2), min(fh, y2)
 
         if x2 <= x1 or y2 <= y1:
-            return self._get_cached(track_id)
+            return self._get_cached(track_id, reason="small_crop")
 
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
-            return self._get_cached(track_id)
+            return self._get_cached(track_id, reason="small_crop")
 
         crop_h, crop_w = crop.shape[:2]
 
         if crop_w < 60 or crop_h < 60:
             # Face too small to extrapolate accurate gaze, use cache
-            return self._get_cached(track_id)
+            return self._get_cached(track_id, reason="small_crop")
 
         # BGR → RGB for MediaPipe
         rgb_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
@@ -146,10 +164,10 @@ class FaceMeshExtractor:
             detection = self._landmarker.detect(mp_image)
         except Exception as exc:
             logger.debug(f"FaceLandmarker inference error: {exc}")
-            return self._get_cached(track_id)
+            return None  # Detection failure — don't return stale cache
 
         if not detection.face_landmarks:
-            return self._get_cached(track_id)
+            return None  # Detection failure — don't mask real gaze changes
 
         raw = detection.face_landmarks[0]  # First (and only) face
 
@@ -184,11 +202,14 @@ class FaceMeshExtractor:
 
         return result
 
-    def _get_cached(self, track_id: int | None) -> FaceMeshResult | None:
-        """Helper to get a cached mesh if valid (under 2 seconds old)."""
+    def _get_cached(self, track_id: int | None, reason: str = "unknown") -> FaceMeshResult | None:
+        """Return cached mesh only for small_crop scenarios, not detection failures."""
         if track_id is not None and track_id in self._mesh_cache:
             cache_time, cached_mesh = self._mesh_cache[track_id]
-            if time.time() - cache_time <= 0.3:
+            # Only use cache for small crops — detection failures should return None
+            # to avoid masking real gaze changes (false negatives on cheating)
+            max_age = 0.3 if reason == "small_crop" else 0.0
+            if time.time() - cache_time <= max_age:
                 return cached_mesh
         return None
 

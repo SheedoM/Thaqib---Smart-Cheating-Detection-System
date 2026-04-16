@@ -6,6 +6,7 @@ Provides a unified interface for capturing frames from various video sources.
 
 import logging
 import time
+import platform
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -96,7 +97,9 @@ class CameraStream:
 
         # Create video capture
         if isinstance(self.source, int):
-            self._cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW)  # DirectShow on Windows
+            # DirectShow is Windows-only; use generic backend on other platforms
+            backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
+            self._cap = cv2.VideoCapture(self.source, backend)
         else:
             self._cap = cv2.VideoCapture(self.source)
 
@@ -144,7 +147,8 @@ class CameraStream:
                 
                 # Attempt to reconnect
                 if isinstance(self.source, int):
-                    self._cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW)
+                    backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
+                    self._cap = cv2.VideoCapture(self.source, backend)
                 else:
                     self._cap = cv2.VideoCapture(self.source)
                     

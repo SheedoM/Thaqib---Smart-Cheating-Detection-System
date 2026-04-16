@@ -2,11 +2,14 @@
 Detector for cheating tools like papers, phones, etc.
 """
 
+import logging
 from dataclasses import dataclass
 import numpy as np
 from ultralytics import YOLO
 
 from thaqib.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -48,21 +51,26 @@ class ToolsDetector:
         """Initialize the detector."""
         self._settings = get_settings()
         self._model: YOLO | None = None
-        # Target classes specific to the user requirement
-        self.target_labels = ['book']
+        # Target classes from settings (configurable via .env)
+        self.target_labels = list(self._settings.tools_target_labels)
 
     def load(self) -> None:
         """Load the YOLO model for tools."""
         if self._model is not None:
             return
             
-        # Using the base model
-        self._model = YOLO("models/yolo11m.pt")
+        model_path = self._settings.tools_model
+        logger.info(f"Loading tools model: {model_path}")
+        self._model = YOLO(model_path)
         
         # Determine device
         import torch
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self._model.to(device)
+        
+        # Log available classes
+        logger.info(f"Tools model classes: {self._model.names}")
+        logger.info(f"Target labels: {self.target_labels}")
         
         # Warmup
         dummy_img = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -101,8 +109,9 @@ class ToolsDetector:
             result = results[0]
             boxes = result.boxes.cpu()
 
-            if frame_index % 30 == 0:
-                print(f"DEBUG - Model dictionary: {result.names}")
+            if frame_index % 300 == 0:
+                detected_labels = [result.names[int(b.cls[0])] for b in boxes]
+                logger.debug(f"Tools detected: {detected_labels}")
             
             for i in range(len(boxes)):
                 box = boxes[i]
