@@ -96,6 +96,11 @@ def main():
                     visualizer.toggle_neighbors()
                     logger.info(f"Neighbor graph: {'ON' if visualizer.show_neighbors else 'OFF'}")
 
+                elif key == ord("p"):
+                    # Toggle control panel
+                    visualizer.toggle_control_panel()
+                    logger.info(f"Control panel: {'ON' if visualizer.show_control_panel else 'OFF'}")
+
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
 

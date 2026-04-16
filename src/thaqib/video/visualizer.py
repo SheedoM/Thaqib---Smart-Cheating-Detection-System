@@ -32,10 +32,15 @@ class VideoVisualizer:
         self.show_neighbors: bool = False
         self.show_phone: bool = True
         self.show_paper: bool = True
+        self.show_control_panel: bool = True
 
     def toggle_neighbors(self) -> None:
         """Toggle neighbor graph rendering on/off."""
         self.show_neighbors = not self.show_neighbors
+
+    def toggle_control_panel(self) -> None:
+        """Toggle control panel visibility on/off."""
+        self.show_control_panel = not self.show_control_panel
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -69,6 +74,10 @@ class VideoVisualizer:
             self._draw_legend_panel(annotated, pipeline_frame)
 
         self._draw_hud(annotated, pipeline_frame)
+
+        if self.show_control_panel:
+            self._draw_control_panel(annotated, pipeline_frame)
+
         self._draw_instructions(annotated)
 
         return annotated
@@ -188,8 +197,7 @@ class VideoVisualizer:
 
     def _draw_gaze(self, frame: np.ndarray, state) -> None:
         """
-        Draw a combined 3D gaze arrow using MediaPipe's rotation matrix
-        and 2D iris landmarks, with strictly aligned coordinate systems.
+        Draw a combined 3D gaze arrow using the shared gaze computation module.
         """
         if state.face_mesh is None:
             return
@@ -198,53 +206,15 @@ class VideoVisualizer:
         if len(lm2d) < 474:
             return
 
-        def pt2d(idx):
-            return np.array(lm2d[idx], dtype=float)
-
-        head_matrix = state.face_mesh.head_matrix
-        if head_matrix is None:
+        # Use shared gaze computation (single source of truth with pipeline)
+        from thaqib.video.gaze import compute_gaze_direction
+        gaze_dir = compute_gaze_direction(state.face_mesh)
+        if gaze_dir is None:
             return
 
-        # 1. Base 3D Head Direction (MediaPipe 3D Space: +X is Left, -X is Right)
-        R = head_matrix[:3, :3]
-        head_3d = R @ np.array([0.0, 0.0, -1.0])
+        dir_x, dir_y = gaze_dir[0], gaze_dir[1]
 
-        # 2. Eye Deviation (Screen Space: +X is Right, -X is Left)
-        l_center = (pt2d(33) + pt2d(133)) / 2.0
-        l_pupil = pt2d(468)
-        l_dev = l_pupil - l_center
-        
-        r_center = (pt2d(263) + pt2d(362)) / 2.0
-        r_pupil = pt2d(473)
-        r_dev = r_pupil - r_center
-        
-        avg_eye_dev = (l_dev + r_dev) / 2.0
-        
-        # Normalize by eye width
-        eye_width = np.linalg.norm(pt2d(33) - pt2d(133))
-        if eye_width > 1e-6:
-            avg_eye_dev /= eye_width
-
-        # 3. Combine in 3D Space (Coordinate Alignment)
-        # CRITICAL FIX: Invert Eye X-axis to match MediaPipe's 3D Space
-        eye_x_3d = -avg_eye_dev[0] 
-        eye_y_3d = avg_eye_dev[1]
-        
-        EYE_STRENGTH = 3.0 # Increase/Decrease to make eyes more/less sensitive
-        eye_3d = np.array([eye_x_3d, eye_y_3d, 0.0]) * EYE_STRENGTH
-        
-        combined_3d = head_3d + eye_3d
-
-        # Normalize to maintain the 3D unit vector property (Depth illusion)
-        norm = np.linalg.norm(combined_3d)
-        if norm > 1e-6:
-            combined_3d /= norm
-
-        # 4. Project to 2D Screen Space (Convert +X=Left back to +X=Right for drawing)
-        dir_x = -combined_3d[0]
-        dir_y = combined_3d[1]
-
-        # 5. Draw (Improved non-linear scale)
+        # Draw (Improved non-linear scale)
         bbox_height = state.bbox[3] - state.bbox[1]
         
         # Enlarge arrow for far students (small bbox), scale down for close ones
@@ -338,7 +308,7 @@ class VideoVisualizer:
 
     def _draw_instructions(self, frame: np.ndarray) -> None:
         """Draw bottom instruction bar."""
-        instructions = "s: select all  |  c: clear  |  t: toggle neighbors  |  q: quit"
+        instructions = "s: select all  |  c: clear  |  t: neighbors  |  p: panel  |  q: quit"
         cv2.putText(
             frame,
             instructions,
@@ -350,6 +320,65 @@ class VideoVisualizer:
             cv2.LINE_AA,
         )
 
+    def _draw_control_panel(self, frame: np.ndarray, pipeline_frame: PipelineFrame) -> None:
+        """Draw a control panel on the bottom-left showing system status."""
+        h, w = frame.shape[:2]
+        panel_h = 130
+        panel_w = 320
+        panel_x = 10
+        panel_y = h - panel_h - 40  # Above the instruction bar
+
+        # Semi-transparent background (ROI-only copy to avoid full-frame duplication)
+        roi = frame[panel_y:panel_y + panel_h, panel_x:panel_x + panel_w]
+        overlay_roi = roi.copy()
+        cv2.rectangle(overlay_roi, (0, 0), (panel_w, panel_h), (15, 15, 15), -1)
+        cv2.addWeighted(overlay_roi, 0.75, roi, 0.25, 0, roi)
+
+        # Border
+        cv2.rectangle(frame, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (80, 80, 80), 1)
+
+        # Title
+        cv2.putText(frame, "THAQIB CONTROL PANEL", (panel_x + 10, panel_y + 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2, cv2.LINE_AA)
+        cv2.line(frame, (panel_x + 10, panel_y + 30), (panel_x + panel_w - 10, panel_y + 30), (60, 60, 60), 1)
+
+        # Status rows
+        y = panel_y + 50
+        line_h = 22
+
+        # Tracked count
+        tracked = pipeline_frame.tracked_count
+        cv2.circle(frame, (panel_x + 20, y - 5), 5, (0, 255, 0) if tracked > 0 else (80, 80, 80), -1)
+        cv2.putText(frame, f"Tracked: {tracked}", (panel_x + 35, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+
+        # Selected count
+        y += line_h
+        selected = pipeline_frame.selected_count
+        sel_color = (0, 255, 255) if selected > 0 else (80, 80, 80)
+        cv2.circle(frame, (panel_x + 20, y - 5), 5, sel_color, -1)
+        cv2.putText(frame, f"Monitoring: {selected}", (panel_x + 35, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+
+        # Cheating alerts
+        y += line_h
+        cheating_count = sum(1 for s in pipeline_frame.student_states if s.is_cheating)
+        if cheating_count > 0:
+            alert_color = (0, 0, 255)
+            cv2.circle(frame, (panel_x + 20, y - 5), 5, alert_color, -1)
+            cv2.putText(frame, f"ALERTS: {cheating_count} cheating!", (panel_x + 35, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, alert_color, 1, cv2.LINE_AA)
+        else:
+            cv2.circle(frame, (panel_x + 20, y - 5), 5, (0, 180, 0), -1)
+            cv2.putText(frame, "No alerts", (panel_x + 35, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 180, 0), 1, cv2.LINE_AA)
+
+        # Neighbors status
+        y += line_h
+        nb_color = (0, 255, 0) if self.show_neighbors else (100, 100, 100)
+        cv2.putText(frame, f"Neighbors: {'ON' if self.show_neighbors else 'OFF'}", (panel_x + 35, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, nb_color, 1, cv2.LINE_AA)
+
     def _draw_legend_panel(self, frame: np.ndarray, pipeline_frame: PipelineFrame) -> None:
         """Draw a transparent color legend on the right side of the screen."""
         if not pipeline_frame.tracking_result.tracks:
@@ -359,10 +388,11 @@ class VideoVisualizer:
         panel_w = 180
         panel_x = w - panel_w
         
-        # Draw transparent dark background
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (panel_x, 0), (w, h), (20, 20, 20), -1)
-        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+        # Draw transparent dark background (ROI-only copy)
+        roi = frame[0:h, panel_x:w]
+        overlay_roi = roi.copy()
+        cv2.rectangle(overlay_roi, (0, 0), (panel_w, h), (20, 20, 20), -1)
+        cv2.addWeighted(overlay_roi, 0.6, roi, 0.4, 0, roi)
 
         # Draw title
         cv2.putText(frame, "STUDENTS", (panel_x + 15, 30),
@@ -386,3 +416,4 @@ class VideoVisualizer:
             cv2.putText(frame, text, (panel_x + 55, y_pos),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, txt_color, 1, cv2.LINE_AA)
             y_pos += 30
+

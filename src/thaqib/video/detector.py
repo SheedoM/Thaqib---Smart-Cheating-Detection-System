@@ -97,6 +97,7 @@ class HumanDetector:
 
         self.model_name = model_name or settings.yolo_model
         self.confidence_threshold = confidence_threshold or settings.detection_confidence
+        self.imgsz = getattr(settings, 'detection_imgsz', 640)
         self.device = device
 
         self._model: YOLO | None = None
@@ -135,14 +136,14 @@ class HumanDetector:
         if not self._is_loaded:
             self.load()
 
-        # Run inference using native high-resolution image
+        # Run inference — resolution is configurable via DETECTION_IMGSZ env var
         results = self._model(
             frame,
             conf=self.confidence_threshold,
             classes=[self.PERSON_CLASS_ID],  # Only detect persons
             device="cuda",
             verbose=False,
-            imgsz=1280  # Force high-resolution inference
+            imgsz=self.imgsz
         )
 
         # Parse results
