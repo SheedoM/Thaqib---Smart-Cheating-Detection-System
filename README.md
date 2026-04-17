@@ -1,120 +1,70 @@
-# Thaqib - Smart Exams Monitoring System
+# Getting Started with Create React App
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
 
-**Thaqib** (Arabic: ثاقب, meaning "piercing" or "sharp-sighted") is an AI-powered real-time exam monitoring system that assists invigilators in detecting suspicious behaviors during examinations.
+## Available Scripts
 
-## 🎯 Features
+In the project directory, you can run:
 
-- **Real-time Video Monitoring**: Capture and analyze video streams from IP cameras
-- **Human Detection & Tracking**: Identify and track students throughout the exam
-- **Head Pose Estimation**: Detect suspicious head movements and orientations
-- **Neighbor Modeling**: Identify spatial relationships and risk angles between students
-- **Audio Monitoring**: Detect suspicious audio patterns (whispers, talking)
-- **Web Dashboard**: Real-time alerts and monitoring interface for invigilators
+### `npm start`
 
-## 🏗️ Architecture
+Runs the app in the development mode.\
+Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   IP Cameras    │────▶│  Video Pipeline │────▶│                 │
-└─────────────────┘     └─────────────────┘     │                 │
-                                                │  Detection &    │
-┌─────────────────┐     ┌─────────────────┐     │  Alert Engine   │
-│   Microphones   │────▶│  Audio Pipeline │────▶│                 │
-└─────────────────┘     └─────────────────┘     └────────┬────────┘
-                                                         │
-                                                         ▼
-                                                ┌─────────────────┐
-                                                │  Web Dashboard  │
-                                                │  (Invigilator)  │
-                                                └─────────────────┘
-```
+The page will reload when you make changes.\
+You may also see any lint errors in the console.
 
-## 🚀 Quick Start
+### `npm test`
 
-### Prerequisites
+Launches the test runner in the interactive watch mode.\
+See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
 
-- Python 3.10 or higher
-- Webcam or IP camera (for testing)
-- GPU recommended for production (NVIDIA with CUDA)
+### `npm run build`
 
-### Installation
+Builds the app for production to the `build` folder.\
+It correctly bundles React in production mode and optimizes the build for the best performance.
 
-```bash
-# Clone the repository
-git clone https://github.com/your-org/thaqib.git
-cd thaqib
+The build is minified and the filenames include the hashes.\
+Your app is ready to be deployed!
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
 
-# Install dependencies
-pip install -e .
+### `npm run eject`
 
-# For development
-pip install -e ".[dev]"
+**Note: this is a one-way operation. Once you `eject`, you can't go back!**
 
-# For GPU support
-pip install -e ".[gpu]"
-```
+If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
 
-### Running the Demo
+Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
 
-```bash
-# Test video detection with webcam
-python -m thaqib.video.demo --source webcam
+You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
 
-# Test with video file
-python -m thaqib.video.demo --source path/to/video.mp4
-```
+## Learn More
 
-## 📁 Project Structure
+You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
 
-```
-thaqib/
-├── src/thaqib/           # Main source code
-│   ├── video/            # Video detection pipeline
-│   ├── audio/            # Audio detection pipeline
-│   ├── detection/        # Behavioral detection logic
-│   ├── server/           # FastAPI backend
-│   └── config/           # Configuration management
-├── dashboard/            # React web dashboard
-├── tests/                # Test suite
-├── scripts/              # Utility scripts
-└── docs/                 # Documentation
-```
+To learn React, check out the [React documentation](https://reactjs.org/).
 
-## 🔧 Configuration
+### Code Splitting
 
-Copy `.env.example` to `.env` and configure:
+This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
 
-```env
-# Camera settings
-CAMERA_SOURCE=0                    # Webcam index or RTSP URL
-DETECTION_INTERVAL=1.0             # Detection frequency (seconds)
+### Analyzing the Bundle Size
 
-# Detection settings
-NEIGHBOR_DISTANCE_THRESHOLD=200    # Pixels
-RISK_ANGLE_TOLERANCE=15            # Degrees
-SUSPICIOUS_DURATION_THRESHOLD=2.0  # Seconds
-```
+This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
 
-## 📖 Documentation
+### Making a Progressive Web App
 
-- [Technical Documentation](docs/technical.md)
-- [API Reference](docs/api.md)
-- [Deployment Guide](docs/deployment.md)
+This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
 
-## 🤝 Contributing
+### Advanced Configuration
 
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
 
-## 📄 License
+### Deployment
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
 
-## 👥 Team
-- Shady Mohamed Faragallah
+### `npm run build` fails to minify
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
