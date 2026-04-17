@@ -115,37 +115,43 @@ class NeighborComputer:
             diff = paper_centers_arr[:, np.newaxis, :] - student_centers[np.newaxis, :, :]
             dist_matrix = np.linalg.norm(diff, axis=2)
 
-            # Greedy exclusive assignment: sort all (paper, student) pairs by distance,
-            # then assign each paper to the closest student that doesn't already have one.
-            n_papers = len(all_papers)
+            # Fix 3: Vectorized greedy assignment using argmin — O(min(M,N))
+            # iterations instead of O(MN log MN) sort.
+            # Compute per-student bbox width for threshold
+            bbox_widths = np.array([s.bbox[2] - s.bbox[0] for s in all_states], dtype=float)
+            thresholds = np.maximum(300, bbox_widths * 2)  # shape: (N,)
+
+            # Mask distances exceeding per-student thresholds
+            dist_masked = dist_matrix.copy()
+            dist_masked[dist_masked > thresholds[np.newaxis, :]] = np.inf
+
             n_students = len(all_states)
-            
-            # Build flat list of (distance, paper_idx, student_idx)
-            pairs = []
-            for p_idx in range(n_papers):
-                for s_idx in range(n_students):
-                    # Only consider assignments within a reasonable threshold
-                    bbox_width = all_states[s_idx].bbox[2] - all_states[s_idx].bbox[0]
-                    threshold = max(300, bbox_width * 2)
-                    if dist_matrix[p_idx, s_idx] < threshold:
-                        pairs.append((dist_matrix[p_idx, s_idx], p_idx, s_idx))
-            
-            # Sort by distance (closest first) and assign greedily
-            pairs.sort(key=lambda x: x[0])
-            assigned_papers: set[int] = set()
-            assigned_students: set[int] = set()
-            
-            for _, p_idx, s_idx in pairs:
-                if p_idx in assigned_papers or s_idx in assigned_students:
-                    continue
+            for _ in range(min(len(all_papers), n_students)):
+                if np.all(np.isinf(dist_masked)):
+                    break
+                flat_idx = int(np.argmin(dist_masked))
+                p_idx, s_idx = divmod(flat_idx, n_students)
+                if dist_masked[p_idx, s_idx] == np.inf:
+                    break
                 all_states[s_idx].detected_paper = all_papers[p_idx]
                 all_states[s_idx].is_heuristic_paper = False
-                assigned_papers.add(p_idx)
-                assigned_students.add(s_idx)
+                dist_masked[p_idx, :] = np.inf  # row: paper assigned
+                dist_masked[:, s_idx] = np.inf  # col: student assigned
 
         # Step C: Fallback — if no YOLO paper detected, use paper_center estimate
+        # ONLY for seated students. Standing/walking students (tall narrow bbox)
+        # don't have a paper on the desk in front of them — assigning one would
+        # create phantom paper targets and cause false positives.
         for state in all_states:
             if state.detected_paper is None:
+                bbox_w = state.bbox[2] - state.bbox[0]
+                bbox_h = state.bbox[3] - state.bbox[1]
+                aspect_ratio = bbox_h / max(bbox_w, 1)
+                
+                if aspect_ratio > 2.5:
+                    # Skip: likely standing/walking — no paper to assign
+                    continue
+                    
                 state.detected_paper = state.paper_center
                 state.is_heuristic_paper = True
 

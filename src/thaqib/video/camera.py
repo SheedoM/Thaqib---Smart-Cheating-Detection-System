@@ -77,6 +77,8 @@ class CameraStream:
         self._cap: cv2.VideoCapture | None = None
         self._frame_index = 0
         self._is_opened = False
+        self._original_width: int = 0
+        self._original_height: int = 0
         
         # Threaded Queue
         self._frame_queue = deque(maxlen=5)
@@ -112,10 +114,12 @@ class CameraStream:
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self._cap.set(cv2.CAP_PROP_FPS, self.target_fps)
 
-        # Get actual properties
+        # Get actual properties and cache for public access
         actual_width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         actual_fps = self._cap.get(cv2.CAP_PROP_FPS)
+        self._original_width = actual_width
+        self._original_height = actual_height
 
         logger.info(
             f"Camera opened: {actual_width}x{actual_height} @ {actual_fps:.1f} FPS"
@@ -168,6 +172,12 @@ class CameraStream:
             if not ret:
                 failed_frames += 1
                 if failed_frames > 15:
+                    # For video files, EOF is expected — stop cleanly
+                    # instead of reconnecting (which would replay the file).
+                    if isinstance(self.source, str) and not self.source.startswith("rtsp"):
+                        logger.info("Video file ended (EOF). Stopping reader thread.")
+                        self._is_opened = False
+                        break
                     logger.warning(f"Failed to read {failed_frames} consecutive frames. Reconnecting...")
                     if self._cap is not None:
                         self._cap.release()
@@ -256,6 +266,16 @@ class CameraStream:
     def is_opened(self) -> bool:
         """Check if camera is opened."""
         return self._is_opened
+
+    @property
+    def original_width(self) -> int:
+        """Original frame width from the camera/video source."""
+        return self._original_width
+
+    @property
+    def original_height(self) -> int:
+        """Original frame height from the camera/video source."""
+        return self._original_height
 
     @property
     def frame_count(self) -> int:

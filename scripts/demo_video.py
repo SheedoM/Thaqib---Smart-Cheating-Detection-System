@@ -109,4 +109,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # Required for multiprocessing on Windows (Fix 1: process pool)
+    from multiprocessing import freeze_support
+    freeze_support()
     main()

@@ -11,6 +11,7 @@ import functools
 
 from thaqib.video.pipeline import PipelineFrame
 from thaqib.video.registry import GlobalStudentRegistry
+from thaqib.video.gaze import compute_gaze_direction
 
 
 @functools.lru_cache(maxsize=1024)
@@ -60,17 +61,30 @@ class VideoVisualizer:
 
         Returns:
             A new annotated frame (the original is not modified).
+            At >1080p input, the returned frame is downscaled to 1080p
+            (Fix 5: saves 2–6ms at 4K by reducing the 23.7MB copy to 5.9MB).
         """
-        annotated = pipeline_frame.frame.copy()
+        # Fix 5: downscale to max 1080p before copying to avoid 23.7MB copy at 4K
+        h, w = pipeline_frame.frame.shape[:2]
+        if h > 1080:
+            display_scale = 1080 / h
+            new_w = int(w * display_scale)
+            annotated = cv2.resize(
+                pipeline_frame.frame, (new_w, 1080),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        else:
+            display_scale = 1.0
+            annotated = pipeline_frame.frame.copy()
 
-        self._draw_unselected_tracks(annotated, pipeline_frame)
-        self._draw_selected_students(annotated, pipeline_frame)
+        self._draw_unselected_tracks(annotated, pipeline_frame, display_scale)
+        self._draw_selected_students(annotated, pipeline_frame, display_scale)
 
-        self._draw_cheating_tools(annotated, pipeline_frame)
-        self._draw_surrounding_papers(annotated, pipeline_frame)
+        self._draw_cheating_tools(annotated, pipeline_frame, display_scale)
+        self._draw_surrounding_papers(annotated, pipeline_frame, display_scale)
 
         if self.show_neighbors and registry is not None:
-            self.draw_neighbors(annotated, registry)
+            self.draw_neighbors(annotated, registry, display_scale)
             self._draw_legend_panel(annotated, pipeline_frame)
 
         self._draw_hud(annotated, pipeline_frame)
@@ -86,12 +100,14 @@ class VideoVisualizer:
     # Feature 1 — bounding boxes & IDs
     # ------------------------------------------------------------------
 
-    def _draw_unselected_tracks(self, frame: np.ndarray, pipeline_frame: PipelineFrame) -> None:
+    def _draw_unselected_tracks(self, frame: np.ndarray, pipeline_frame: PipelineFrame, display_scale: float = 1.0) -> None:
         """Draw all unselected tracks in gray."""
+        sc = display_scale
         for track in pipeline_frame.tracking_result.tracks:
             if track.is_selected:
                 continue
             x1, y1, x2, y2 = track.bbox
+            x1, y1, x2, y2 = int(x1*sc), int(y1*sc), int(x2*sc), int(y2*sc)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (128, 128, 128), 2)
             cv2.putText(
                 frame,
@@ -104,10 +120,12 @@ class VideoVisualizer:
                 cv2.LINE_AA,
             )
 
-    def _draw_selected_students(self, frame: np.ndarray, pipeline_frame: PipelineFrame) -> None:
+    def _draw_selected_students(self, frame: np.ndarray, pipeline_frame: PipelineFrame, display_scale: float = 1.0) -> None:
         """Draw selected students with unique per-ID colors."""
+        sc = display_scale
         for state in pipeline_frame.student_states:
             x1, y1, x2, y2 = state.bbox
+            x1, y1, x2, y2 = int(x1*sc), int(y1*sc), int(x2*sc), int(y2*sc)
             
             if getattr(state, "is_cheating", False):
                 color = (0, 0, 255)  # RED
@@ -129,30 +147,33 @@ class VideoVisualizer:
             )
 
             # Center dot
-            cv2.circle(frame, state.center, 4, color, -1, cv2.LINE_AA)
+            cx, cy = int(state.center[0]*sc), int(state.center[1]*sc)
+            cv2.circle(frame, (cx, cy), 4, color, -1, cv2.LINE_AA)
 
             # Face mesh overlay
-            self._draw_face_mesh(frame, state)
+            self._draw_face_mesh(frame, state, sc)
 
             # Iris center + gaze arrow
-            self._draw_gaze(frame, state)
+            self._draw_gaze(frame, state, sc)
 
     # ------------------------------------------------------------------
     # Feature 2 — Cheating Tools & Spatial Papers
     # ------------------------------------------------------------------
 
-    def _draw_cheating_tools(self, frame: np.ndarray, pipeline_frame: PipelineFrame) -> None:
+    def _draw_cheating_tools(self, frame: np.ndarray, pipeline_frame: PipelineFrame, display_scale: float = 1.0) -> None:
         """Draw bounding boxes for detected tools (books, phones)."""
         if pipeline_frame.tools_result is None:
             return
 
+        sc = display_scale
         for tool in pipeline_frame.tools_result.tools:
             x1, y1, x2, y2 = tool.bbox
+            x1, y1, x2, y2 = int(x1*sc), int(y1*sc), int(x2*sc), int(y2*sc)
             
             # Format label with confidence
             label = f"{tool.label} {tool.confidence:.2f}"
             
-            if tool.label in ['phone', 'Using_phone'] and self.show_phone:
+            if tool.label in ['phone', 'Using_phone', 'cell phone'] and self.show_phone:
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)  # RED for phone
                 cv2.putText(
                     frame, label, (x1, y1 - 8),
@@ -165,37 +186,40 @@ class VideoVisualizer:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2, cv2.LINE_AA
                 )
 
-    def _draw_surrounding_papers(self, frame: np.ndarray, pipeline_frame: PipelineFrame) -> None:
+    def _draw_surrounding_papers(self, frame: np.ndarray, pipeline_frame: PipelineFrame, display_scale: float = 1.0) -> None:
         """Draw cyan lines connecting a student to their k-nearest surrounding papers."""
         if not self.show_paper:
             return
 
+        sc = display_scale
         for state in pipeline_frame.student_states:
+            cx, cy = int(state.center[0]*sc), int(state.center[1]*sc)
             for paper_coord in state.surrounding_papers:
+                px, py = int(paper_coord[0]*sc), int(paper_coord[1]*sc)
                 # Draw a thin Cyan line
                 cv2.line(
                     frame,
-                    state.center,
-                    paper_coord,
+                    (cx, cy),
+                    (px, py),
                     (255, 255, 0),  # Cyan
                     1,
                     cv2.LINE_AA,
                 )
                 # Draw a small circle at the paper coordinate to mark it
-                cv2.circle(frame, paper_coord, 3, (255, 255, 0), -1, cv2.LINE_AA)
+                cv2.circle(frame, (px, py), 3, (255, 255, 0), -1, cv2.LINE_AA)
 
     # ------------------------------------------------------------------
     # Feature 3a — face mesh
     # ------------------------------------------------------------------
 
-    def _draw_face_mesh(self, frame: np.ndarray, state) -> None:
+    def _draw_face_mesh(self, frame: np.ndarray, state, sc: float = 1.0) -> None:
         """Draw all face mesh landmarks as green dots on the student's face."""
         if state.face_mesh is None:
             return
         for (x, y) in state.face_mesh.landmarks_2d:
-            cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
+            cv2.circle(frame, (int(x*sc), int(y*sc)), 1, (0, 255, 0), -1)
 
-    def _draw_gaze(self, frame: np.ndarray, state) -> None:
+    def _draw_gaze(self, frame: np.ndarray, state, sc: float = 1.0) -> None:
         """
         Draw a combined 3D gaze arrow using the shared gaze computation module.
         """
@@ -207,7 +231,6 @@ class VideoVisualizer:
             return
 
         # Use shared gaze computation (single source of truth with pipeline)
-        from thaqib.video.gaze import compute_gaze_direction
         gaze_dir = compute_gaze_direction(state.face_mesh)
         if gaze_dir is None:
             return
@@ -230,10 +253,11 @@ class VideoVisualizer:
         
         GAZE_COLOR = (0, 0, 255) # Red
 
-        origin = tuple(lm2d[168])
+        ox, oy = int(lm2d[168][0]*sc), int(lm2d[168][1]*sc)
+        origin = (ox, oy)
         end = (
-            int(origin[0] + dir_x * SCALE),
-            int(origin[1] + dir_y * SCALE)
+            int(origin[0] + dir_x * SCALE * sc),
+            int(origin[1] + dir_y * SCALE * sc)
         )
 
         cv2.circle(frame, origin, 4, GAZE_COLOR, -1, cv2.LINE_AA)
@@ -244,19 +268,20 @@ class VideoVisualizer:
     # Feature 3 — neighbor graph
     # ------------------------------------------------------------------
 
-    def draw_neighbors(self, frame: np.ndarray, registry: GlobalStudentRegistry) -> None:
+    def draw_neighbors(self, frame: np.ndarray, registry: GlobalStudentRegistry, display_scale: float = 1.0) -> None:
         """
         Draw neighbor connection lines between students.
 
         For each student, draws a line to each of its k-nearest neighbors.
         """
+        sc = display_scale
         all_states = [s for s in registry.get_all() if getattr(s, "is_active", True)]
 
         for state in all_states:
             if not state.neighbors:
                 continue
 
-            src_center = state.center
+            src_center = (int(state.center[0]*sc), int(state.center[1]*sc))
             src_color = _track_color(state.track_id)
 
             for neighbor_id in state.neighbors:
@@ -264,7 +289,7 @@ class VideoVisualizer:
                 if neighbor_state is None or not getattr(neighbor_state, "is_active", True):
                     continue
 
-                dst_center = neighbor_state.center
+                dst_center = (int(neighbor_state.center[0]*sc), int(neighbor_state.center[1]*sc))
 
                 # Draw connection line
                 cv2.line(

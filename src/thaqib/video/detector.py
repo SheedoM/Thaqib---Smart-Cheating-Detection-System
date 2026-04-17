@@ -7,7 +7,6 @@ Provides periodic detection of human subjects in video frames.
 import logging
 from dataclasses import dataclass, field
 
-import cv2
 import numpy as np
 from ultralytics import YOLO
 
@@ -110,11 +109,19 @@ class HumanDetector:
 
         logger.info(f"Loading YOLO model: {self.model_name}")
 
+        import torch
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+
         self._model = YOLO(f"{self.model_name}")
-        self._model.to("cuda")
+        self._model.to(self._device)
+
+        # Warmup: first CUDA inference compiles kernels and is slow.
+        # Run a dummy pass so the real first frame sees normal latency.
+        dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+        self._model(dummy, verbose=False, device=self._device, imgsz=self.imgsz)
 
         self._is_loaded = True
-        logger.info("YOLO model loaded successfully")
+        logger.info(f"YOLO model loaded successfully (device={self._device})")
 
     def detect(
         self,
@@ -141,7 +148,7 @@ class HumanDetector:
             frame,
             conf=self.confidence_threshold,
             classes=[self.PERSON_CLASS_ID],  # Only detect persons
-            device="cuda",
+            device=self._device,
             verbose=False,
             imgsz=self.imgsz
         )

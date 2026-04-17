@@ -5,13 +5,15 @@ Coordinates camera, detection, and tracking.
 """
 
 import logging
-import math
 import time
 import threading
+import queue
 import os
+import cv2
 from queue import Queue, Empty
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from multiprocessing import Pool
+from multiprocessing import shared_memory as shm_mod
 from dataclasses import dataclass, field
 from typing import Callable, Generator
 
@@ -27,6 +29,7 @@ from thaqib.video.registry import GlobalStudentRegistry, StudentSpatialState
 from thaqib.video.neighbors import NeighborComputer
 from thaqib.video.face_mesh import FaceMeshExtractor, FaceMeshResult
 from thaqib.video.tools_detector import ToolsDetector, ToolsDetectionResult
+from thaqib.video.cheating_evaluator import CheatingEvaluator
 
 
 logger = logging.getLogger(__name__)
@@ -114,7 +117,6 @@ class VideoPipeline:
         settings = get_settings()
 
         self.detection_interval = detection_interval or settings.detection_interval
-        self.on_alert = on_alert
 
         # Initialize components
         self._camera = CameraStream(source=source)
@@ -125,23 +127,26 @@ class VideoPipeline:
         self._neighbor_computer = NeighborComputer()
         self._face_extractor = FaceMeshExtractor()
         self._reid = FaceReIdentifier()
+        self._cheating_evaluator = CheatingEvaluator(self._registry)
+        self._cheating_evaluator.on_alert = on_alert
 
 
-        # Parallel executor for per-student processing
+        # Fix 1: Process pool for face mesh — true CPU parallelism
         settings = get_settings()
         face_workers = min(settings.face_mesh_workers, os.cpu_count() or 4)
-        self._face_executor = ThreadPoolExecutor(max_workers=face_workers)
+        from thaqib.video.face_mesh_worker import init_worker, extract_in_worker
+        self._extract_in_worker = extract_in_worker  # Store ref for submit calls
+        self._face_pool = Pool(
+            processes=face_workers,
+            initializer=init_worker,
+        )
+        self._shm: shm_mod.SharedMemory | None = None  # Reusable shared memory block
 
         self._is_running = False
         
         self._frame_lock = threading.Lock()
         self._track_aliases: dict[int, int] = {}
-        self._global_frame_buffer: deque[np.ndarray] = deque(maxlen=60)
-        
-        # Cheating cooldown: number of frames before is_cheating resets.
-        # 30 frames ≈ 1 second at 30fps — prevents false-negative oscillation
-        # when a student briefly glances away then back.
-        self._cheating_cooldown_frames = 30
+        self._global_frame_buffer: deque[np.ndarray] = deque(maxlen=90)
         
         # Async Detection State
         self._detection_queue: Queue[tuple[DetectionResult, ToolsDetectionResult]] = Queue(maxsize=1)
@@ -152,6 +157,36 @@ class VideoPipeline:
         self._last_tracking_result: TrackingResult | None = None
 
         self._selected_ids: set[int] = set()
+        
+        # Double-buffered face mesh jobs: submit on frame N, collect on frame N+2.
+        # Fix 1: uses multiprocessing.AsyncResult instead of concurrent.futures.Future.
+        self._pending_mp_jobs: list[tuple] = []  # [(AsyncResult, track_id), ...]
+        
+        # Archive recording: continuous video save to archive/ folder
+        self._archive_writer: cv2.VideoWriter | None = None
+        self._archive_path: str | None = None
+        
+        # Background archive writer thread (Fix 2: offload ~1-3ms/frame)
+        self._archive_queue: queue.Queue = queue.Queue(maxsize=60)
+        self._archive_thread: threading.Thread | None = None
+        
+        # Actual FPS tracking for correct video playback speed
+        self._fps_tracker: deque[float] = deque(maxlen=60)
+        self._actual_fps: float = 30.0
+        
+        # Track which track IDs we've already warned about recording cap
+        # to avoid per-frame log spam.
+        self._recording_skip_warned: set[int] = set()
+        
+        # Maximum height for recording buffers AND face mesh processing.
+        # Frames above this height are downscaled to prevent OOM and speed up
+        # MediaPipe inference. At 4K (3840x2160), each frame = 23.7MB.
+        # Downscaling to 1080p: 5.9MB (75% savings), crops are ~4× smaller.
+        self._recording_max_h: int = 1080
+        
+        # Scale factor for face mesh processing (computed once when first frame arrives)
+        self._fm_scale: float = 1.0
+        self._fm_scale_computed: bool = False
 
     def _detection_worker(self) -> None:
         """Background thread running YOLO detection."""
@@ -224,19 +259,57 @@ class VideoPipeline:
             name="DetectionThread"
         )
         self._detection_thread.start()
+        
+        # Start archive writer background thread (Fix 2)
+        self._archive_thread = threading.Thread(
+            target=self._archive_writer_loop,
+            daemon=True,
+            name="ArchiveWriter"
+        )
+        self._archive_thread.start()
 
         logger.info("Video pipeline started")
         return True
 
     def stop(self) -> None:
-        """Stop the pipeline."""
+        """Stop the pipeline and flush any in-progress recordings."""
         logger.info("Stopping video pipeline...")
         self._is_running = False
+        
+        # Flush any in-progress alert recordings before shutdown
+        # so the final cheating event in a video is never lost.
+        for state in self._registry.get_all():
+            if state.is_alert_recording and len(state.recording_buffer) > 0:
+                frames_snapshot = list(state.recording_buffer)
+                state.is_alert_recording = False
+                self._save_alert_video_async(frames_snapshot, state.track_id, time.time())
+        
+        # Drain and close archive writer thread (Fix 2)
+        if self._archive_thread is not None:
+            self._archive_thread.join(timeout=3.0)
+        if self._archive_writer is not None:
+            self._archive_writer.release()
+            self._archive_writer = None
+            logger.info(f"Archive recording saved: {self._archive_path}")
+        
         if self._detection_thread is not None:
             self._detection_thread.join(timeout=1.0)
         self._camera.close()
         self._face_extractor.close()
-        self._face_executor.shutdown(wait=True)
+        
+        # Fix 1: Clean up process pool and shared memory
+        try:
+            self._face_pool.terminate()
+            self._face_pool.join()
+        except Exception:
+            pass
+        if self._shm is not None:
+            try:
+                self._shm.unlink()
+            except Exception:
+                pass
+            self._shm = None
+        
         logger.info("Video pipeline stopped")
 
     def run(self) -> Generator[PipelineFrame, None, None]:
@@ -271,10 +344,21 @@ class VideoPipeline:
         
         t0 = time.perf_counter()
 
-        # Add to global frame ring buffer for alert recordings
+        # Track actual FPS for correct video playback speed
+        self._fps_tracker.append(time.time())
+        if len(self._fps_tracker) >= 2:
+            elapsed = self._fps_tracker[-1] - self._fps_tracker[0]
+            if elapsed > 0:
+                self._actual_fps = max(5.0, min(60.0, (len(self._fps_tracker) - 1) / elapsed))
+
+        # Archive recording: write every raw frame to archive video
+        self._write_archive_frame(frame_data)
+
+        # Add to global frame ring buffer for alert recordings.
         # Only buffer when students are being monitored to save memory.
+        # Downscale to 1080p before buffering to prevent OOM on 4K video.
         if self._selected_ids:
-            self._global_frame_buffer.append(frame_data.frame.copy())
+            self._global_frame_buffer.append(self._downscale_for_recording(frame_data.frame))
 
         
         # Check for new detection async result
@@ -329,9 +413,16 @@ class VideoPipeline:
         # Update spatial registry and compute neighbors for ALL tracks
         expired_ids = self._registry.update(tracking_result.tracks, frame_data.frame_index, frame_data.timestamp)
         
-        # Cleanup ReID memory and aliases
+        # Cleanup ReID memory, face mesh cache, and aliases
         if expired_ids:
             self._reid.remove_embeddings(expired_ids)
+            self._face_extractor.remove_cache(expired_ids)
+            # Also prune tracker state to prevent memory leaks
+            for eid in expired_ids:
+                self._tracker._smoothed_bboxes.pop(eid, None)
+                self._tracker._match_counts.pop(eid, None)
+                self._tracker._locked_ids.discard(eid)
+                self._tracker._track_labels.pop(eid, None)
             keys_to_delete = [
                 bot_id for bot_id, thaqib_id in self._track_aliases.items()
                 if bot_id in expired_ids or thaqib_id in expired_ids
@@ -347,6 +438,62 @@ class VideoPipeline:
         if tools_result is not None:
             paper_centers = [tool.center for tool in tools_result.tools if tool.label == 'book']
             self._neighbor_computer.compute_paper_neighbors(self._registry, paper_centers)
+            
+            # Phone-to-student assignment: check if any phone bbox overlaps a student bbox.
+            # If so, mark that student as using a phone (cheating).
+            phone_tools = [t for t in tools_result.tools if t.label in ('phone', 'Using_phone', 'cell phone')]
+            phone_assigned_students: set[int] = set()
+            
+            for phone in phone_tools:
+                px1, py1, px2, py2 = phone.bbox
+                phone_cx = (px1 + px2) // 2
+                phone_cy = (py1 + py2) // 2
+                
+                # Find which student "owns" this phone (phone center inside student bbox)
+                best_student = None
+                best_dist = float('inf')
+                for s in self._registry.get_all():
+                    if not getattr(s, 'is_active', True):
+                        continue
+                    sx1, sy1, sx2, sy2 = s.bbox
+                    # Expand bbox by 20% for robustness
+                    bw, bh = sx2 - sx1, sy2 - sy1
+                    ex1 = sx1 - int(bw * 0.1)
+                    ey1 = sy1 - int(bh * 0.1)
+                    ex2 = sx2 + int(bw * 0.1)
+                    ey2 = sy2 + int(bh * 0.1)
+                    
+                    if ex1 <= phone_cx <= ex2 and ey1 <= phone_cy <= ey2:
+                        dist = abs(phone_cx - s.center[0]) + abs(phone_cy - s.center[1])
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_student = s
+                
+                if best_student is not None:
+                    best_student.is_using_phone = True
+                    best_student.phone_bbox = phone.bbox
+                    phone_assigned_students.add(best_student.track_id)
+                    
+                    # Phone = immediate cheating (no 2s delay needed)
+                    if not best_student.is_cheating:
+                        best_student.is_cheating = True
+                        best_student.cheating_cooldown = 90  # ~3s at 30fps (must outlast recording)
+                        logger.warning(
+                            f"PHONE CHEATING: Track {best_student.track_id} "
+                            f"using phone (conf={phone.confidence:.2f})"
+                        )
+                    else:
+                        # Already cheating — keep refreshing cooldown
+                        best_student.cheating_cooldown = 90
+            
+            # Clear phone flag for students no longer holding a phone,
+            # BUT keep it sticky during an active alert recording so brief
+            # occlusions don't cut the video short or change the cheat type.
+            for s in self._registry.get_all():
+                if s.track_id not in phone_assigned_students:
+                    if not s.is_alert_recording:
+                        s.is_using_phone = False
+                        s.phone_bbox = None
         
         t4 = time.perf_counter()
 
@@ -372,54 +519,115 @@ class VideoPipeline:
                 )
                 student_states.append(state)
 
-            # 2. Extract face mesh in parallel, then evaluate cheating SYNCHRONOUSLY
-            #    on the main thread (eliminates race condition with the collector loop).
-            if frame_data.frame_index % 2 == 0:
-                # Copy frame ONCE and share across all threads (not per-student)
-                # With 13 students on 4K, this saves ~300MB of copies per cycle
-                shared_frame = frame_data.frame.copy()
-
-                futures = {}
-                for state in student_states:
-                    future = self._face_executor.submit(
-                        self._process_student_parallel,
-                        shared_frame,
-                        state
-                    )
-                    futures[future] = state.track_id
-
-                # Collect completed face mesh results (non-blocking: timeout=0)
-                # Any futures not yet complete will be picked up next cycle.
-                for future in list(futures.keys()):
-                    if not future.done():
-                        continue
-                    orig_track_id = futures[future]
-                    try:
-                        _, result = future.result()
-                        reg_state = self._registry.get(orig_track_id)
-                        if reg_state is not None:
-                            reg_state.face_mesh = result  # Explicitly allow None to clear stale meshes
+        # 2. Double-buffered face mesh (runs even when selection changes
+        #    to avoid orphaned jobs):
+        #    - First, COLLECT any completed jobs from PREVIOUS cycle
+        #    - Then, SUBMIT new jobs for this cycle
+        
+        # Collect ALL completed async results from previous cycle (Fix 1: multiprocessing)
+        still_pending = []
+        for async_result, orig_track_id in self._pending_mp_jobs:
+            if async_result.ready():
+                try:
+                    tid, result_dict = async_result.get(timeout=0)
+                    
+                    # Convert plain dict back to FaceMeshResult (Fix 1)
+                    result = None
+                    if result_dict is not None:
+                        hmat = (np.array(result_dict["hmat"]) 
+                                if result_dict["hmat"] is not None else None)
+                        result = FaceMeshResult(
+                            landmarks_2d=result_dict["lm2d"],
+                            landmarks_3d=result_dict["lm3d"],
+                            bbox=result_dict["bbox"],
+                            head_matrix=hmat,
+                        )
+                    
+                    reg_state = self._registry.get(orig_track_id)
+                    if reg_state is not None:
+                        reg_state.face_mesh = result  # Allow None to clear stale meshes
+                        
+                    # ReID Integration — skip for locked IDs (already confirmed)
+                    if result is not None and not self._tracker.is_locked(orig_track_id):
+                        best_id = self._reid.match(result)
+                        if best_id is not None and best_id != orig_track_id:
+                            visible_ids = {t.track_id for t in tracking_result.tracks}
+                            active_aliases = set(self._track_aliases.values())
                             
-                        # ReID Integration — skip for locked IDs (already confirmed)
-                        if result is not None and not self._tracker.is_locked(orig_track_id):
-                            best_id = self._reid.match(result)
-                            if best_id is not None and best_id != orig_track_id:
-                                visible_ids = {t.track_id for t in tracking_result.tracks}
-                                active_aliases = set(self._track_aliases.values())
-                                
-                                if best_id not in visible_ids and best_id not in active_aliases:
-                                    logger.info(f"ReID match found! Aliasing tracker ID {orig_track_id} -> {best_id}")
-                                    self._track_aliases[orig_track_id] = best_id
+                            if best_id not in visible_ids and best_id not in active_aliases:
+                                logger.info(f"ReID match found! Aliasing tracker ID {orig_track_id} -> {best_id}")
+                                self._track_aliases[orig_track_id] = best_id
 
-                            actual_id = self._track_aliases.get(orig_track_id, orig_track_id)
-                            is_match = self._reid.register_embedding(actual_id, result)
-                            self._tracker.verify_embedding_match(actual_id, is_match)
-                    except Exception as e:
-                        logger.debug(f"Face mesh parallel error: {e}")
+                        actual_id = self._track_aliases.get(orig_track_id, orig_track_id)
+                        is_match = self._reid.register_embedding(actual_id, result)
+                        self._tracker.verify_embedding_match(actual_id, is_match)
+                except Exception as e:
+                    logger.debug(f"Face mesh parallel error: {e}")
+            else:
+                still_pending.append((async_result, orig_track_id))
+        self._pending_mp_jobs = still_pending
 
-            # 3. Evaluate cheating on the MAIN THREAD — no race condition
+        # Cap pending jobs to prevent runaway accumulation.
+        max_pending = (self._face_pool._processes or 4) * 3
+        if len(self._pending_mp_jobs) > max_pending:
+            self._pending_mp_jobs = self._pending_mp_jobs[-max_pending:]
+
+        # Submit NEW jobs for this cycle (every frame — downscaled frames are cheap).
+        if selected_tracks:
+            # Compute face mesh scale factor once (original res → 1080p).
+            if not self._fm_scale_computed:
+                h = frame_data.frame.shape[0]
+                if h > self._recording_max_h:
+                    self._fm_scale = self._recording_max_h / h
+                else:
+                    self._fm_scale = 1.0
+                self._fm_scale_computed = True
+            
+            # Downscale frame for face mesh
+            fm_scale = self._fm_scale
+            if fm_scale < 1.0:
+                h, w = frame_data.frame.shape[:2]
+                new_w = int(w * fm_scale)
+                new_h = int(h * fm_scale)
+                shared_frame = cv2.resize(frame_data.frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            else:
+                shared_frame = frame_data.frame
+            
+            # Fix 1: Copy frame to shared memory for zero-copy transfer to workers
+            nbytes = shared_frame.nbytes
+            if self._shm is None or self._shm.size < nbytes:
+                if self._shm is not None:
+                    try:
+                        self._shm.unlink()
+                    except Exception:
+                        pass
+                self._shm = shm_mod.SharedMemory(create=True, size=nbytes)
+            buf = np.ndarray(shared_frame.shape, dtype=shared_frame.dtype, buffer=self._shm.buf)
+            np.copyto(buf, shared_frame)
+            
+            # Submit ALL students via process pool.
+            # Skip students that already have a pending job.
+            pending_track_ids = {tid for _, tid in self._pending_mp_jobs}
             for state in student_states:
-                self._evaluate_cheating(state.track_id)
+                if state.track_id in pending_track_ids:
+                    continue
+                args = (
+                    self._shm.name,
+                    shared_frame.shape,
+                    str(shared_frame.dtype),
+                    state.bbox,
+                    state.track_id,
+                    fm_scale,
+                )
+                async_result = self._face_pool.apply_async(
+                    self._extract_in_worker, (args,)
+                )
+                self._pending_mp_jobs.append((async_result, state.track_id))
+
+        # 3. Evaluate cheating on the MAIN THREAD — no race condition
+        if selected_tracks:
+            for state in student_states:
+                self._cheating_evaluator.evaluate(state.track_id)
 
         # 4. Alert recording collector — runs AFTER cheating evaluation,
         #    so is_cheating and is_alert_recording are guaranteed stable.
@@ -430,16 +638,38 @@ class VideoPipeline:
         #   is_cheating=F, recording=T → POST: countdown 60 frames (2s), then save
         for state in self._registry.get_all():
             if state.is_cheating and not state.is_alert_recording:
-                # START recording: snapshot the pre-buffer (last ~2s)
+                # Cap concurrent recordings to 3 to prevent OOM.
+                active_recordings = sum(
+                    1 for s in self._registry.get_all() if s.is_alert_recording
+                )
+                if active_recordings >= 3:
+                    # Only warn once per track to avoid per-frame log spam
+                    if state.track_id not in self._recording_skip_warned:
+                        logger.warning(
+                            f"Skipping alert recording for track {state.track_id}: "
+                            f"{active_recordings} recordings already active (max 3)"
+                        )
+                        self._recording_skip_warned.add(state.track_id)
+                    continue
+                
+                # START recording: snapshot raw pre-buffer (last ~3s).
+                # Pre-event frames are stored RAW (no annotation) because:
+                #   1. Annotating 90 frames blocks the main thread for ~180ms
+                #   2. Labels (CHEATER/VICTIM) weren't identified yet pre-event
+                # Only during/after frames are annotated with cheating evidence.
                 state.is_alert_recording = True
                 state.recording_buffer = deque(self._global_frame_buffer, maxlen=300)
                 state.frames_to_record = 60  # 2s post-buffer
+                self._recording_skip_warned.discard(state.track_id)  # Reset warn on successful start
             
             if not state.is_alert_recording:
                 continue
 
-            # Append current frame to recording buffer
-            state.recording_buffer.append(frame_data.frame.copy())
+            # Append current raw frame + track ID to recording buffer.
+            # Fix 4: defer _render_alert_frame to the writer thread (~2ms saved).
+            # Downscale to 1080p first to save memory.
+            small_frame = self._downscale_for_recording(frame_data.frame)
+            state.recording_buffer.append((small_frame, state.track_id))
 
             if state.is_cheating:
                 # Still cheating — keep recording, reset post-cheating countdown
@@ -453,8 +683,23 @@ class VideoPipeline:
                     frames_snapshot = list(state.recording_buffer)
                     state.is_alert_recording = False
                     state.recording_buffer = deque(maxlen=300)
+                    
+                    # Determine cheat type BEFORE resetting state
+                    cheat_type = "phone" if state.is_using_phone else "gaze"
+                    
+                    # Fully reset cheating state — the event is captured.
+                    # Student returns to normal (no more red box).
+                    state.is_cheating = False
+                    state.cheating_cooldown = 0
+                    state.suspicious_start_time = 0.0
+                    state.cheating_target_paper = None
+                    state.cheating_target_neighbor = None
+                    state.is_using_phone = False
+                    state.phone_bbox = None
+                    
                     self._save_alert_video_async(
-                        frames_snapshot, state.track_id, frame_data.timestamp
+                        frames_snapshot, state.track_id, frame_data.timestamp,
+                        cheat_type=cheat_type
                     )
 
         t5 = time.perf_counter()
@@ -508,106 +753,187 @@ class VideoPipeline:
         if hasattr(self._tracker, 'clear_selection'):
             self._tracker.clear_selection()
 
-    def _process_student_parallel(self, frame: np.ndarray, state: StudentState) -> tuple[StudentState, FaceMeshResult | None]:
-        """
-        Process a single student's face mesh.
-        Designed to be run in parallel via ThreadPoolExecutor.
-        """
-        face_mesh = self._face_extractor.extract(frame, state.bbox, state.track_id)
-        return state, face_mesh
+    # _process_student_parallel removed (Fix 1) — replaced by
+    # face_mesh_worker.extract_in_worker running in child processes.
 
-    def _evaluate_cheating(self, track_id: int) -> None:
+    def _downscale_for_recording(self, frame: np.ndarray) -> np.ndarray:
         """
-        Evaluate cheating rules **synchronously on the main thread**.
+        Downscale a frame to at most _recording_max_h (1080p) for recording buffers.
         
-        This must run on the main thread to avoid race conditions with the
-        alert recording collector that also reads/writes is_cheating and
-        is_alert_recording.
+        At 4K (3840×2160), each frame is 23.7MB. With 90+300 frames per buffer,
+        that's ~9GB per buffer. Downscaling to 1080p reduces this to ~2.3GB (75% savings).
+        Already-small frames pass through unchanged.
         """
-        state = self._registry.get(track_id)
-        if not state or not state.face_mesh or not state.surrounding_papers:
-            if state:
-                state.suspicious_start_time = 0.0
-                # Apply cooldown before clearing cheating flag
-                if state.is_cheating:
-                    state.cheating_cooldown -= 1
-                    if state.cheating_cooldown <= 0:
-                        state.is_cheating = False
-            return
+        h, w = frame.shape[:2]
+        if h <= self._recording_max_h:
+            return frame.copy()
+        scale = self._recording_max_h / h
+        new_w = int(w * scale)
+        return cv2.resize(frame, (new_w, self._recording_max_h), interpolation=cv2.INTER_AREA)
 
-        # Use shared gaze computation (single source of truth with visualizer)
-        from thaqib.video.gaze import compute_gaze_direction
-        gaze_dir = compute_gaze_direction(state.face_mesh)
-        if gaze_dir is None:
-            state.suspicious_start_time = 0.0
-            # Apply cooldown before clearing cheating flag
-            if state.is_cheating:
-                state.cheating_cooldown -= 1
-                if state.cheating_cooldown <= 0:
-                    state.is_cheating = False
-            return
-
-        lm2d = state.face_mesh.landmarks_2d
-        def pt2d(idx):
-            return np.array(lm2d[idx], dtype=float)
-
-        # Check intersection with surrounding papers
-        student_head_pos = pt2d(168)
-        is_looking_at_paper = False
+    def _render_alert_frame(self, raw_frame: np.ndarray, cheater_track_id: int) -> np.ndarray:
+        """
+        Render an annotated frame for alert video recording.
         
-        settings = get_settings()
-        threshold = math.cos(math.radians(settings.risk_angle_tolerance))
-
-        for paper_pt in state.surrounding_papers:
-            paper_vec = np.array(paper_pt) - student_head_pos
-            dist = np.linalg.norm(paper_vec)
-            if dist < 1e-6:
-                continue
-                
-            paper_dir = paper_vec / dist
-            dot_product = np.dot(gaze_dir, paper_dir)
-            
-            if dot_product > threshold:
-                is_looking_at_paper = True
-                break
-
-        # Apply the suspicious duration rule from settings
-        current_time = time.time()
-        duration_threshold = settings.suspicious_duration_threshold
+        Expects a frame that's already been downscaled by _downscale_for_recording.
+        All bbox coordinates are scaled to match the downscaled resolution.
         
-        if is_looking_at_paper:
-            # Reset cooldown whenever student is looking at a paper
-            state.cheating_cooldown = self._cheating_cooldown_frames
-            
-            if state.suspicious_start_time == 0.0:
-                state.suspicious_start_time = current_time
-            elif current_time - state.suspicious_start_time >= duration_threshold:
-                if not state.is_cheating:
-                    state.is_cheating = True
-                    paper_source = "heuristic" if state.is_heuristic_paper else "YOLO"
-                    logger.warning(
-                        f"CHEATING DETECTED: Track {track_id} looking at neighbor paper "
-                        f"for {duration_threshold}s (paper_source={paper_source})"
-                    )
-                    # Fire the on_alert callback
-                    if self.on_alert is not None:
-                        try:
-                            self.on_alert(state)
-                        except Exception as e:
-                            logger.error(f"on_alert callback error: {e}")
+        Draws:
+          - RED thick bbox + label on the cheater
+          - YELLOW thick bbox + label on the victim (student being copied from)
+          - GREEN circle on the actual paper location (only if YOLO-detected)
+          - RED bbox on phone (if phone cheating)
+          - Gaze arrow from cheater to paper
+        """
+        frame = raw_frame.copy()
+        cheater = self._registry.get(cheater_track_id)
+        if cheater is None:
+            return frame
+        
+        # Compute scale factor: registry bboxes are in original resolution,
+        # but the frame may have been downscaled (e.g., 4K → 1080p).
+        frame_h = frame.shape[0]
+        # Use the camera's cached original resolution (race-free public property)
+        orig_h = self._camera.original_height or frame_h
+        scale = frame_h / orig_h if orig_h > 0 else 1.0
+        
+        def sc(val: int) -> int:
+            """Scale a coordinate from original to downscaled resolution."""
+            return int(val * scale)
+        
+        def sc_bbox(bbox: tuple) -> tuple[int, int, int, int]:
+            return (sc(bbox[0]), sc(bbox[1]), sc(bbox[2]), sc(bbox[3]))
+        
+        def sc_pt(pt: tuple) -> tuple[int, int]:
+            return (sc(pt[0]), sc(pt[1]))
+        
+        # Draw the cheater in RED with full body bbox
+        cx1, cy1, cx2, cy2 = sc_bbox(cheater.bbox)
+        cv2.rectangle(frame, (cx1, cy1), (cx2, cy2), (0, 0, 255), 3)
+        
+        # Label depends on cheating type
+        if cheater.is_using_phone:
+            cheat_label = f"PHONE CHEATER ID:{cheater_track_id}"
         else:
-            state.suspicious_start_time = 0.0
-            # Use cooldown: don't immediately clear is_cheating.
-            # This prevents oscillation from brief gaze breaks.
-            if state.is_cheating:
-                state.cheating_cooldown -= 1
-                if state.cheating_cooldown <= 0:
-                    state.is_cheating = False
+            cheat_label = f"CHEATER ID:{cheater_track_id}"
+        
+        # Draw label with background for readability
+        (tw, th), _ = cv2.getTextSize(cheat_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        cv2.rectangle(frame, (cx1, cy1 - th - 8), (cx1 + tw, cy1), (0, 0, 255), -1)
+        cv2.putText(frame, cheat_label,
+                    (cx1, cy1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (255, 255, 255), 2, cv2.LINE_AA)
+        
+        # Draw phone bbox in bright RED if phone cheating
+        if cheater.is_using_phone and cheater.phone_bbox is not None:
+            px1, py1, px2, py2 = sc_bbox(cheater.phone_bbox)
+            cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 0, 255), 3)
+            cv2.putText(frame, "PHONE", (px1, py1 - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+        
+        # Draw the victim in YELLOW (if known — paper-copying cheating)
+        victim_id = cheater.cheating_target_neighbor
+        if victim_id is not None:
+            victim = self._registry.get(victim_id)
+            if victim is not None:
+                vx1, vy1, vx2, vy2 = sc_bbox(victim.bbox)
+                cv2.rectangle(frame, (vx1, vy1), (vx2, vy2), (0, 255, 255), 3)
+                victim_label = f"VICTIM ID:{victim_id}"
+                (vw, vh), _ = cv2.getTextSize(victim_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(frame, (vx1, vy1 - vh - 8), (vx1 + vw, vy1), (0, 255, 255), -1)
+                cv2.putText(frame, victim_label,
+                            (vx1, vy1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            (0, 0, 0), 2, cv2.LINE_AA)
+        
+        # Draw the paper location — ONLY when YOLO-detected (not heuristic guesses)
+        paper_pt = cheater.cheating_target_paper
+        if paper_pt is not None and not cheater.is_heuristic_paper:
+            px, py = sc_pt(paper_pt)
+            cv2.circle(frame, (px, py), 18, (0, 255, 0), 3, cv2.LINE_AA)
+            cv2.circle(frame, (px, py), 6, (0, 255, 0), -1, cv2.LINE_AA)
+            cv2.putText(frame, "PAPER", (px - 25, py - 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2, cv2.LINE_AA)
+            
+            # Draw gaze line from cheater center to paper
+            cv2.line(frame, sc_pt(cheater.center), (px, py), (0, 0, 255), 2, cv2.LINE_AA)
+        
+        # Draw status banner at top
+        banner_h = 40
+        cv2.rectangle(frame, (0, 0), (frame.shape[1], banner_h), (0, 0, 180), -1)
+        if cheater.is_using_phone:
+            status_text = f"PHONE ALERT - Student {cheater_track_id} using phone"
+        else:
+            status_text = f"CHEATING ALERT - Student {cheater_track_id}"
+            if victim_id is not None:
+                status_text += f" copying from Student {victim_id}"
+        cv2.putText(frame, status_text, (10, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        
+        return frame
 
-    def _save_alert_video_async(self, frames: list[np.ndarray], track_id: int, timestamp: float) -> None:
+    def _archive_writer_loop(self) -> None:
+        """Background thread: drain archive queue and write frames to disk.
+        
+        Fix 2: Moves the ~1-3ms cv2.VideoWriter.write() call off the main
+        thread. The loop runs until _is_running is False AND the queue is empty,
+        ensuring all buffered frames are flushed on shutdown.
+        """
+        while self._is_running or not self._archive_queue.empty():
+            try:
+                frame = self._archive_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if self._archive_writer is not None:
+                self._archive_writer.write(frame)
+
+    def _write_archive_frame(self, frame_data: FrameData) -> None:
+        """
+        Queue a frame for archive writing (non-blocking).
+        Creates the archive writer on first call (one-time cost on main thread).
+        """
+        if self._archive_writer is None:
+            from pathlib import Path
+            from datetime import datetime
+            
+            archive_dir = Path("archive")
+            archive_dir.mkdir(exist_ok=True)
+            
+            time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            h, w = frame_data.frame.shape[:2]
+            
+            # Use actual measured FPS for correct playback speed.
+            archive_fps = max(10.0, self._actual_fps)
+            
+            # Try codecs in order of reliability
+            for codec, ext in [('XVID', '.avi'), ('mp4v', '.mp4'), ('MJPG', '.avi')]:
+                filepath = archive_dir / f"archive_{time_str}{ext}"
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                writer = cv2.VideoWriter(str(filepath), fourcc, archive_fps, (w, h))
+                if writer.isOpened():
+                    self._archive_writer = writer
+                    self._archive_path = str(filepath)
+                    logger.info(f"Archive recording started: {filepath} (codec={codec})")
+                    break
+                writer.release()
+            else:
+                logger.error("Failed to create archive writer — all codecs failed")
+                return
+        
+        # Non-blocking enqueue — drop frame if queue full rather than
+        # blocking the main thread (Fix 2)
+        try:
+            self._archive_queue.put_nowait(frame_data.frame)
+        except queue.Full:
+            pass  # Drop frame rather than block main thread
+
+    def _save_alert_video_async(
+        self, frames: list[np.ndarray], track_id: int, timestamp: float,
+        cheat_type: str = "gaze"
+    ) -> None:
         """Save alert video in a background thread. Receives an independent frames list."""
+        actual_fps = self._actual_fps  # Capture current FPS for the writer thread
+        
         def writer_task():
-            import cv2
             from pathlib import Path
             from datetime import datetime
             
@@ -619,34 +945,69 @@ class VideoPipeline:
             alerts_dir.mkdir(exist_ok=True)
             
             time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
-            filename = alerts_dir / f"cheating_alert_track{track_id}_{time_str}.mp4"
             
-            height, width = frames[0].shape[:2]
+            height, width = None, None
+            # Determine frame dimensions from first valid element.
+            # Buffer is mixed: raw ndarray (pre-event) and (frame, tid) tuples.
+            for item in frames:
+                if isinstance(item, tuple):
+                    height, width = item[0].shape[:2]
+                    break
+                else:
+                    height, width = item.shape[:2]
+                    break
             
-            # Try H.264 first, fallback to MPEG-4
+            if height is None:
+                logger.warning(f"Alert video for track {track_id}: no valid frames, skipping.")
+                return
+            
+            # Differentiate filenames by cheating type:
+            #   phone_alert_track3_20260417_053000.avi
+            #   gaze_alert_track3_20260417_053000.avi
+            prefix = "phone_alert" if cheat_type == "phone" else "gaze_alert"
+            
+            # Codec fallback chain — ordered by reliability on Windows:
+            #   1. XVID + .avi  (universally available, no external DLLs)
+            #   2. mp4v + .mp4  (works on most builds)
+            #   3. MJPG + .avi  (always works, larger files)
+            codec_options = [
+                ('XVID', '.avi'),
+                ('mp4v', '.mp4'),
+                ('MJPG', '.avi'),
+            ]
+            
             writer = None
-            for codec in ['avc1', 'mp4v']:
+            filename = None
+            for codec, ext in codec_options:
+                filename = alerts_dir / f"{prefix}_track{track_id}_{time_str}{ext}"
                 fourcc = cv2.VideoWriter_fourcc(*codec)
-                writer = cv2.VideoWriter(str(filename), fourcc, 30.0, (width, height))
+                writer = cv2.VideoWriter(str(filename), fourcc, actual_fps, (width, height))
                 if writer.isOpened():
-                    logger.debug(f"Using codec '{codec}' for {filename}")
+                    logger.info(f"Using codec '{codec}' for {filename}")
                     break
                 writer.release()
                 writer = None
             
             if writer is None or not writer.isOpened():
-                logger.error(f"Failed to create video writer for {filename}")
+                logger.error(f"Failed to create video writer — all codecs failed for track {track_id}")
                 return
             
             frames_written = 0
             try:
-                for f in frames:
-                    writer.write(f)
+                for item in frames:
+                    # Fix 4: pre-event frames are raw ndarray, during/post are
+                    # (frame, track_id) tuples that need annotation.
+                    if isinstance(item, tuple):
+                        raw_frame, tid = item
+                        annotated = self._render_alert_frame(raw_frame, tid)
+                        writer.write(annotated)
+                    else:
+                        writer.write(item)
                     frames_written += 1
-                duration = frames_written / 30.0
+                duration = frames_written / actual_fps
                 logger.info(
-                    f"Saved cheating alert video: {filename} "
-                    f"({duration:.1f}s, {frames_written} frames)"
+                    f"Saved {cheat_type} alert video: {filename} "
+                    f"({duration:.1f}s, {frames_written} frames, {actual_fps:.0f}fps)"
                 )
             except Exception as e:
                 logger.error(f"Error saving alert video: {e}")
