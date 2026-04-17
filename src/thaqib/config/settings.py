@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     detection_interval: float = 1.0  # Seconds between full detection runs
     yolo_model: str = "models/yolo11m.pt"
     detection_confidence: float = 0.15
-    tools_target_labels: list[str] = ["book"]  # Configurable tool labels (e.g. "book", "phone")
-    tools_model: str = "models/thaqib_best.pt"  # Custom model trained on exam scenarios
+    tools_target_labels: list[str] = ["book", "cell phone"]  # COCO classes for cheating tools
+    tools_model: str = "models/yolo11m.pt"  # Standard YOLO model (COCO classes)
     detection_imgsz: int = 640  # YOLO inference resolution (640 for speed, 1280 for accuracy)
 
     # Tracking
@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     neighbor_k: int = 6  # Number of nearest neighbors per student
 
     # Risk Detection
-    risk_angle_tolerance: float = 15.0  # Degrees
+    risk_angle_tolerance: float = 25.0  # Degrees (accounts for MediaPipe + iris detection noise)
     suspicious_duration_threshold: float = 2.0  # Seconds
     suspicious_match_ratio: float = 0.7
 

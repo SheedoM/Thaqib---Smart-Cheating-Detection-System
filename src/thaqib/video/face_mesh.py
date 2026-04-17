@@ -3,9 +3,14 @@ Face mesh extraction using MediaPipe Face Landmarker.
 
 Detects 478 face landmarks in both 2D pixel space and 3D metric space.
 Does NOT compute gaze or head pose — only raw mesh geometry.
+
+Uses VIDEO running mode for temporal smoothing (reduces landmark jitter
+between consecutive frames). Each worker thread gets its own landmarker
+instance via threading.local() because VIDEO mode is not thread-safe.
 """
 
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 import time
@@ -50,13 +55,17 @@ class FaceMeshExtractor:
     """
     MediaPipe FaceLandmarker wrapper for full face mesh extraction.
 
-    Loads face_landmarker.task once and extracts 2D + 3D landmarks for each
+    Loads face_landmarker.task and extracts 2D + 3D landmarks for each
     student crop. Coordinates are remapped back to full-frame pixel space so
     that downstream consumers do not need to know about the crop.
 
+    Uses VIDEO running mode for temporal smoothing — reduces jitter between
+    consecutive frames for the same student. Each ThreadPoolExecutor worker
+    thread gets its own landmarker instance via threading.local().
+
     Example:
         >>> extractor = FaceMeshExtractor()
-        >>> result = extractor.extract(frame, bbox=(x1, y1, x2, y2))
+        >>> result = extractor.extract(frame, bbox=(x1, y1, x2, y2), timestamp_ms=0)
         >>> if result:
         ...     print(result.count, "landmarks")
         ...     print(result.landmarks_2d[0])  # (px, py) in full frame
@@ -81,21 +90,61 @@ class FaceMeshExtractor:
 
         logger.info(f"Loading FaceMeshExtractor model: {self._model_path}")
 
-        opts = vision.FaceLandmarkerOptions(
-            base_options=mp_base_options.BaseOptions(
-                model_asset_path=str(self._model_path)
-            ),
-            running_mode=vision.RunningMode.IMAGE,
-            num_faces=1,
-            min_face_detection_confidence=0.80,
-            min_face_presence_confidence=0.80,
-            min_tracking_confidence=0.80,
-            output_face_blendshapes=False,
-            output_facial_transformation_matrixes=True,
-        )
-        self._landmarker = vision.FaceLandmarker.create_from_options(opts)
+        # Thread-local storage: each worker thread gets its own FaceLandmarker.
+        # VIDEO mode is not thread-safe — concurrent calls on the same instance
+        # will crash. Lazy initialization happens on first extract() call per thread.
+        self._thread_local = threading.local()
+
+        # Global monotonic timestamp counter (shared, atomic increment via lock).
+        # VIDEO mode requires strictly increasing timestamps per landmarker.
+        # Since each thread has its own landmarker, we track per-thread counters.
+        self._ts_lock = threading.Lock()
+
         self._mesh_cache: dict[int, tuple[float, FaceMeshResult]] = {}
-        logger.info("FaceMeshExtractor model loaded.")
+        
+        # Track all created landmarkers for cleanup
+        self._landmarkers: list[vision.FaceLandmarker] = []
+        self._landmarkers_lock = threading.Lock()
+        
+        logger.info("FaceMeshExtractor initialized (VIDEO mode, per-thread instances).")
+
+    def _get_landmarker(self) -> vision.FaceLandmarker:
+        """Get or create a thread-local FaceLandmarker instance."""
+        if not hasattr(self._thread_local, 'landmarker'):
+            opts = vision.FaceLandmarkerOptions(
+                base_options=mp_base_options.BaseOptions(
+                    model_asset_path=str(self._model_path)
+                ),
+                running_mode=vision.RunningMode.VIDEO,
+                num_faces=1,
+                min_face_detection_confidence=0.50,   # Lowered from 0.80 — distant faces need slack
+                min_face_presence_confidence=0.50,     # Lowered from 0.80
+                min_tracking_confidence=0.50,           # Lowered from 0.80
+                output_face_blendshapes=False,
+                output_facial_transformation_matrixes=True,
+            )
+            landmarker = vision.FaceLandmarker.create_from_options(opts)
+            self._thread_local.landmarker = landmarker
+            self._thread_local.timestamp_ms = 0  # Per-thread monotonic counter
+            
+            # Track for cleanup
+            with self._landmarkers_lock:
+                self._landmarkers.append(landmarker)
+            
+            thread_name = threading.current_thread().name
+            logger.info(f"Created per-thread FaceLandmarker for thread '{thread_name}'")
+        
+        return self._thread_local.landmarker
+
+    def _next_timestamp_ms(self) -> int:
+        """
+        Get the next monotonic timestamp (ms) for the current thread's landmarker.
+        
+        VIDEO mode requires strictly increasing timestamps. We use a per-thread
+        counter that increments by 33ms (~30fps) on each call.
+        """
+        self._thread_local.timestamp_ms += 33  # ~30fps cadence
+        return self._thread_local.timestamp_ms
 
     # ------------------------------------------------------------------
 
@@ -114,6 +163,7 @@ class FaceMeshExtractor:
         Args:
             frame: Full BGR video frame (H×W×3, from OpenCV).
             bbox:  Bounding box (x1, y1, x2, y2) of the student in frame.
+            track_id: Optional track ID for caching.
 
         Returns:
             FaceMeshResult if a face was detected, None otherwise.
@@ -152,7 +202,7 @@ class FaceMeshExtractor:
 
         crop_h, crop_w = crop.shape[:2]
 
-        if crop_w < 60 or crop_h < 60:
+        if crop_w < 40 or crop_h < 40:
             # Face too small to extrapolate accurate gaze, use cache
             return self._get_cached(track_id, reason="small_crop")
 
@@ -161,7 +211,9 @@ class FaceMeshExtractor:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_crop)
 
         try:
-            detection = self._landmarker.detect(mp_image)
+            landmarker = self._get_landmarker()
+            ts_ms = self._next_timestamp_ms()
+            detection = landmarker.detect_for_video(mp_image, ts_ms)
         except Exception as exc:
             logger.debug(f"FaceLandmarker inference error: {exc}")
             return None  # Detection failure — don't return stale cache
@@ -213,7 +265,18 @@ class FaceMeshExtractor:
                 return cached_mesh
         return None
 
+    def remove_cache(self, track_ids: list[int]) -> None:
+        """Remove cached face meshes for expired track IDs to prevent memory leaks."""
+        for tid in track_ids:
+            self._mesh_cache.pop(tid, None)
+
     def close(self) -> None:
-        """Release landmarker resources."""
-        self._landmarker.close()
-        logger.info("FaceMeshExtractor closed.")
+        """Release all landmarker resources (all threads)."""
+        with self._landmarkers_lock:
+            for lm in self._landmarkers:
+                try:
+                    lm.close()
+                except Exception:
+                    pass
+            self._landmarkers.clear()
+        logger.info("FaceMeshExtractor closed (all thread-local instances).")

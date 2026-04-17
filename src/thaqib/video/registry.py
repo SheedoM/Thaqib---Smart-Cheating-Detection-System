@@ -45,6 +45,12 @@ class StudentSpatialState:
     is_cheating: bool = False
     suspicious_start_time: float = 0.0
     cheating_cooldown: int = 0  # Frames remaining before is_cheating can be cleared
+    cheating_target_paper: tuple[int, int] | None = None   # Exact paper coords being copied
+    cheating_target_neighbor: int | None = None             # Track ID of the victim student
+    
+    # Phone cheating state
+    is_using_phone: bool = False
+    phone_bbox: tuple[int, int, int, int] | None = None    # Phone bounding box if detected
 
     # Alert recording state
     is_alert_recording: bool = False

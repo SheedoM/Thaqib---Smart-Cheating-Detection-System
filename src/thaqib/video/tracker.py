@@ -7,10 +7,8 @@ ID locking.
 """
 
 import logging
-import inspect
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 import cv2
@@ -236,17 +234,20 @@ class ObjectTracker:
 
     def _make_tracker(self) -> BoTSORT:
         """Factory method — single source of truth for BoT-SORT config."""
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        use_half = device == "cuda"  # FP16 only works on CUDA
         return BoTSORT(
             reid_weights=Path(self.reid_weights_path),
-            device="cuda",
-            half=True,
+            device=device,
+            half=use_half,
             with_reid=False,
             fuse_first_associate=True,
             track_high_thresh=0.25,
             track_low_thresh=0.10,
             new_track_thresh=0.20,
-            track_buffer=120,
-            match_thresh=0.9,
+            track_buffer=60,       # 2s ghost tracks (was 4s — too long)
+            match_thresh=0.8,      # Tighter matching reduces ID switches
             proximity_thresh=0.7,
             appearance_thresh=0.25,
         )
