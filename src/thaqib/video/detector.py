@@ -96,6 +96,7 @@ class HumanDetector:
 
         self.model_name = model_name or settings.yolo_model
         self.confidence_threshold = confidence_threshold or settings.detection_confidence
+        self.imgsz = getattr(settings, 'detection_imgsz', 640)
         self.device = device
 
         self._model: YOLO | None = None
@@ -108,14 +109,19 @@ class HumanDetector:
 
         logger.info(f"Loading YOLO model: {self.model_name}")
 
-        self._model = YOLO(f"{self.model_name}.pt")
+        import torch
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Move to device if specified
-        if self.device:
-            self._model.to(self.device)
+        self._model = YOLO(f"{self.model_name}")
+        self._model.to(self._device)
+
+        # Warmup: first CUDA inference compiles kernels and is slow.
+        # Run a dummy pass so the real first frame sees normal latency.
+        dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+        self._model(dummy, verbose=False, device=self._device, imgsz=self.imgsz)
 
         self._is_loaded = True
-        logger.info("YOLO model loaded successfully")
+        logger.info(f"YOLO model loaded successfully (device={self._device})")
 
     def detect(
         self,
@@ -137,32 +143,38 @@ class HumanDetector:
         if not self._is_loaded:
             self.load()
 
-        # Run inference
+        # Run inference — resolution is configurable via DETECTION_IMGSZ env var
         results = self._model(
             frame,
             conf=self.confidence_threshold,
             classes=[self.PERSON_CLASS_ID],  # Only detect persons
+            device=self._device,
             verbose=False,
+            imgsz=self.imgsz
         )
 
         # Parse results
         detections = []
         for result in results:
             boxes = result.boxes
-            if boxes is None:
+            if boxes is None or len(boxes) == 0:
                 continue
 
-            for i in range(len(boxes)):
-                # Get bounding box (xyxy format)
-                bbox = boxes.xyxy[i].cpu().numpy().astype(int)
-                confidence = float(boxes.conf[i].cpu().numpy())
-                class_id = int(boxes.cls[i].cpu().numpy())
+            xyxy_arr = boxes.xyxy.cpu().numpy().astype(int)
+            conf_arr = boxes.conf.cpu().numpy()
+            cls_arr = boxes.cls.cpu().numpy().astype(int)
 
+            for i in range(len(boxes)):
                 detections.append(
                     Detection(
-                        bbox=(int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])),
-                        confidence=confidence,
-                        class_id=class_id,
+                        bbox=(
+                            xyxy_arr[i][0],
+                            xyxy_arr[i][1],
+                            xyxy_arr[i][2],
+                            xyxy_arr[i][3]
+                        ),
+                        confidence=float(conf_arr[i]),
+                        class_id=int(cls_arr[i]),
                     )
                 )
 
