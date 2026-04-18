@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Loader2 } from 'lucide-react';
 import SetupWizard from './components/SetupWizard';
 import LoginPage from './pages/LoginPage';
+import DashboardPage from './pages/DashboardPage';
 
 type ViewState = 'loading' | 'setup' | 'login' | 'dashboard';
 
@@ -11,6 +12,13 @@ export default function App() {
 
   useEffect(() => {
     const checkStatus = async () => {
+      // If we already have a token, go straight to dashboard
+      const token = localStorage.getItem('thaqib_access_token');
+      if (token) {
+        setView('dashboard');
+        return;
+      }
+
       try {
         const response = await fetch('http://localhost:8000/api/setup/status');
         if (response.ok) {
@@ -29,6 +37,21 @@ export default function App() {
 
     checkStatus();
   }, []);
+
+  const handleLoginSuccess = () => {
+    setView('dashboard');
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('thaqib_access_token');
+    localStorage.removeItem('thaqib_refresh_token');
+    setView('login');
+  };
+
+  // Dashboard is full-screen — no side banner
+  if (view === 'dashboard') {
+    return <DashboardPage onLogout={handleLogout} />;
+  }
 
   return (
     <div className="flex w-full min-h-screen bg-[#fafafb]" dir="rtl">
@@ -106,14 +129,7 @@ export default function App() {
           </>
         )}
 
-        {view === 'login' && <LoginPage />}
-
-        {view === 'dashboard' && (
-          <div className="text-center">
-            <h1 className="text-3xl font-bold mb-4">لوحة التحكم</h1>
-            <p>مرحباً بك في النظام الرئيسي!</p>
-          </div>
-        )}
+        {view === 'login' && <LoginPage onLoginSuccess={handleLoginSuccess} />}
       </div>
     </div>
   );

@@ -43,7 +43,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from src.thaqib.api.routes import ptt, auth, institutions, halls, setup, devices, users, exams, events
+from src.thaqib.api.routes import ptt, auth, institutions, halls, setup, devices, users, exams, events, stream
 
 app.include_router(ptt.router, prefix="/api/v1/ptt")
 app.include_router(setup.router, prefix="/api/setup", tags=["Setup"])
@@ -54,6 +54,7 @@ app.include_router(devices.router, prefix="/api/devices", tags=["Devices"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(exams.router, prefix="/api/sessions", tags=["Exam Sessions"])
 app.include_router(events.router, prefix="/api/events", tags=["Detection Events"])
+app.include_router(stream.router, prefix="/api/stream", tags=["Video Stream"])
 
 @app.get("/")
 async def root():
