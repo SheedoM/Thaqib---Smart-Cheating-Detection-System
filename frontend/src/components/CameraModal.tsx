@@ -1,5 +1,12 @@
+import { apiUrl } from '../config/api';
+
 interface Alert {
   id: string;
+  camera_id: string;
+  camera_identifier: string;
+  camera_name: string;
+  hall_id: string;
+  hall_name: string;
   track_id: number;
   looking_at: number | null;
   event_type: string;
@@ -9,7 +16,12 @@ interface Alert {
   location: string;
 }
 
-interface PipelineStats {
+interface CameraStats {
+  camera_id: string;
+  camera_identifier: string;
+  camera_name: string;
+  hall_id: string;
+  hall_name: string;
   is_running: boolean;
   fps: number;
   tracked_count: number;
@@ -21,13 +33,17 @@ interface PipelineStats {
 interface CameraModalProps {
   mode: 'camera' | 'alert';
   alert: Alert | null;
-  stats: PipelineStats | null;
+  camera: {
+    id: string;
+    name: string;
+    hallName: string;
+    feedPath: string | null;
+  } | null;
+  stats: CameraStats | null;
   onClose: () => void;
 }
 
-const API_BASE = 'http://localhost:8000/api/stream';
-
-export default function CameraModal({ mode, alert, stats, onClose }: CameraModalProps) {
+export default function CameraModal({ mode, alert, camera, stats, onClose }: CameraModalProps) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-container" onClick={(e) => e.stopPropagation()}>
@@ -40,7 +56,7 @@ export default function CameraModal({ mode, alert, stats, onClose }: CameraModal
         </button>
 
         {mode === 'camera' ? (
-          <CameraView stats={stats} />
+          <CameraView camera={camera} stats={stats} />
         ) : (
           <AlertView alert={alert} />
         )}
@@ -52,12 +68,18 @@ export default function CameraModal({ mode, alert, stats, onClose }: CameraModal
 
 // ── Camera View (enlarged live feed) ─────────────────────────────────────────
 
-function CameraView({ stats }: { stats: PipelineStats | null }) {
+function CameraView({
+  camera,
+  stats,
+}: {
+  camera: CameraModalProps['camera'];
+  stats: CameraStats | null;
+}) {
   return (
     <div className="modal-content" dir="rtl">
       {/* Header */}
       <div className="modal-header">
-        <h2>كاميرا 1 - يمين</h2>
+        <h2>{camera?.name || 'الكاميرا'}</h2>
         <div className="modal-header-badge">
           <span className="camera-status-dot active" style={{ marginLeft: '6px' }}></span>
           بث مباشر
@@ -78,14 +100,24 @@ function CameraView({ stats }: { stats: PipelineStats | null }) {
             <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
             <circle cx="12" cy="10" r="3"/>
           </svg>
-          <span>قاعة 101 - كاميرا يمين</span>
+          <span>{camera ? `${camera.hallName} - ${camera.name}` : 'بث مباشر'}</span>
         </div>
 
-        <img
-          src={`${API_BASE}/feed`}
-          alt="بث مباشر"
-          className="modal-video-img"
-        />
+        {camera?.feedPath ? (
+          <img
+            src={apiUrl(camera.feedPath)}
+            alt="بث مباشر"
+            className="modal-video-img"
+          />
+        ) : (
+          <div className="camera-feed-placeholder" style={{ minHeight: '360px' }}>
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+            <p>الكاميرا غير متصلة</p>
+          </div>
+        )}
       </div>
 
       {/* Stats bar */}
@@ -174,7 +206,7 @@ function AlertView({ alert }: { alert: Alert | null }) {
           <span>{alert.location}</span>
         </div>
         <img
-          src={`${API_BASE}/alerts/snapshot/${alert.snapshot_file}`}
+          src={apiUrl(`/api/stream/alerts/snapshot/${alert.snapshot_file}`)}
           alt={`تنبيه - ${alert.event_type}`}
           className="modal-video-img"
         />

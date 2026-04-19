@@ -1,0 +1,105 @@
+{
+  "institution": {
+    "name": "Demo Monitoring Institution",
+    "code": "DEMO",
+    "contact_email": "demo-monitoring@example.com"
+  },
+  "halls": [
+    {
+      "id": "hall_101",
+      "name": "قاعة 101",
+      "building": "Main",
+      "floor": "1",
+      "capacity": 120,
+      "status": "ready",
+      "mics": [
+        "ميكروفون 1",
+        "ميكروفون 2"
+      ],
+      "cameras": [
+        {
+          "id": "hall101_cam_front",
+          "name": "كاميرا 1 - أمامية",
+          "source": "C:\\Users\\shady\\Downloads\\IMG_5123.MOV"
+        },
+        {
+          "id": "hall101_cam_back",
+          "name": "كاميرا 2 - خلفية",
+          "source": "C:\\Users\\shady\\Downloads\\20260414_132048.mp4"
+        }
+      ]
+    },
+    {
+      "id": "hall_102",
+      "name": "قاعة 102",
+      "building": "Main",
+      "floor": "1",
+      "capacity": 120,
+      "status": "not_ready",
+      "mics": [
+        "ميكروفون 1",
+        "ميكروفون 2"
+      ],
+      "cameras": [
+        {
+          "id": "hall102_cam_front",
+          "name": "كاميرا 1 - أمامية",
+          "source": ""
+        },
+        {
+          "id": "hall102_cam_back",
+          "name": "كاميرا 2 - خلفية",
+          "source": ""
+        }
+      ]
+    },
+    {
+      "id": "hall_103",
+      "name": "قاعة 103",
+      "building": "Main",
+      "floor": "2",
+      "capacity": 120,
+      "status": "not_ready",
+      "mics": [
+        "ميكروفون 1",
+        "ميكروفون 2"
+      ],
+      "cameras": [
+        {
+          "id": "hall103_cam_front",
+          "name": "كاميرا 1 - أمامية",
+          "source": ""
+        },
+        {
+          "id": "hall103_cam_back",
+          "name": "كاميرا 2 - خلفية",
+          "source": ""
+        }
+      ]
+    },
+    {
+      "id": "hall_104",
+      "name": "قاعة 104",
+      "building": "Main",
+      "floor": "2",
+      "capacity": 120,
+      "status": "not_ready",
+      "mics": [
+        "ميكروفون 1",
+        "ميكروفون 2"
+      ],
+      "cameras": [
+        {
+          "id": "hall104_cam_front",
+          "name": "كاميرا 1 - أمامية",
+          "source": ""
+        },
+        {
+          "id": "hall104_cam_back",
+          "name": "كاميرا 2 - خلفية",
+          "source": ""
+        }
+      ]
+    }
+  ]
+}
