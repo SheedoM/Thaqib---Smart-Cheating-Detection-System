@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import cv2
-from boxmot.trackers.botsort.bot_sort import BoTSORT
+from boxmot.trackers.botsort.botsort import BotSort as BoTSORT
 
 from thaqib.config import get_settings
 from thaqib.video.detector import Detection, DetectionResult

@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -5,11 +7,24 @@ from src.thaqib.core.limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from src.thaqib.api.routes import ptt, auth, institutions, halls, setup, devices, users, exams, events, stream
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    stream.startup_stream_manager()
+    try:
+        yield
+    finally:
+        stream.shutdown_stream_manager()
+
+
 # Initialize FastAPI App
 app = FastAPI(
     title="Thaqib Smart Cheating Detection System API",
     description="Backend API and WebSocket services for real-time exam monitoring.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Attach Limiter to app and set exception handler
@@ -42,8 +57,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
-
-from src.thaqib.api.routes import ptt, auth, institutions, halls, setup, devices, users, exams, events, stream
 
 app.include_router(ptt.router, prefix="/api/v1/ptt")
 app.include_router(setup.router, prefix="/api/setup", tags=["Setup"])

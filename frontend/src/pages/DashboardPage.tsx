@@ -1,10 +1,16 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import CameraModal from '../components/CameraModal';
+import { apiUrl, STREAM_BASE } from '../config/api';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface Alert {
   id: string;
+  camera_id: string;
+  camera_identifier: string;
+  camera_name: string;
+  hall_id: string;
+  hall_name: string;
   track_id: number;
   looking_at: number | null;
   event_type: string;
@@ -14,7 +20,12 @@ interface Alert {
   location: string;
 }
 
-interface PipelineStats {
+interface CameraStats {
+  camera_id: string;
+  camera_identifier: string;
+  camera_name: string;
+  hall_id: string;
+  hall_name: string;
   is_running: boolean;
   fps: number;
   tracked_count: number;
@@ -23,15 +34,38 @@ interface PipelineStats {
   alert_count: number;
 }
 
+interface CameraItem {
+  id: string;
+  identifier: string;
+  name: string;
+  type: string;
+  status: string;
+  active: boolean;
+  feed_path: string | null;
+  source_configured: boolean;
+  position?: Record<string, unknown>;
+}
+
+interface MicItem {
+  id: string;
+  identifier: string;
+  name: string;
+  status: string;
+}
+
+interface HallItem {
+  id: string;
+  name: string;
+  status: string;
+  cameras: CameraItem[];
+  mics: MicItem[];
+}
+
 interface DashboardPageProps {
   onLogout: () => void;
 }
 
 type TabType = 'cases' | 'cameras';
-
-// ─── Constants ───────────────────────────────────────────────────────────────
-
-const API_BASE = 'http://localhost:8000/api/stream';
 
 const NAV_ITEMS = [
   { label: 'الرئيسية', key: 'home', active: true },
@@ -68,41 +102,43 @@ function timeSince(isoString: string): string {
 
 export default function DashboardPage({ onLogout }: DashboardPageProps) {
   const [activeTab, setActiveTab] = useState<TabType>('cameras');
+  const [halls, setHalls] = useState<HallItem[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [stats, setStats] = useState<PipelineStats | null>(null);
-  const [pipelineStarted, setPipelineStarted] = useState(false);
+  const [statsByCamera, setStatsByCamera] = useState<Record<string, CameraStats>>({});
   const [modalMode, setModalMode] = useState<'camera' | 'alert' | null>(null);
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
+  const [selectedCamera, setSelectedCamera] = useState<{
+    id: string;
+    name: string;
+    hallName: string;
+    feedPath: string | null;
+  } | null>(null);
+  const hallsPollRef = useRef<number | null>(null);
   const alertPollRef = useRef<number | null>(null);
   const statsPollRef = useRef<number | null>(null);
 
-  // ── Start pipeline on mount ──
-  const startPipeline = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/start`);
-      const data = await res.json();
-      console.log('Pipeline:', data);
-      setPipelineStarted(true);
-    } catch (err) {
-      console.error('Failed to start pipeline:', err);
-    }
-  }, []);
-
   useEffect(() => {
-    startPipeline();
-
     return () => {
-      // Stop polling on unmount
+      if (hallsPollRef.current) clearInterval(hallsPollRef.current);
       if (alertPollRef.current) clearInterval(alertPollRef.current);
       if (statsPollRef.current) clearInterval(statsPollRef.current);
     };
-  }, [startPipeline]);
+  }, []);
 
-  // ── Poll alerts & stats ──
   useEffect(() => {
+    const pollMonitoring = async () => {
+      try {
+        const res = await fetch(apiUrl(`${STREAM_BASE}/monitoring`));
+        const data = await res.json();
+        setHalls(data.halls || []);
+      } catch {
+        // ignore polling errors
+      }
+    };
+
     const pollAlerts = async () => {
       try {
-        const res = await fetch(`${API_BASE}/alerts`);
+        const res = await fetch(apiUrl(`${STREAM_BASE}/alerts`));
         const data = await res.json();
         setAlerts(data.alerts || []);
       } catch { /* ignore */ }
@@ -110,38 +146,48 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
 
     const pollStats = async () => {
       try {
-        const res = await fetch(`${API_BASE}/status`);
+        const res = await fetch(apiUrl(`${STREAM_BASE}/status`));
         const data = await res.json();
-        setStats(data);
+        setStatsByCamera(data.cameras || {});
       } catch { /* ignore */ }
     };
 
+    pollMonitoring();
     pollAlerts();
     pollStats();
 
+    hallsPollRef.current = window.setInterval(pollMonitoring, 5000);
     alertPollRef.current = window.setInterval(pollAlerts, 3000);
     statsPollRef.current = window.setInterval(pollStats, 2000);
 
     return () => {
+      if (hallsPollRef.current) clearInterval(hallsPollRef.current);
       if (alertPollRef.current) clearInterval(alertPollRef.current);
       if (statsPollRef.current) clearInterval(statsPollRef.current);
     };
   }, []);
 
-  // ── Handlers ──
-  const openCameraModal = () => {
+  const openCameraModal = (camera: CameraItem, hallName: string) => {
     setModalMode('camera');
     setSelectedAlert(null);
+    setSelectedCamera({
+      id: camera.id,
+      name: camera.name,
+      hallName,
+      feedPath: camera.feed_path,
+    });
   };
 
   const openAlertModal = (alert: Alert) => {
     setModalMode('alert');
     setSelectedAlert(alert);
+    setSelectedCamera(null);
   };
 
   const closeModal = () => {
     setModalMode(null);
     setSelectedAlert(null);
+    setSelectedCamera(null);
   };
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -260,8 +306,8 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
           />
         ) : (
           <CamerasTab
-            stats={stats}
-            pipelineStarted={pipelineStarted}
+            halls={halls}
+            statsByCamera={statsByCamera}
             onClickCamera={openCameraModal}
             alerts={alerts}
           />
@@ -273,7 +319,8 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
         <CameraModal
           mode={modalMode}
           alert={selectedAlert}
-          stats={stats}
+          camera={selectedCamera}
+          stats={selectedCamera ? statsByCamera[selectedCamera.id] ?? null : null}
           onClose={closeModal}
         />
       )}
@@ -313,7 +360,6 @@ function CasesTab({
 
   return (
     <div className="cases-section">
-      <h2 className="hall-title">قاعة 101</h2>
       <div className="cases-grid">
         {alerts.map((alert) => (
           <AlertCard key={alert.id} alert={alert} onViewAlert={onViewAlert} />
@@ -369,6 +415,13 @@ function AlertCard({
           <span>{alert.location}</span>
         </div>
         <div className="alert-card-detail-row">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="2">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          <span>{alert.hall_name} - {alert.camera_name}</span>
+        </div>
+        <div className="alert-card-detail-row">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#71717b" strokeWidth="2">
             <circle cx="12" cy="12" r="10"/>
             <polyline points="12 6 12 12 16 14"/>
@@ -401,176 +454,100 @@ function AlertCard({
 // ── Cameras Tab ──────────────────────────────────────────────────────────────
 
 function CamerasTab({
-  stats,
-  pipelineStarted,
+  halls,
+  statsByCamera,
   onClickCamera,
   alerts,
 }: {
-  stats: PipelineStats | null;
-  pipelineStarted: boolean;
-  onClickCamera: () => void;
+  halls: HallItem[];
+  statsByCamera: Record<string, CameraStats>;
+  onClickCamera: (camera: CameraItem, hallName: string) => void;
   alerts: Alert[];
 }) {
-  const hasActiveAlert = alerts.some(a => a.severity === 'high');
-
   return (
     <div className="cameras-section">
-      {/* Hall 101 */}
-      <div className="camera-hall-group">
-        <div className="camera-hall-header">
-          <h2 className="hall-title">قاعة 101</h2>
-          <button className="alert-btn-green" style={{ marginRight: 'auto', marginLeft: 0 }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
-            </svg>
-            الاتصال بالمراقب
-          </button>
-        </div>
-        <div className="cameras-grid">
-          {/* Camera 1 - Main feed (with detection) */}
-          <div
-            className={`camera-feed ${hasActiveAlert ? 'camera-feed-alert' : ''}`}
-            onClick={onClickCamera}
-          >
-            <div className="camera-feed-label">
-              <span className="camera-status-dot active"></span>
-              <span>كاميرا 1 - يمين</span>
-            </div>
-            <div className="camera-rec-indicator">
-              <span className="rec-dot"></span>
-              REC
-            </div>
-            {hasActiveAlert && (
-              <div className="camera-alert-overlay">
-                <span className="camera-alert-badge">حركة مشبوهة</span>
-              </div>
-            )}
-            {pipelineStarted ? (
-              <img
-                src={`${API_BASE}/feed`}
-                alt="كاميرا 1"
-                className="camera-feed-img"
-              />
-            ) : (
-              <div className="camera-feed-placeholder">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
-                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                  <circle cx="12" cy="13" r="4"/>
-                </svg>
-                <p>جاري تحميل البث...</p>
-              </div>
-            )}
-            <div className="camera-feed-stats">
-              <span>FPS: {stats?.fps || 0}</span>
-              <span>•</span>
-              <span>Tracked: {stats?.tracked_count || 0}</span>
-              <span>•</span>
-              <span>RES: 1080p</span>
-            </div>
+      {halls.map((hall) => (
+        <div key={hall.id} className="camera-hall-group">
+          <div className="camera-hall-header">
+            <h2 className="hall-title">{hall.name}</h2>
+            <button className="alert-btn-green" style={{ marginRight: 'auto', marginLeft: 0 }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
+              </svg>
+              الاتصال بالمراقب
+            </button>
           </div>
+          <div className="cameras-grid">
+            {hall.cameras.map((camera) => {
+              const stats = statsByCamera[camera.id];
+              const hasActiveAlert = alerts.some((alert) => alert.camera_id === camera.id && alert.severity === 'high');
+              const canStream = Boolean(camera.feed_path);
+              const streamRunning = Boolean(stats?.is_running);
+              const showLoading = canStream && !streamRunning;
 
-          {/* Camera 2 - Placeholder */}
-          <div className="camera-feed" onClick={onClickCamera}>
-            <div className="camera-feed-label">
-              <span className="camera-status-dot active"></span>
-              <span>كاميرا 2 - وسط</span>
-            </div>
-            <div className="camera-rec-indicator">
-              <span className="rec-dot"></span>
-              REC
-            </div>
-            {pipelineStarted ? (
-              <img
-                src={`${API_BASE}/feed`}
-                alt="كاميرا 2"
-                className="camera-feed-img"
-              />
-            ) : (
-              <div className="camera-feed-placeholder">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
-                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                  <circle cx="12" cy="13" r="4"/>
-                </svg>
-                <p>جاري تحميل البث...</p>
-              </div>
-            )}
-            <div className="camera-feed-stats">
-              <span>FPS: {stats?.fps || 0}</span>
-              <span>•</span>
-              <span>BITRATE: 4.2Mbps</span>
-              <span>•</span>
-              <span>RES: 1080p</span>
-            </div>
-          </div>
-
-          {/* Camera 3 - Placeholder */}
-          <div className="camera-feed" onClick={onClickCamera}>
-            <div className="camera-feed-label">
-              <span className="camera-status-dot active"></span>
-              <span>كاميرا 3 - يسار</span>
-            </div>
-            <div className="camera-rec-indicator">
-              <span className="rec-dot"></span>
-              REC
-            </div>
-            {pipelineStarted ? (
-              <img
-                src={`${API_BASE}/feed`}
-                alt="كاميرا 3"
-                className="camera-feed-img"
-              />
-            ) : (
-              <div className="camera-feed-placeholder">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
-                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                  <circle cx="12" cy="13" r="4"/>
-                </svg>
-                <p>جاري تحميل البث...</p>
-              </div>
-            )}
-            <div className="camera-feed-stats">
-              <span>FPS: 30</span>
-              <span>•</span>
-              <span>CODEC: H.265</span>
-              <span>•</span>
-              <span>RES: 1080p</span>
-            </div>
+              return (
+                <div
+                  key={camera.id}
+                  className={`camera-feed ${hasActiveAlert ? 'camera-feed-alert' : ''}`}
+                  onClick={() => onClickCamera(camera, hall.name)}
+                >
+                  <div className="camera-feed-label">
+                    <span className={`camera-status-dot ${streamRunning ? 'active' : 'inactive'}`}></span>
+                    <span>{camera.name}</span>
+                  </div>
+                  {(streamRunning || canStream) && (
+                    <div className="camera-rec-indicator">
+                      <span className="rec-dot"></span>
+                      REC
+                    </div>
+                  )}
+                  {hasActiveAlert && (
+                    <div className="camera-alert-overlay">
+                      <span className="camera-alert-badge">حركة مشبوهة</span>
+                    </div>
+                  )}
+                  {streamRunning && camera.feed_path ? (
+                    <img
+                      src={apiUrl(camera.feed_path)}
+                      alt={camera.name}
+                      className="camera-feed-img"
+                    />
+                  ) : showLoading ? (
+                    <div className="camera-feed-placeholder">
+                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                        <circle cx="12" cy="13" r="4"/>
+                      </svg>
+                      <p>جاري تحميل البث...</p>
+                    </div>
+                  ) : (
+                    <div className="camera-feed-placeholder">
+                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                        <circle cx="12" cy="13" r="4"/>
+                      </svg>
+                      <p>الكاميرا غير متصلة</p>
+                    </div>
+                  )}
+                  <div className="camera-feed-stats">
+                    {streamRunning ? (
+                      <>
+                        <span>FPS: {stats?.fps || 0}</span>
+                        <span>•</span>
+                        <span>Tracked: {stats?.tracked_count || 0}</span>
+                        <span>•</span>
+                        <span>RES: 1080p</span>
+                      </>
+                    ) : (
+                      <span>—</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
-      </div>
-
-      {/* Hall 102 — same structure */}
-      <div className="camera-hall-group">
-        <div className="camera-hall-header">
-          <h2 className="hall-title">قاعة 102</h2>
-          <button className="alert-btn-green" style={{ marginRight: 'auto', marginLeft: 0 }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
-            </svg>
-            الاتصال بالمراقب
-          </button>
-        </div>
-        <div className="cameras-grid">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="camera-feed" onClick={onClickCamera}>
-              <div className="camera-feed-label">
-                <span className="camera-status-dot inactive"></span>
-                <span>كاميرا {i} - {i === 1 ? 'يمين' : i === 2 ? 'وسط' : 'يسار'}</span>
-              </div>
-              <div className="camera-feed-placeholder">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
-                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                  <circle cx="12" cy="13" r="4"/>
-                </svg>
-                <p>الكاميرا غير متصلة</p>
-              </div>
-              <div className="camera-feed-stats">
-                <span>—</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      ))}
     </div>
   );
 }
