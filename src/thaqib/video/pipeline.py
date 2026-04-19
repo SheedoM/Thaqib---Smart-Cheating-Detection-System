@@ -482,6 +482,13 @@ class VideoPipeline:
                             f"PHONE CHEATING: Track {best_student.track_id} "
                             f"using phone (conf={phone.confidence:.2f})"
                         )
+                        # Fire alert callback (same mechanism as gaze cheating)
+                        cb = getattr(self._cheating_evaluator, "on_alert", None)
+                        if cb is not None:
+                            try:
+                                cb(best_student)
+                            except Exception as e:
+                                logger.error(f"on_alert callback error (phone): {e}")
                     else:
                         # Already cheating — keep refreshing cooldown
                         best_student.cheating_cooldown = 90
@@ -966,13 +973,13 @@ class VideoPipeline:
             #   gaze_alert_track3_20260417_053000.avi
             prefix = "phone_alert" if cheat_type == "phone" else "gaze_alert"
             
-            # Codec fallback chain — ordered by reliability on Windows:
-            #   1. XVID + .avi  (universally available, no external DLLs)
-            #   2. mp4v + .mp4  (works on most builds)
+            # Codec fallback chain — prefer browser-friendly formats first:
+            #   1. mp4v + .mp4  (most likely to play in browser <video>)
+            #   2. XVID + .avi  (universally available, no external DLLs)
             #   3. MJPG + .avi  (always works, larger files)
             codec_options = [
-                ('XVID', '.avi'),
                 ('mp4v', '.mp4'),
+                ('XVID', '.avi'),
                 ('MJPG', '.avi'),
             ]
             

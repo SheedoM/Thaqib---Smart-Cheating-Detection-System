@@ -20,7 +20,7 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session, selectinload
 
 from src.thaqib.db.database import SessionLocal
@@ -33,6 +33,36 @@ router = APIRouter()
 ALERTS_DIR = Path("./alerts")
 ALERTS_DIR.mkdir(exist_ok=True)
 _ROOT_ALERTS_DIR = ALERTS_DIR.resolve()
+
+
+def _safe_slug(value: str) -> str:
+    allowed = []
+    for ch in (value or "").strip():
+        if ch.isalnum() or ch in ("-", "_"):
+            allowed.append(ch)
+        elif ch.isspace():
+            allowed.append("_")
+    out = "".join(allowed).strip("_")
+    return out or "unknown"
+
+
+def _alerts_prefix_dir(camera: CameraRuntime, created_at_iso: str) -> Path:
+    try:
+        d = datetime.fromisoformat(created_at_iso)
+    except Exception:
+        d = datetime.now()
+    date_dir = d.strftime("%Y%m%d")
+    hall_dir = _safe_slug(camera.hall_name)
+    cam_dir = _safe_slug(camera.identifier)
+    return Path(date_dir) / hall_dir / cam_dir
+
+
+def _ensure_alert_dirs(rel_prefix: Path) -> tuple[Path, Path]:
+    snap_dir = (ALERTS_DIR / rel_prefix / "snapshots")
+    clip_dir = (ALERTS_DIR / rel_prefix / "clips")
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    return snap_dir, clip_dir
 
 
 @dataclass
@@ -71,6 +101,80 @@ _alerts: list[dict[str, Any]] = []
 _alerts_lock = threading.Lock()
 _camera_states: dict[str, CameraRuntime] = {}
 _manager_lock = threading.Lock()
+
+
+def _infer_event_type(state: Any) -> str:
+    if bool(getattr(state, "is_using_phone", False)):
+        return "استخدام الهاتف"
+    if getattr(state, "cheating_target_neighbor", None) is not None:
+        return "غش من الجار"
+    return "سلوك مشبوه"
+
+
+def _poll_for_alert_clip(
+    alert_id: str,
+    track_id: int,
+    created_at_iso: str,
+    rel_prefix_str: str,
+    timeout_s: float = 25.0,
+) -> None:
+    """Attach video_file to an alert once pipeline writer saves it to ./alerts/."""
+    try:
+        created_at = datetime.fromisoformat(created_at_iso)
+    except Exception:
+        created_at = datetime.now()
+
+    deadline = time.time() + timeout_s
+    patterns = [
+        f"*alert_track{track_id}_*.mp4",
+        f"*alert_track{track_id}_*.avi",
+    ]
+
+    while time.time() < deadline:
+        candidates: list[Path] = []
+        for pat in patterns:
+            candidates.extend(ALERTS_DIR.glob(pat))
+
+        # Prefer newest file created after alert time
+        best: Path | None = None
+        best_mtime = 0.0
+        for p in candidates:
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            mtime = st.st_mtime
+            if datetime.fromtimestamp(mtime) < created_at:
+                continue
+            if mtime > best_mtime:
+                best = p
+                best_mtime = mtime
+
+        if best is not None:
+            # Move clip into structured folder
+            rel_prefix = Path(rel_prefix_str)
+            _, clip_dir = _ensure_alert_dirs(rel_prefix)
+            dest = clip_dir / best.name
+            try:
+                if best.resolve() != dest.resolve():
+                    best.replace(dest)
+                best = dest
+            except Exception:
+                # If move fails, still attach original filename
+                pass
+
+            with _alerts_lock:
+                for a in _alerts:
+                    if a.get("id") == alert_id:
+                        try:
+                            rel_path = (rel_prefix / "clips" / best.name).as_posix()
+                        except Exception:
+                            rel_path = best.name
+                        a["video_file"] = rel_path
+                        return
+            return
+
+        time.sleep(0.5)
 
 
 def _parse_source(source: str) -> int | str:
@@ -250,14 +354,17 @@ def _draw_annotations(frame: np.ndarray, pipeline_frame: Any) -> np.ndarray:
     return annotated
 
 
-def _save_alert_snapshot(frame: np.ndarray, camera: CameraRuntime, track_id: int) -> str:
+def _save_alert_snapshot(frame: np.ndarray, camera: CameraRuntime, track_id: int, created_at_iso: str) -> str:
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_camera_id = camera.device_id.replace("-", "")
     filename = f"alert_{safe_camera_id}_{track_id}_{timestamp_str}_{uuid.uuid4().hex[:6]}.jpg"
-    filepath = ALERTS_DIR / filename
+    rel_prefix = _alerts_prefix_dir(camera, created_at_iso)
+    snap_dir, _ = _ensure_alert_dirs(rel_prefix)
+    filepath = snap_dir / filename
     cv2.imwrite(str(filepath), frame)
     logger.info("Alert snapshot saved: %s", filepath)
-    return filename
+    rel_path = (rel_prefix / "snapshots" / filename).as_posix()
+    return rel_path
 
 
 def _run_pipeline(camera: CameraRuntime) -> None:
@@ -279,7 +386,9 @@ def _run_pipeline(camera: CameraRuntime) -> None:
         if frame_img is None:
             return
 
-        filename = _save_alert_snapshot(frame_img, camera, state.track_id)
+        created_at = datetime.now().isoformat()
+        rel_prefix = _alerts_prefix_dir(camera, created_at)
+        filename = _save_alert_snapshot(frame_img, camera, state.track_id, created_at)
         alert_data = {
             "id": str(uuid.uuid4()),
             "camera_id": camera.device_id,
@@ -288,11 +397,12 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             "hall_id": camera.hall_id,
             "hall_name": camera.hall_name,
             "track_id": state.track_id,
-            "looking_at": state.looking_at_neighbor_id,
-            "event_type": "غش من الجار",
+            "looking_at": getattr(state, "looking_at_neighbor_id", None),
+            "event_type": _infer_event_type(state),
             "severity": "high",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": created_at,
             "snapshot_file": filename,
+            "video_file": None,
             "location": f"{camera.hall_name} - {camera.camera_name}",
         }
 
@@ -305,8 +415,16 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             "ALERT on %s: student %s looking at neighbor %s",
             camera.identifier,
             state.track_id,
-            state.looking_at_neighbor_id,
+            getattr(state, "looking_at_neighbor_id", None),
         )
+
+        # Attach clip filename once pipeline writer flushes it to disk
+        threading.Thread(
+            target=_poll_for_alert_clip,
+            args=(alert_data["id"], state.track_id, created_at, rel_prefix.as_posix()),
+            daemon=True,
+            name=f"AlertClipPoll-{state.track_id}",
+        ).start()
 
     pipeline = VideoPipeline(source=parsed_source, detection_interval=1.0, on_alert=on_alert)
 
@@ -322,6 +440,12 @@ def _run_pipeline(camera: CameraRuntime) -> None:
         camera.stats["is_running"] = True
         camera.stats["last_error"] = None
         camera.stats["last_error_at"] = None
+
+        # Throttle JPEG encoding rate to reduce CPU and avoid UI freezes.
+        last_emit = 0.0
+        target_fps = 12.0
+        min_interval = 1.0 / target_fps
+        max_stream_w = 1280
 
         for frame_data in pipeline.run():
             if camera.stop_event.is_set():
@@ -339,7 +463,21 @@ def _run_pipeline(camera: CameraRuntime) -> None:
                     )
 
             annotated = _draw_annotations(frame_data.frame, frame_data)
-            ok, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            now = time.time()
+            if now - last_emit < min_interval:
+                continue
+
+            # Downscale for MJPEG to reduce CPU/bandwidth.
+            try:
+                h, w = annotated.shape[:2]
+                if w > max_stream_w and w > 0:
+                    scale = max_stream_w / float(w)
+                    new_h = max(1, int(h * scale))
+                    annotated = cv2.resize(annotated, (max_stream_w, new_h), interpolation=cv2.INTER_AREA)
+            except Exception:
+                pass
+
+            ok, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 60])
             if not ok:
                 continue
 
@@ -355,7 +493,7 @@ def _run_pipeline(camera: CameraRuntime) -> None:
                     "frame_index": frame_data.frame_index,
                 }
             )
-            time.sleep(0.04)
+            last_emit = now
     except Exception:
         logger.exception("Pipeline error for camera %s", camera.identifier)
         camera.stats["last_error"] = "Pipeline error (see server logs)"
@@ -432,12 +570,33 @@ def shutdown_stream_manager() -> None:
         _stop_camera_runtime(runtime)
 
 
+def _force_restart_all_cameras() -> None:
+    """Force restart all active camera runtimes (reconnect live, restart video)."""
+    with _manager_lock:
+        runtimes = list(_camera_states.values())
+        _camera_states.clear()
+    for runtime in runtimes:
+        _stop_camera_runtime(runtime)
+    _refresh_camera_states()
+
+
 @router.post("/reload")
 async def reload_monitoring() -> JSONResponse:
     _refresh_camera_states()
     return JSONResponse(
         {
             "status": "reloaded",
+            "active_cameras": len([state for state in _camera_states.values() if state.stats["is_running"]]),
+        }
+    )
+
+
+@router.post("/refresh")
+async def refresh_monitoring() -> JSONResponse:
+    _force_restart_all_cameras()
+    return JSONResponse(
+        {
+            "status": "refreshed",
             "active_cameras": len([state for state in _camera_states.values() if state.stats["is_running"]]),
         }
     )
@@ -486,10 +645,77 @@ async def list_alerts() -> JSONResponse:
     return JSONResponse({"alerts": alerts})
 
 
-@router.get("/alerts/snapshot/{filename}")
-async def get_alert_snapshot(filename: str) -> FileResponse:
-    safe_name = Path(filename).name
-    filepath = (ALERTS_DIR / safe_name).resolve()
+@router.get("/alerts/snapshot/{path:path}")
+async def get_alert_snapshot(path: str) -> FileResponse:
+    safe_rel = Path(path)
+    filepath = (ALERTS_DIR / safe_rel).resolve()
     if _ROOT_ALERTS_DIR not in filepath.parents or not filepath.exists():
         raise HTTPException(status_code=404, detail="Snapshot not found")
     return FileResponse(str(filepath), media_type="image/jpeg")
+
+
+@router.get("/alerts/video/{path:path}")
+async def get_alert_video(path: str) -> FileResponse:
+    safe_rel = Path(path)
+    filepath = (ALERTS_DIR / safe_rel).resolve()
+    if _ROOT_ALERTS_DIR not in filepath.parents or not filepath.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    media_type = "video/mp4" if filepath.suffix.lower() == ".mp4" else "video/x-msvideo"
+    return FileResponse(str(filepath), media_type=media_type)
+
+
+@router.get("/alerts/report/{alert_id}.pdf")
+async def get_alert_report_pdf(alert_id: str) -> Response:
+    with _alerts_lock:
+        alert = next((a for a in _alerts if a.get("id") == alert_id), None)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    try:
+        from io import BytesIO
+
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm
+        from reportlab.pdfgen import canvas as pdf_canvas
+    except Exception:
+        raise HTTPException(status_code=500, detail="PDF generator not available")
+
+    buf = BytesIO()
+    c = pdf_canvas.Canvas(buf, pagesize=A4)
+    width, height = A4
+
+    x = 18 * mm
+    y = height - 20 * mm
+
+    def line(label: str, value: Any) -> None:
+        nonlocal y
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(x, y, f"{label}:")
+        c.setFont("Helvetica", 11)
+        c.drawString(x + 95, y, str(value) if value is not None else "—")
+        y -= 8 * mm
+
+    c.setTitle(f"Alert report {alert_id}")
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(x, y, "Thaqib Alert Report")
+    y -= 12 * mm
+
+    line("Event type", alert.get("event_type"))
+    line("Severity", alert.get("severity"))
+    line("Time", alert.get("timestamp"))
+    line("Hall", alert.get("hall_name"))
+    line("Camera", alert.get("camera_name"))
+    line("Track ID", alert.get("track_id"))
+    line("Snapshot", alert.get("snapshot_file"))
+    line("Video", alert.get("video_file"))
+
+    c.showPage()
+    c.save()
+
+    pdf_bytes = buf.getvalue()
+    headers = {
+        "Content-Disposition": f'attachment; filename="alert_{alert_id}.pdf"',
+        "Cache-Control": "no-store",
+    }
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)

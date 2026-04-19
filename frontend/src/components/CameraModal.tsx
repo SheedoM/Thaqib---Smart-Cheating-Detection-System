@@ -13,6 +13,7 @@ interface Alert {
   severity: string;
   timestamp: string;
   snapshot_file: string;
+  video_file?: string | null;
   location: string;
 }
 
@@ -40,10 +41,13 @@ interface CameraModalProps {
     feedPath: string | null;
   } | null;
   stats: CameraStats | null;
+  pttStatusText: string;
+  onPttStart: () => void | Promise<void>;
+  onPttStop: () => void;
   onClose: () => void;
 }
 
-export default function CameraModal({ mode, alert, camera, stats, onClose }: CameraModalProps) {
+export default function CameraModal({ mode, alert, camera, stats, pttStatusText, onPttStart, onPttStop, onClose }: CameraModalProps) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-container" onClick={(e) => e.stopPropagation()}>
@@ -58,7 +62,7 @@ export default function CameraModal({ mode, alert, camera, stats, onClose }: Cam
         {mode === 'camera' ? (
           <CameraView camera={camera} stats={stats} />
         ) : (
-          <AlertView alert={alert} />
+          <AlertView alert={alert} pttStatusText={pttStatusText} onPttStart={onPttStart} onPttStop={onPttStop} />
         )}
       </div>
     </div>
@@ -88,12 +92,6 @@ function CameraView({
 
       {/* Video feed */}
       <div className="modal-video-wrapper">
-        {/* REC indicator */}
-        <div className="modal-rec-indicator">
-          <span className="rec-dot"></span>
-          REC
-        </div>
-
         {/* Location tooltip */}
         <div className="modal-location-tooltip">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -147,6 +145,21 @@ function CameraView({
           <span className="modal-stat-value">{stats?.selected_count || 0}</span>
         </div>
       </div>
+
+      {/* Controls cheat sheet (from demo_video.py) */}
+      <div className="modal-controls">
+        <div className="modal-controls-header">اختصارات التحكم</div>
+        <div className="modal-controls-grid">
+          <div className="modal-control-item"><span className="keycap">q</span><span>إنهاء</span></div>
+          <div className="modal-control-item"><span className="keycap">s</span><span>تحديد كل الطلاب الظاهرين للمراقبة</span></div>
+          <div className="modal-control-item"><span className="keycap">c</span><span>مسح التحديد</span></div>
+          <div className="modal-control-item"><span className="keycap">t</span><span>إظهار/إخفاء خطوط الجيران</span></div>
+          <div className="modal-control-item"><span className="keycap">p</span><span>إظهار/إخفاء لوحة التحكم</span></div>
+        </div>
+        <div style={{ marginTop: '10px', color: '#6b7280', fontSize: '12px', fontWeight: 600 }}>
+          ملاحظة: هذه الاختصارات تعمل في وضع العرض التجريبي (OpenCV). في لوحة التحكم الحالية سيتم إضافة أزرار تحكم مكافئة لاحقًا.
+        </div>
+      </div>
     </div>
   );
 }
@@ -154,8 +167,38 @@ function CameraView({
 
 // ── Alert View (saved clip/snapshot) ─────────────────────────────────────────
 
-function AlertView({ alert }: { alert: Alert | null }) {
+function AlertView({
+  alert,
+  pttStatusText,
+  onPttStart,
+  onPttStop,
+}: {
+  alert: Alert | null;
+  pttStatusText: string;
+  onPttStart: () => void | Promise<void>;
+  onPttStop: () => void;
+}) {
   if (!alert) return null;
+
+  const isLikelyUnplayable = Boolean(alert.video_file && alert.video_file.toLowerCase().endsWith('.avi'));
+
+  const downloadReport = async () => {
+    try {
+      const res = await fetch(apiUrl(`/api/stream/alerts/report/${alert.id}.pdf`));
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `alert_${alert.id}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      // ignore
+    }
+  };
 
   return (
     <div className="modal-content" dir="rtl">
@@ -196,7 +239,7 @@ function AlertView({ alert }: { alert: Alert | null }) {
         </div>
       </div>
 
-      {/* Snapshot image */}
+      {/* Clip or snapshot */}
       <div className="modal-video-wrapper">
         <div className="modal-location-tooltip">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -205,16 +248,38 @@ function AlertView({ alert }: { alert: Alert | null }) {
           </svg>
           <span>{alert.location}</span>
         </div>
-        <img
-          src={apiUrl(`/api/stream/alerts/snapshot/${alert.snapshot_file}`)}
-          alt={`تنبيه - ${alert.event_type}`}
-          className="modal-video-img"
-        />
+        {alert.video_file && !isLikelyUnplayable ? (
+          <video
+            src={apiUrl(`/api/stream/alerts/video/${alert.video_file}`)}
+            controls
+            autoPlay
+            className="modal-video-img"
+          />
+        ) : (
+          <>
+            <img
+              src={apiUrl(`/api/stream/alerts/snapshot/${alert.snapshot_file}`)}
+              alt={`تنبيه - ${alert.event_type}`}
+              className="modal-video-img"
+            />
+            {alert.video_file && (
+              <a
+                className="modal-download-link"
+                href={apiUrl(`/api/stream/alerts/video/${alert.video_file}`)}
+                target="_blank"
+                rel="noreferrer"
+                style={{ display: 'inline-block', marginTop: '10px' }}
+              >
+                تنزيل مقطع التنبيه
+              </a>
+            )}
+          </>
+        )}
       </div>
 
       {/* Action buttons */}
       <div className="modal-actions">
-        <button className="alert-btn-primary" style={{ flex: 1 }}>
+        <button className="alert-btn-primary" style={{ flex: 1 }} onClick={downloadReport}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
             <polyline points="17 21 17 13 7 13 7 21"/>
@@ -222,7 +287,29 @@ function AlertView({ alert }: { alert: Alert | null }) {
           </svg>
           حفظ التقرير
         </button>
-        <button className="alert-btn-green" style={{ flex: 1 }}>
+        <button
+          className="alert-btn-green"
+          style={{ flex: 1 }}
+          title={pttStatusText}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            void onPttStart();
+          }}
+          onPointerUp={(e) => {
+            e.preventDefault();
+            onPttStop();
+          }}
+          onPointerCancel={() => onPttStop()}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            void onPttStart();
+          }}
+          onMouseUp={(e) => {
+            e.preventDefault();
+            onPttStop();
+          }}
+          onMouseLeave={() => onPttStop()}
+        >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
           </svg>
