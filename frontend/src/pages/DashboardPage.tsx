@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import CameraModal from '../components/CameraModal';
 import { apiUrl, STREAM_BASE } from '../config/api';
+import { useInvigilatorPtt } from '../hooks/useInvigilatorPtt';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -17,6 +18,7 @@ interface Alert {
   severity: string;
   timestamp: string;
   snapshot_file: string;
+  video_file?: string | null;
   location: string;
 }
 
@@ -104,6 +106,8 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
   const [activeTab, setActiveTab] = useState<TabType>('cameras');
   const [halls, setHalls] = useState<HallItem[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [recentAlertByCameraId, setRecentAlertByCameraId] = useState<Record<string, Alert | null>>({});
   const [statsByCamera, setStatsByCamera] = useState<Record<string, CameraStats>>({});
   const [modalMode, setModalMode] = useState<'camera' | 'alert' | null>(null);
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
@@ -116,13 +120,48 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
   const hallsPollRef = useRef<number | null>(null);
   const alertPollRef = useRef<number | null>(null);
   const statsPollRef = useRef<number | null>(null);
+  const lastSeenAlertIdByCameraRef = useRef<Record<string, string>>({});
+  const clearTimersRef = useRef<Record<string, number>>({});
+  const notifWrapRef = useRef<HTMLDivElement | null>(null);
+  const pttPressedRef = useRef(false);
+
+  const ptt = useInvigilatorPtt();
+
+  const ensurePttConnected = async () => {
+    if (ptt.state === 'connected') return true;
+    return await ptt.connect();
+  };
+
+  const startPtt = async () => {
+    pttPressedRef.current = true;
+    const ok = await ensurePttConnected();
+    if (!ok) return;
+    if (!pttPressedRef.current) return; // user already released
+    ptt.startSpeak();
+  };
+
+  const stopPtt = () => {
+    pttPressedRef.current = false;
+    ptt.stopSpeak();
+  };
 
   useEffect(() => {
     return () => {
       if (hallsPollRef.current) clearInterval(hallsPollRef.current);
       if (alertPollRef.current) clearInterval(alertPollRef.current);
       if (statsPollRef.current) clearInterval(statsPollRef.current);
+      Object.values(clearTimersRef.current).forEach((t) => clearTimeout(t));
     };
+  }, []);
+
+  useEffect(() => {
+    const onDocDown = (ev: MouseEvent) => {
+      const el = notifWrapRef.current;
+      if (!el) return;
+      if (ev.target instanceof Node && !el.contains(ev.target)) setNotificationsOpen(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => document.removeEventListener('mousedown', onDocDown);
   }, []);
 
   useEffect(() => {
@@ -140,7 +179,34 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
       try {
         const res = await fetch(apiUrl(`${STREAM_BASE}/alerts`));
         const data = await res.json();
-        setAlerts(data.alerts || []);
+        const nextAlerts: Alert[] = data.alerts || [];
+        setAlerts(nextAlerts);
+
+        // Detect newest alert per camera and show a temporary notification (5s).
+        const newestByCamera: Record<string, Alert> = {};
+        for (const a of nextAlerts) {
+          if (!a?.camera_id) continue;
+          if (!newestByCamera[a.camera_id]) newestByCamera[a.camera_id] = a;
+        }
+
+        const nextRecent: Record<string, Alert | null> = {};
+        for (const [cameraId, newest] of Object.entries(newestByCamera)) {
+          const lastSeen = lastSeenAlertIdByCameraRef.current[cameraId];
+          if (lastSeen !== newest.id) {
+            lastSeenAlertIdByCameraRef.current[cameraId] = newest.id;
+            nextRecent[cameraId] = newest;
+
+            const oldTimer = clearTimersRef.current[cameraId];
+            if (oldTimer) clearTimeout(oldTimer);
+            clearTimersRef.current[cameraId] = window.setTimeout(() => {
+              setRecentAlertByCameraId((prev) => ({ ...prev, [cameraId]: null }));
+            }, 5000);
+          }
+        }
+
+        if (Object.keys(nextRecent).length > 0) {
+          setRecentAlertByCameraId((prev) => ({ ...prev, ...nextRecent }));
+        }
       } catch { /* ignore */ }
     };
 
@@ -190,6 +256,14 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
     setSelectedCamera(null);
   };
 
+  const refreshStreams = async () => {
+    try {
+      await fetch(apiUrl(`${STREAM_BASE}/refresh`), { method: 'POST' });
+    } catch {
+      // ignore
+    }
+  };
+
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -211,17 +285,35 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
           {/* Top nav bar */}
           <div className="dashboard-navbar">
             {/* Left side: user info */}
-            <div className="dashboard-user-area">
+            <div className="dashboard-user-area" ref={notifWrapRef}>
               <div className="dashboard-user-info">
-                <span className="dashboard-user-name">عمرو طلعت</span>
+                <span className="dashboard-user-name">شادي فرج الله</span>
                 <span className="dashboard-user-role">مشرف النظام</span>
               </div>
               <div className="dashboard-avatar">
-                <div className="dashboard-avatar-placeholder">م</div>
+                <img
+                  src="/profile.jpg"
+                  alt="صورة الحساب"
+                  className="dashboard-avatar-img"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = 'none';
+                  }}
+                />
               </div>
               <div className="dashboard-user-divider"></div>
+              {/* Refresh streams */}
+              <button className="dashboard-icon-btn" title="تحديث البث" onClick={refreshStreams}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+                  <polyline points="21 3 21 9 15 9"/>
+                </svg>
+              </button>
               {/* Notification bell */}
-              <button className="dashboard-icon-btn" title="الإشعارات">
+              <button
+                className="dashboard-icon-btn"
+                title="الإشعارات"
+                onClick={() => setNotificationsOpen((v) => !v)}
+              >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
                   <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
@@ -230,6 +322,44 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
                   <span className="dashboard-notification-badge">{alerts.length}</span>
                 )}
               </button>
+              {notificationsOpen && (
+                <div className="dashboard-notifications-dropdown" dir="rtl">
+                  <div className="dashboard-notifications-header">
+                    <span>أحدث الإشعارات</span>
+                    <button
+                      className="dashboard-notifications-viewall"
+                      onClick={() => {
+                        setActiveTab('cases');
+                        setNotificationsOpen(false);
+                      }}
+                    >
+                      عرض الكل
+                    </button>
+                  </div>
+                  <div className="dashboard-notifications-list">
+                    {(alerts.slice(0, 5) || []).map((a) => (
+                      <button
+                        key={a.id}
+                        className="dashboard-notification-item"
+                        onClick={() => {
+                          openAlertModal(a);
+                          setNotificationsOpen(false);
+                        }}
+                      >
+                        <div className="dashboard-notification-title">{a.event_type}</div>
+                        <div className="dashboard-notification-meta">
+                          <span>{a.hall_name} — {a.camera_name}</span>
+                          <span>•</span>
+                          <span>{formatTime(a.timestamp)}</span>
+                        </div>
+                      </button>
+                    ))}
+                    {alerts.length === 0 && (
+                      <div className="dashboard-notifications-empty">لا يوجد إشعارات</div>
+                    )}
+                  </div>
+                </div>
+              )}
               {/* Settings */}
               <button className="dashboard-icon-btn" title="الإعدادات" onClick={onLogout}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -303,13 +433,20 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
           <CasesTab
             alerts={alerts}
             onViewAlert={openAlertModal}
+            onPttStart={startPtt}
+            onPttStop={stopPtt}
+            pttStatusText={ptt.statusText}
           />
         ) : (
           <CamerasTab
             halls={halls}
             statsByCamera={statsByCamera}
             onClickCamera={openCameraModal}
-            alerts={alerts}
+            recentAlertByCameraId={recentAlertByCameraId}
+            onViewAlert={openAlertModal}
+            onPttStart={startPtt}
+            onPttStop={stopPtt}
+            pttStatusText={ptt.statusText}
           />
         )}
       </main>
@@ -321,6 +458,9 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
           alert={selectedAlert}
           camera={selectedCamera}
           stats={selectedCamera ? statsByCamera[selectedCamera.id] ?? null : null}
+          pttStatusText={ptt.statusText}
+          onPttStart={startPtt}
+          onPttStop={stopPtt}
           onClose={closeModal}
         />
       )}
@@ -338,9 +478,15 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
 function CasesTab({
   alerts,
   onViewAlert,
+  onPttStart,
+  onPttStop,
+  pttStatusText,
 }: {
   alerts: Alert[];
   onViewAlert: (alert: Alert) => void;
+  onPttStart: () => void | Promise<void>;
+  onPttStop: () => void;
+  pttStatusText: string;
 }) {
   if (alerts.length === 0) {
     return (
@@ -362,7 +508,14 @@ function CasesTab({
     <div className="cases-section">
       <div className="cases-grid">
         {alerts.map((alert) => (
-          <AlertCard key={alert.id} alert={alert} onViewAlert={onViewAlert} />
+          <AlertCard
+            key={alert.id}
+            alert={alert}
+            onViewAlert={onViewAlert}
+            onPttStart={onPttStart}
+            onPttStop={onPttStop}
+            pttStatusText={pttStatusText}
+          />
         ))}
       </div>
     </div>
@@ -372,9 +525,15 @@ function CasesTab({
 function AlertCard({
   alert,
   onViewAlert,
+  onPttStart,
+  onPttStop,
+  pttStatusText,
 }: {
   alert: Alert;
   onViewAlert: (alert: Alert) => void;
+  onPttStart: () => void | Promise<void>;
+  onPttStop: () => void;
+  pttStatusText: string;
 }) {
   const isHighPriority = alert.severity === 'high';
 
@@ -439,7 +598,28 @@ function AlertCard({
           </svg>
           عرض الحالة
         </button>
-        <button className="alert-btn-green">
+        <button
+          className="alert-btn-green"
+          title={pttStatusText}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            void onPttStart();
+          }}
+          onPointerUp={(e) => {
+            e.preventDefault();
+            onPttStop();
+          }}
+          onPointerCancel={() => onPttStop()}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            void onPttStart();
+          }}
+          onMouseUp={(e) => {
+            e.preventDefault();
+            onPttStop();
+          }}
+          onMouseLeave={() => onPttStop()}
+        >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
           </svg>
@@ -457,12 +637,20 @@ function CamerasTab({
   halls,
   statsByCamera,
   onClickCamera,
-  alerts,
+  recentAlertByCameraId,
+  onViewAlert,
+  onPttStart,
+  onPttStop,
+  pttStatusText,
 }: {
   halls: HallItem[];
   statsByCamera: Record<string, CameraStats>;
   onClickCamera: (camera: CameraItem, hallName: string) => void;
-  alerts: Alert[];
+  recentAlertByCameraId: Record<string, Alert | null>;
+  onViewAlert: (alert: Alert) => void;
+  onPttStart: () => void | Promise<void>;
+  onPttStop: () => void;
+  pttStatusText: string;
 }) {
   return (
     <div className="cameras-section">
@@ -470,7 +658,29 @@ function CamerasTab({
         <div key={hall.id} className="camera-hall-group">
           <div className="camera-hall-header">
             <h2 className="hall-title">{hall.name}</h2>
-            <button className="alert-btn-green" style={{ marginRight: 'auto', marginLeft: 0 }}>
+            <button
+              className="alert-btn-green"
+              style={{ marginRight: 'auto', marginLeft: 0 }}
+              title={pttStatusText}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                void onPttStart();
+              }}
+              onPointerUp={(e) => {
+                e.preventDefault();
+                onPttStop();
+              }}
+              onPointerCancel={() => onPttStop()}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                void onPttStart();
+              }}
+              onMouseUp={(e) => {
+                e.preventDefault();
+                onPttStop();
+              }}
+              onMouseLeave={() => onPttStop()}
+            >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
               </svg>
@@ -480,7 +690,8 @@ function CamerasTab({
           <div className="cameras-grid">
             {hall.cameras.map((camera) => {
               const stats = statsByCamera[camera.id];
-              const hasActiveAlert = alerts.some((alert) => alert.camera_id === camera.id && alert.severity === 'high');
+              const recentAlert = recentAlertByCameraId[camera.id] ?? null;
+              const hasActiveAlert = Boolean(recentAlert);
               const canStream = Boolean(camera.feed_path);
               const streamRunning = Boolean(stats?.is_running);
               const showLoading = canStream && !streamRunning;
@@ -495,17 +706,8 @@ function CamerasTab({
                     <span className={`camera-status-dot ${streamRunning ? 'active' : 'inactive'}`}></span>
                     <span>{camera.name}</span>
                   </div>
-                  {(streamRunning || canStream) && (
-                    <div className="camera-rec-indicator">
-                      <span className="rec-dot"></span>
-                      REC
-                    </div>
-                  )}
-                  {hasActiveAlert && (
-                    <div className="camera-alert-overlay">
-                      <span className="camera-alert-badge">حركة مشبوهة</span>
-                    </div>
-                  )}
+                  {/* REC badge removed */}
+                  {/* Alert overlay removed (we show the alert bar instead) */}
                   {streamRunning && camera.feed_path ? (
                     <img
                       src={apiUrl(camera.feed_path)}
@@ -530,7 +732,20 @@ function CamerasTab({
                     </div>
                   )}
                   <div className="camera-feed-stats">
-                    {streamRunning ? (
+                    {recentAlert ? (
+                      <div className="camera-alert-bar">
+                        <span className="camera-alert-type">{recentAlert.event_type}</span>
+                        <button
+                          className="camera-alert-view-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onViewAlert(recentAlert);
+                          }}
+                        >
+                          عرض الحالة
+                        </button>
+                      </div>
+                    ) : streamRunning ? (
                       <>
                         <span>FPS: {stats?.fps || 0}</span>
                         <span>•</span>

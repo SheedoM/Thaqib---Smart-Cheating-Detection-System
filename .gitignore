@@ -55,6 +55,8 @@ coverage.xml
 .venv
 env/
 venv/
+.venv/
+frontend/public/profile.jpg
 ENV/
 env.bak/
 venv.bak/
