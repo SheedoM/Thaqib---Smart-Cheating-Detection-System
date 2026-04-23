@@ -1,7 +1,5 @@
 """
-Camera connection handler for IP cameras and webcams.
-
-Provides a unified interface for capturing frames from various video sources.
+Camera connection handler for IP cameras, webcams, and video files.
 """
 
 import logging

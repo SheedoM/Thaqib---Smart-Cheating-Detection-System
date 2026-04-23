@@ -1,9 +1,6 @@
 """
 Cheating evaluation module.
-
-Extracted from pipeline.py (P2 Fix 11) to reduce monolithic complexity.
-Evaluates gaze-based and phone-based cheating rules synchronously on the
-main thread to ensure state consistency with the alert recording collector.
+Evaluates rules synchronously to ensure state consistency with recording.
 """
 
 import math

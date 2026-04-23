@@ -1,7 +1,5 @@
 """
 Human detection using YOLOv8.
-
-Provides periodic detection of human subjects in video frames.
 """
 
 import logging
