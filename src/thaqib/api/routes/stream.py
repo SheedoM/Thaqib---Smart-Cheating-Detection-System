@@ -261,17 +261,20 @@ def _load_active_camera_rows(db: Session) -> list[tuple[Hall, Device]]:
     return active_pairs
 
 
-def _draw_annotations(frame: np.ndarray, pipeline_frame: Any) -> np.ndarray:
+def _draw_annotations(frame: np.ndarray, pipeline_frame: Any, scale: float = 1.0) -> np.ndarray:
     annotated = frame.copy()
+
+    def s(val: Any) -> int:
+        return int(float(val) * scale)
 
     for track in pipeline_frame.tracking_result.tracks:
         if not track.is_selected:
             x1, y1, x2, y2 = track.bbox
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), (128, 128, 128), 2)
+            cv2.rectangle(annotated, (s(x1), s(y1)), (s(x2), s(y2)), (128, 128, 128), 2)
             cv2.putText(
                 annotated,
                 f"ID:{track.track_id}",
-                (x1, y1 - 10),
+                (s(x1), s(y1) - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 (128, 128, 128),
@@ -293,11 +296,11 @@ def _draw_annotations(frame: np.ndarray, pipeline_frame: Any) -> np.ndarray:
             color = (0, 255, 0)
             status = "OK"
 
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+        cv2.rectangle(annotated, (s(x1), s(y1)), (s(x2), s(y2)), color, 2)
         cv2.putText(
             annotated,
             f"ID:{state.track_id} [{status}]",
-            (x1, y1 - 10),
+            (s(x1), s(y1) - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             color,
@@ -309,19 +312,19 @@ def _draw_annotations(frame: np.ndarray, pipeline_frame: Any) -> np.ndarray:
             pose = getattr(head_pose, "pose", None)
             if pose is not None:
                 cx, cy = state.center
-                arrow_length = 50
+                arrow_length = 50 * scale
                 yaw = float(getattr(pose, "yaw", 0.0))
                 pitch = float(getattr(pose, "pitch", 0.0))
                 yaw_rad = np.radians(yaw)
-                end_x = int(cx + arrow_length * np.cos(yaw_rad))
-                end_y = int(cy + arrow_length * np.sin(yaw_rad))
-                cv2.arrowedLine(annotated, (cx, cy), (end_x, end_y), (255, 0, 255), 2)
+                end_x = int(s(cx) + arrow_length * np.cos(yaw_rad))
+                end_y = int(s(cy) + arrow_length * np.sin(yaw_rad))
+                cv2.arrowedLine(annotated, (s(cx), s(cy)), (end_x, end_y), (255, 0, 255), 2)
                 cv2.putText(
                     annotated,
                     f"Y:{yaw:.0f} P:{pitch:.0f}",
-                    (x1, y2 + 20),
+                    (s(x1), s(y2) + 20),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
+                    0.5 * scale,
                     (255, 0, 255),
                     1,
                 )
@@ -331,9 +334,10 @@ def _draw_annotations(frame: np.ndarray, pipeline_frame: Any) -> np.ndarray:
             for risk in getattr(spatial_context, "risk_angles", []) or []:
                 cx, cy = state.center
                 angle_rad = np.radians(risk.center_angle)
-                end_x = int(cx + 40 * np.cos(angle_rad))
-                end_y = int(cy + 40 * np.sin(angle_rad))
-                cv2.line(annotated, (cx, cy), (end_x, end_y), (0, 165, 255), 1)
+                radius = 40 * scale
+                end_x = int(s(cx) + radius * np.cos(angle_rad))
+                end_y = int(s(cy) + radius * np.sin(angle_rad))
+                cv2.line(annotated, (s(cx), s(cy)), (end_x, end_y), (0, 165, 255), 1)
 
     info_lines = [
         f"FPS: {1000 / max(pipeline_frame.processing_time_ms, 1):.1f}",
@@ -345,9 +349,9 @@ def _draw_annotations(frame: np.ndarray, pipeline_frame: Any) -> np.ndarray:
         cv2.putText(
             annotated,
             line,
-            (10, 30 + i * 25),
+            (10, int(30 * scale + i * 25 * scale)),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
+            0.6 * scale,
             (255, 255, 255),
             2,
         )
@@ -462,20 +466,21 @@ def _run_pipeline(camera: CameraRuntime) -> None:
                         camera.identifier,
                     )
 
-            annotated = _draw_annotations(frame_data.frame, frame_data)
+            # Downscale high-res frames (e.g. 4K) to prevent memory crashes and improve MJPEG performance.
+            original_frame = frame_data.frame
+            h, w = original_frame.shape[:2]
+            scale = 1.0
+            if w > max_stream_w and w > 0:
+                scale = max_stream_w / float(w)
+                new_h = max(1, int(h * scale))
+                display_frame = cv2.resize(original_frame, (max_stream_w, new_h), interpolation=cv2.INTER_AREA)
+            else:
+                display_frame = original_frame
+
+            annotated = _draw_annotations(display_frame, frame_data, scale=scale)
             now = time.time()
             if now - last_emit < min_interval:
                 continue
-
-            # Downscale for MJPEG to reduce CPU/bandwidth.
-            try:
-                h, w = annotated.shape[:2]
-                if w > max_stream_w and w > 0:
-                    scale = max_stream_w / float(w)
-                    new_h = max(1, int(h * scale))
-                    annotated = cv2.resize(annotated, (max_stream_w, new_h), interpolation=cv2.INTER_AREA)
-            except Exception:
-                pass
 
             ok, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 60])
             if not ok:
