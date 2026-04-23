@@ -1,8 +1,6 @@
 """
 Demo script for video detection pipeline.
-
-Demonstrates the full video processing pipeline with webcam or video file.
-Press 'q' to quit, 's' to select all visible persons, 't' to toggle neighbors.
+Supports webcam/video input and interactive monitoring controls.
 """
 
 import argparse
@@ -26,7 +24,60 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# --- Deselect mode state (module-level so mouse callback can access it) ---
+_deselect_mode = False
+_latest_pipeline_frame = None
+_pipeline_ref = None
+
+
+def _mouse_callback(event, x, y, flags, param):
+    """Mouse callback: in deselect mode, click a student's bbox to remove them."""
+    global _deselect_mode
+
+    if event != cv2.EVENT_LBUTTONDOWN:
+        return
+    if not _deselect_mode:
+        return
+    if _latest_pipeline_frame is None or _pipeline_ref is None:
+        return
+
+    # Hit-test: find which tracked student was clicked
+    for track in _latest_pipeline_frame.tracking_result.tracks:
+        if not track.is_selected:
+            continue
+        x1, y1, x2, y2 = track.bbox
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            # Remove from monitoring
+            _pipeline_ref.remove_student(track.track_id)
+
+            # Fully reset their cheating/recording state so they go back
+            # to being an unmonitored gray box — as if never selected.
+            registry = _latest_pipeline_frame.registry
+            if registry:
+                state = registry.get(track.track_id)
+                if state:
+                    state.is_cheating = False
+                    state.cheating_cooldown = 0
+                    state.suspicious_start_time = 0.0
+                    state.cheating_target_paper = None
+                    state.cheating_target_neighbor = None
+                    state.is_using_phone = False
+                    state.phone_bbox = None
+                    state.is_alert_recording = False
+                    state.recording_buffer.clear()
+                    state.frames_to_record = 0
+
+            logger.info(f"Deselected student ID:{track.track_id}")
+            _deselect_mode = False
+            logger.info("Deselect mode: OFF")
+            return
+
+    logger.info("No selected student at click position — try again")
+
+
 def main():
+    global _deselect_mode, _latest_pipeline_frame, _pipeline_ref
+
     parser = argparse.ArgumentParser(description="Thaqib Video Detection Demo")
     parser.add_argument(
         "--source",
@@ -55,19 +106,39 @@ def main():
         source=source,
         detection_interval=args.interval,
     )
+    _pipeline_ref = pipeline
 
-    # Create visualizer (visualization layer)
+    # Create visualizer and register it with the pipeline so annotations
+    # are rendered once per frame (inside _process_frame) and reused for
+    # both archive writing and display.
     visualizer = VideoVisualizer()
+    pipeline.set_visualizer(visualizer)
 
-    # Create window
+    # Create window with mouse callback
     window_name = "Thaqib - Video Detection Demo"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback(window_name, _mouse_callback)
 
     try:
         with pipeline:
             for pipeline_frame in pipeline.run():
-                # Render frame via visualization layer
-                annotated = visualizer.draw(pipeline_frame, registry=pipeline_frame.registry)
+                _latest_pipeline_frame = pipeline_frame
+
+                # Reuse the annotated frame rendered once inside _process_frame().
+                # Falls back to calling draw() if no visualizer was attached
+                # (e.g. testing/headless mode).
+                if pipeline_frame.annotated_frame is not None:
+                    annotated = pipeline_frame.annotated_frame
+                else:
+                    annotated = visualizer.draw(pipeline_frame, registry=pipeline_frame.registry)
+
+                # Show deselect mode indicator
+                if _deselect_mode:
+                    cv2.putText(
+                        annotated, "DESELECT MODE — click a student to remove",
+                        (10, annotated.shape[0] - 45),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA,
+                    )
 
                 # Show frame
                 cv2.imshow(window_name, annotated)
@@ -100,6 +171,16 @@ def main():
                     # Toggle control panel
                     visualizer.toggle_control_panel()
                     logger.info(f"Control panel: {'ON' if visualizer.show_control_panel else 'OFF'}")
+
+                elif key == ord("m"):
+                    # Toggle deselect mode
+                    _deselect_mode = not _deselect_mode
+                    logger.info(f"Deselect mode: {'ON — click a student to remove' if _deselect_mode else 'OFF'}")
+
+                elif key == ord("r"):
+                    # Toggle archive recording mode (raw / annotated)
+                    mode = pipeline.toggle_archive_mode()
+                    logger.info(f"Archive recording mode: {mode.upper()} {'(original video)' if mode == 'raw' else '(with overlays)'}")
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

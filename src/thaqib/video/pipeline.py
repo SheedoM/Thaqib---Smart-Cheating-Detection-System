@@ -27,7 +27,7 @@ from thaqib.video.detector import HumanDetector, DetectionResult
 from thaqib.video.tracker import ObjectTracker, TrackingResult, TrackedObject
 from thaqib.video.registry import GlobalStudentRegistry, StudentSpatialState
 from thaqib.video.neighbors import NeighborComputer
-from thaqib.video.face_mesh import FaceMeshExtractor, FaceMeshResult
+from thaqib.video.face_mesh import FaceMeshResult
 from thaqib.video.tools_detector import ToolsDetector, ToolsDetectionResult
 from thaqib.video.cheating_evaluator import CheatingEvaluator
 
@@ -59,11 +59,16 @@ class PipelineFrame:
     frame_index: int
     timestamp: float
     detection_result: DetectionResult | None
-    tracking_result: TrackingResult                     # ⬅️ جبنا ده فوق
-    tools_result: ToolsDetectionResult | None = None    # ⬅️ ونزلنا ده تحت
+    tracking_result: TrackingResult
+    tools_result: ToolsDetectionResult | None = None
     registry: GlobalStudentRegistry | None = None
     student_states: list[StudentState] = field(default_factory=list)
     processing_time_ms: float = 0.0
+    archive_mode: str = "raw"  # Current archive recording mode ('raw' or 'annotated')
+    # Annotated frame rendered once per cycle — reused by archive and display.
+    # None when no visualizer is attached (e.g. headless/testing mode).
+    annotated_frame: np.ndarray | None = None
+
     @property
     def tracked_count(self) -> int:
         """Number of tracked objects."""
@@ -125,13 +130,12 @@ class VideoPipeline:
         self._tracker = ObjectTracker()
         self._registry = GlobalStudentRegistry()
         self._neighbor_computer = NeighborComputer()
-        self._face_extractor = FaceMeshExtractor()
         self._reid = FaceReIdentifier()
         self._cheating_evaluator = CheatingEvaluator(self._registry)
         self._cheating_evaluator.on_alert = on_alert
 
 
-        # Fix 1: Process pool for face mesh — true CPU parallelism
+        # Process pool for face mesh — true CPU parallelism
         settings = get_settings()
         face_workers = min(settings.face_mesh_workers, os.cpu_count() or 4)
         from thaqib.video.face_mesh_worker import init_worker, extract_in_worker
@@ -140,13 +144,20 @@ class VideoPipeline:
             processes=face_workers,
             initializer=init_worker,
         )
-        self._shm: shm_mod.SharedMemory | None = None  # Reusable shared memory block
+        # Double-buffered shared memory: prevents data race where a worker
+        # reads from the block while the next frame overwrites it.
+        self._shm_pair: list[shm_mod.SharedMemory | None] = [None, None]
+        self._shm_idx: int = 0  # Alternates 0/1 each frame
 
         self._is_running = False
-        
+
+        # Injected visualizer for single-pass rendering (see set_visualizer()).
+        # None by default so headless/test usage is unaffected.
+        self._visualizer = None
+
         self._frame_lock = threading.Lock()
         self._track_aliases: dict[int, int] = {}
-        self._global_frame_buffer: deque[np.ndarray] = deque(maxlen=90)
+        self._global_frame_buffer: deque[tuple[np.ndarray, None]] = deque(maxlen=90)
         
         # Async Detection State
         self._detection_queue: Queue[tuple[DetectionResult, ToolsDetectionResult]] = Queue(maxsize=1)
@@ -159,14 +170,17 @@ class VideoPipeline:
         self._selected_ids: set[int] = set()
         
         # Double-buffered face mesh jobs: submit on frame N, collect on frame N+2.
-        # Fix 1: uses multiprocessing.AsyncResult instead of concurrent.futures.Future.
         self._pending_mp_jobs: list[tuple] = []  # [(AsyncResult, track_id), ...]
         
         # Archive recording: continuous video save to archive/ folder
         self._archive_writer: cv2.VideoWriter | None = None
         self._archive_path: str | None = None
         
-        # Background archive writer thread (Fix 2: offload ~1-3ms/frame)
+        # Archive mode: 'raw' = original camera feed, 'annotated' = with overlays
+        self._archive_annotated: bool = (settings.archive_mode == "annotated")
+        logger.info(f"Archive mode: {'annotated (with overlays)' if self._archive_annotated else 'raw (original video)'}")
+        
+        # Background archive writer thread (offloads 1-3ms/frame)
         self._archive_queue: queue.Queue = queue.Queue(maxsize=60)
         self._archive_thread: threading.Thread | None = None
         
@@ -177,14 +191,11 @@ class VideoPipeline:
         # Track which track IDs we've already warned about recording cap
         # to avoid per-frame log spam.
         self._recording_skip_warned: set[int] = set()
-        
-        # Maximum height for recording buffers AND face mesh processing.
-        # Frames above this height are downscaled to prevent OOM and speed up
-        # MediaPipe inference. At 4K (3840x2160), each frame = 23.7MB.
-        # Downscaling to 1080p: 5.9MB (75% savings), crops are ~4× smaller.
-        self._recording_max_h: int = 1080
-        
-        # Scale factor for face mesh processing (computed once when first frame arrives)
+
+        # Scale factor for face mesh processing only (NOT for recordings).
+        # MediaPipe at 4K takes 300-675ms; downscaling to 1080p brings it to ~10ms.
+        # Recordings and display remain at full native resolution.
+        self._recording_max_h: int = 1080  # Used only for face mesh resize target
         self._fm_scale: float = 1.0
         self._fm_scale_computed: bool = False
 
@@ -295,20 +306,20 @@ class VideoPipeline:
         if self._detection_thread is not None:
             self._detection_thread.join(timeout=1.0)
         self._camera.close()
-        self._face_extractor.close()
         
-        # Fix 1: Clean up process pool and shared memory
+        # Clean up process pool and shared memory
         try:
             self._face_pool.terminate()
             self._face_pool.join()
         except Exception:
             pass
-        if self._shm is not None:
-            try:
-                self._shm.unlink()
-            except Exception:
-                pass
-            self._shm = None
+        for i in range(2):
+            if self._shm_pair[i] is not None:
+                try:
+                    self._shm_pair[i].unlink()
+                except Exception:
+                    pass
+                self._shm_pair[i] = None
         
         logger.info("Video pipeline stopped")
 
@@ -351,14 +362,12 @@ class VideoPipeline:
             if elapsed > 0:
                 self._actual_fps = max(5.0, min(60.0, (len(self._fps_tracker) - 1) / elapsed))
 
-        # Archive recording: write every raw frame to archive video
-        self._write_archive_frame(frame_data)
-
         # Add to global frame ring buffer for alert recordings.
-        # Only buffer when students are being monitored to save memory.
-        # Downscale to 1080p before buffering to prevent OOM on 4K video.
+        # Only buffer when students are being monitored.
+        # No copy needed: cv2.VideoCapture.read() allocates a fresh ndarray per call.
+        # Stored as (frame, None) tuples for type consistency with recording buffers.
         if self._selected_ids:
-            self._global_frame_buffer.append(self._downscale_for_recording(frame_data.frame))
+            self._global_frame_buffer.append((frame_data.frame, None))
 
         
         # Check for new detection async result
@@ -403,8 +412,6 @@ class VideoPipeline:
 
         t2 = time.perf_counter()
 
-        # Apply Detection Stability Filter block removed to eliminate tracking artifacts
-
         # Apply Re-ID and ID mapping
         for track in tracking_result.tracks:
             track.is_selected = track.track_id in self._selected_ids
@@ -413,10 +420,9 @@ class VideoPipeline:
         # Update spatial registry and compute neighbors for ALL tracks
         expired_ids = self._registry.update(tracking_result.tracks, frame_data.frame_index, frame_data.timestamp)
         
-        # Cleanup ReID memory, face mesh cache, and aliases
+        # Cleanup ReID memory and aliases
         if expired_ids:
             self._reid.remove_embeddings(expired_ids)
-            self._face_extractor.remove_cache(expired_ids)
             # Also prune tracker state to prevent memory leaks
             for eid in expired_ids:
                 self._tracker._smoothed_bboxes.pop(eid, None)
@@ -436,8 +442,13 @@ class VideoPipeline:
         
         # Compute paper neighbors specifically (excluding the student's closest paper)
         if tools_result is not None:
-            paper_centers = [tool.center for tool in tools_result.tools if tool.label == 'book']
-            self._neighbor_computer.compute_paper_neighbors(self._registry, paper_centers)
+            # Labels that are NOT phones — treat as papers on the desk
+            phone_labels = {'phone', 'Using_phone', 'cell phone'}
+            paper_centers = [
+                tool.center for tool in tools_result.tools
+                if tool.label not in phone_labels
+            ]
+            self._neighbor_computer.compute_paper_neighbors(self._registry, paper_centers, self._selected_ids)
             
             # Phone-to-student assignment: check if any phone bbox overlaps a student bbox.
             # If so, mark that student as using a phone (cheating).
@@ -524,14 +535,14 @@ class VideoPipeline:
         #    - First, COLLECT any completed jobs from PREVIOUS cycle
         #    - Then, SUBMIT new jobs for this cycle
         
-        # Collect ALL completed async results from previous cycle (Fix 1: multiprocessing)
+        # Collect completed async results from previous cycle
         still_pending = []
         for async_result, orig_track_id in self._pending_mp_jobs:
             if async_result.ready():
                 try:
                     tid, result_dict = async_result.get(timeout=0)
                     
-                    # Convert plain dict back to FaceMeshResult (Fix 1)
+                    # Convert plain dict back to FaceMeshResult
                     result = None
                     if result_dict is not None:
                         hmat = (np.array(result_dict["hmat"]) 
@@ -572,57 +583,64 @@ class VideoPipeline:
         if len(self._pending_mp_jobs) > max_pending:
             self._pending_mp_jobs = self._pending_mp_jobs[-max_pending:]
 
-        # Submit NEW jobs for this cycle (every frame — downscaled frames are cheap).
+        # Submit NEW jobs for this cycle.
         if selected_tracks:
-            # Compute face mesh scale factor once (original res → 1080p).
-            if not self._fm_scale_computed:
-                h = frame_data.frame.shape[0]
-                if h > self._recording_max_h:
-                    self._fm_scale = self._recording_max_h / h
-                else:
-                    self._fm_scale = 1.0
-                self._fm_scale_computed = True
-            
-            # Downscale frame for face mesh
-            fm_scale = self._fm_scale
-            if fm_scale < 1.0:
-                h, w = frame_data.frame.shape[:2]
-                new_w = int(w * fm_scale)
-                new_h = int(h * fm_scale)
-                shared_frame = cv2.resize(frame_data.frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-            else:
-                shared_frame = frame_data.frame
-            
-            # Fix 1: Copy frame to shared memory for zero-copy transfer to workers
-            nbytes = shared_frame.nbytes
-            if self._shm is None or self._shm.size < nbytes:
-                if self._shm is not None:
-                    try:
-                        self._shm.unlink()
-                    except Exception:
-                        pass
-                self._shm = shm_mod.SharedMemory(create=True, size=nbytes)
-            buf = np.ndarray(shared_frame.shape, dtype=shared_frame.dtype, buffer=self._shm.buf)
-            np.copyto(buf, shared_frame)
-            
-            # Submit ALL students via process pool.
             # Skip students that already have a pending job.
             pending_track_ids = {tid for _, tid in self._pending_mp_jobs}
-            for state in student_states:
-                if state.track_id in pending_track_ids:
-                    continue
-                args = (
-                    self._shm.name,
-                    shared_frame.shape,
-                    str(shared_frame.dtype),
-                    state.bbox,
-                    state.track_id,
-                    fm_scale,
-                )
-                async_result = self._face_pool.apply_async(
-                    self._extract_in_worker, (args,)
-                )
-                self._pending_mp_jobs.append((async_result, state.track_id))
+            new_students = [s for s in student_states if s.track_id not in pending_track_ids]
+            
+            if new_students:
+                # Compute face mesh scale factor once (original res → 1080p).
+                if not self._fm_scale_computed:
+                    h = frame_data.frame.shape[0]
+                    if h > self._recording_max_h:
+                        self._fm_scale = self._recording_max_h / h
+                    else:
+                        self._fm_scale = 1.0
+                    self._fm_scale_computed = True
+                
+                # Downscale frame for face mesh (saves ~4× MediaPipe inference time)
+                fm_scale = self._fm_scale
+                if fm_scale < 1.0:
+                    h, w = frame_data.frame.shape[:2]
+                    new_w = int(w * fm_scale)
+                    new_h = int(h * fm_scale)
+                    shared_frame = cv2.resize(frame_data.frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                else:
+                    shared_frame = frame_data.frame
+                
+                # Double-buffered shared memory: write to slot A while workers
+                # may still be reading from slot B (previous frame).
+                write_idx = self._shm_idx
+                self._shm_idx = 1 - write_idx  # Flip for next frame
+                
+                nbytes = shared_frame.nbytes
+                shm = self._shm_pair[write_idx]
+                if shm is None or shm.size < nbytes:
+                    if shm is not None:
+                        try:
+                            shm.unlink()
+                        except Exception:
+                            pass
+                    shm = shm_mod.SharedMemory(create=True, size=nbytes)
+                    self._shm_pair[write_idx] = shm
+                buf = np.ndarray(shared_frame.shape, dtype=shared_frame.dtype, buffer=shm.buf)
+                np.copyto(buf, shared_frame)
+                
+                # Submit new students via process pool.
+                for state in new_students:
+                    args = (
+                        shm.name,
+                        shared_frame.shape,
+                        str(shared_frame.dtype),
+                        state.bbox,
+                        state.track_id,
+                        fm_scale,
+                    )
+                    async_result = self._face_pool.apply_async(
+                        self._extract_in_worker, (args,)
+                    )
+                    self._pending_mp_jobs.append((async_result, state.track_id))
 
         # 3. Evaluate cheating on the MAIN THREAD — no race condition
         if selected_tracks:
@@ -665,11 +683,9 @@ class VideoPipeline:
             if not state.is_alert_recording:
                 continue
 
-            # Append current raw frame + track ID to recording buffer.
-            # Fix 4: defer _render_alert_frame to the writer thread (~2ms saved).
-            # Downscale to 1080p first to save memory.
-            small_frame = self._downscale_for_recording(frame_data.frame)
-            state.recording_buffer.append((small_frame, state.track_id))
+            # Append current frame + track ID to recording buffer at full resolution.
+            # No copy needed: cv2.VideoCapture.read() allocates fresh per call.
+            state.recording_buffer.append((frame_data.frame, state.track_id))
 
             if state.is_cheating:
                 # Still cheating — keep recording, reset post-cheating countdown
@@ -715,7 +731,7 @@ class VideoPipeline:
                 f"  Total: {(t5-t0)*1000:.1f} ms"
             )
 
-        return PipelineFrame(
+        pipeline_frame = PipelineFrame(
             frame=frame_data.frame,
             frame_index=frame_data.frame_index,
             timestamp=frame_data.timestamp,
@@ -724,7 +740,25 @@ class VideoPipeline:
             tracking_result=tracking_result,
             registry=self._registry,
             student_states=student_states,
+            archive_mode=self.archive_mode,
         )
+
+        # Single rendering pass: draw annotations once, store for both
+        # archive writing and display. Falls back to raw frame when no
+        # visualizer is attached (headless/testing mode).
+        if self._visualizer is not None:
+            pipeline_frame.annotated_frame = self._visualizer.draw(
+                pipeline_frame, registry=self._registry
+            )
+            # Archive mode determines what gets saved to disk
+            if self._archive_annotated:
+                self._write_archive_frame(pipeline_frame.annotated_frame)
+            else:
+                self._write_archive_frame(frame_data.frame)
+        else:
+            self._write_archive_frame(frame_data.frame)
+
+        return pipeline_frame
 
     def select_students(self, track_ids: list[int]) -> None:
         """
@@ -742,42 +776,75 @@ class VideoPipeline:
         self._tracker.add_selection(track_id)
 
     def remove_student(self, track_id: int) -> None:
-        """Remove a student from monitoring."""
+        """Remove a student from monitoring and realign paper assignments.
+        
+        Clears the student's paper so they can no longer be a cheating 'victim',
+        removes them from other students' neighbor lists, and invalidates the
+        neighbor cache so papers realign to adjacent students on the next frame.
+        """
         self._selected_ids.discard(track_id)
         self._tracker.remove_selection(track_id)
+        
+        # Clear this student's paper so it's no longer a neighbor paper target
+        state = self._registry.get(track_id)
+        if state:
+            state.detected_paper = None
+            state.is_heuristic_paper = False
+            state.surrounding_papers = []
+        
+        # Remove from other students' neighbor/paper lists immediately
+        for s in self._registry.get_all():
+            if track_id in s.neighbors:
+                s.neighbors.remove(track_id)
+                s.neighbor_distances.pop(track_id, None)
+                s.neighbor_papers.pop(track_id, None)
+            # Remove any surrounding paper that belonged to the deselected student
+            if state and state.paper_center in s.surrounding_papers:
+                s.surrounding_papers.remove(state.paper_center)
+        
+        # Invalidate the neighbor stability cache so the next frame
+        # fully recomputes neighbors and paper assignments.
+        self._neighbor_computer._prev_centers = None
+        self._neighbor_computer._prev_track_ids = None
 
     def clear_selection(self) -> None:
         """Clear all selected students."""
         self._selected_ids.clear()
-        # Ensure tracker is also cleared if it has a method, else skip
         if hasattr(self._tracker, 'clear_selection'):
             self._tracker.clear_selection()
 
-    # _process_student_parallel removed (Fix 1) — replaced by
-    # face_mesh_worker.extract_in_worker running in child processes.
+    def set_visualizer(self, visualizer) -> None:
+        """Attach a visualizer for single-pass annotation and archive rendering.
 
-    def _downscale_for_recording(self, frame: np.ndarray) -> np.ndarray:
+        Must be called before pipeline.run() for annotations to appear in
+        the archive. Calling with None reverts to archiving raw frames.
         """
-        Downscale a frame to at most _recording_max_h (1080p) for recording buffers.
+        self._visualizer = visualizer
+
+    def toggle_archive_mode(self) -> str:
+        """Toggle archive recording between raw and annotated mode.
         
-        At 4K (3840×2160), each frame is 23.7MB. With 90+300 frames per buffer,
-        that's ~9GB per buffer. Downscaling to 1080p reduces this to ~2.3GB (75% savings).
-        Already-small frames pass through unchanged.
+        Returns:
+            The new mode as a string ('raw' or 'annotated').
         """
-        h, w = frame.shape[:2]
-        if h <= self._recording_max_h:
-            return frame.copy()
-        scale = self._recording_max_h / h
-        new_w = int(w * scale)
-        return cv2.resize(frame, (new_w, self._recording_max_h), interpolation=cv2.INTER_AREA)
+        self._archive_annotated = not self._archive_annotated
+        mode = "annotated" if self._archive_annotated else "raw"
+        logger.info(f"Archive mode switched to: {mode}")
+        return mode
+
+    @property
+    def archive_mode(self) -> str:
+        """Current archive recording mode."""
+        return "annotated" if self._archive_annotated else "raw"
+
 
     def _render_alert_frame(self, raw_frame: np.ndarray, cheater_track_id: int) -> np.ndarray:
         """
         Render an annotated frame for alert video recording.
-        
-        Expects a frame that's already been downscaled by _downscale_for_recording.
-        All bbox coordinates are scaled to match the downscaled resolution.
-        
+
+        Frames are stored at full native resolution. Registry bbox coordinates
+        are also in native resolution so no scaling is needed.
+
         Draws:
           - RED thick bbox + label on the cheater
           - YELLOW thick bbox + label on the victim (student being copied from)
@@ -790,25 +857,10 @@ class VideoPipeline:
         if cheater is None:
             return frame
         
-        # Compute scale factor: registry bboxes are in original resolution,
-        # but the frame may have been downscaled (e.g., 4K → 1080p).
-        frame_h = frame.shape[0]
-        # Use the camera's cached original resolution (race-free public property)
-        orig_h = self._camera.original_height or frame_h
-        scale = frame_h / orig_h if orig_h > 0 else 1.0
-        
-        def sc(val: int) -> int:
-            """Scale a coordinate from original to downscaled resolution."""
-            return int(val * scale)
-        
-        def sc_bbox(bbox: tuple) -> tuple[int, int, int, int]:
-            return (sc(bbox[0]), sc(bbox[1]), sc(bbox[2]), sc(bbox[3]))
-        
-        def sc_pt(pt: tuple) -> tuple[int, int]:
-            return (sc(pt[0]), sc(pt[1]))
+        # Frames are stored at native resolution — coordinates used directly.
         
         # Draw the cheater in RED with full body bbox
-        cx1, cy1, cx2, cy2 = sc_bbox(cheater.bbox)
+        cx1, cy1, cx2, cy2 = cheater.bbox
         cv2.rectangle(frame, (cx1, cy1), (cx2, cy2), (0, 0, 255), 3)
         
         # Label depends on cheating type
@@ -826,7 +878,7 @@ class VideoPipeline:
         
         # Draw phone bbox in bright RED if phone cheating
         if cheater.is_using_phone and cheater.phone_bbox is not None:
-            px1, py1, px2, py2 = sc_bbox(cheater.phone_bbox)
+            px1, py1, px2, py2 = cheater.phone_bbox
             cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 0, 255), 3)
             cv2.putText(frame, "PHONE", (px1, py1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
@@ -836,7 +888,7 @@ class VideoPipeline:
         if victim_id is not None:
             victim = self._registry.get(victim_id)
             if victim is not None:
-                vx1, vy1, vx2, vy2 = sc_bbox(victim.bbox)
+                vx1, vy1, vx2, vy2 = victim.bbox
                 cv2.rectangle(frame, (vx1, vy1), (vx2, vy2), (0, 255, 255), 3)
                 victim_label = f"VICTIM ID:{victim_id}"
                 (vw, vh), _ = cv2.getTextSize(victim_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
@@ -848,14 +900,14 @@ class VideoPipeline:
         # Draw the paper location — ONLY when YOLO-detected (not heuristic guesses)
         paper_pt = cheater.cheating_target_paper
         if paper_pt is not None and not cheater.is_heuristic_paper:
-            px, py = sc_pt(paper_pt)
+            px, py = paper_pt
             cv2.circle(frame, (px, py), 18, (0, 255, 0), 3, cv2.LINE_AA)
             cv2.circle(frame, (px, py), 6, (0, 255, 0), -1, cv2.LINE_AA)
             cv2.putText(frame, "PAPER", (px - 25, py - 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2, cv2.LINE_AA)
             
             # Draw gaze line from cheater center to paper
-            cv2.line(frame, sc_pt(cheater.center), (px, py), (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.line(frame, cheater.center, (px, py), (0, 0, 255), 2, cv2.LINE_AA)
         
         # Draw status banner at top
         banner_h = 40
@@ -873,10 +925,9 @@ class VideoPipeline:
 
     def _archive_writer_loop(self) -> None:
         """Background thread: drain archive queue and write frames to disk.
-        
-        Fix 2: Moves the ~1-3ms cv2.VideoWriter.write() call off the main
-        thread. The loop runs until _is_running is False AND the queue is empty,
-        ensuring all buffered frames are flushed on shutdown.
+
+        Runs until _is_running is False AND the queue is empty, ensuring
+        all buffered frames are flushed on shutdown.
         """
         while self._is_running or not self._archive_queue.empty():
             try:
@@ -886,24 +937,26 @@ class VideoPipeline:
             if self._archive_writer is not None:
                 self._archive_writer.write(frame)
 
-    def _write_archive_frame(self, frame_data: FrameData) -> None:
+    def _write_archive_frame(self, frame: np.ndarray) -> None:
         """
         Queue a frame for archive writing (non-blocking).
         Creates the archive writer on first call (one-time cost on main thread).
+        Accepts a pre-rendered annotated frame or a raw frame.
         """
         if self._archive_writer is None:
             from pathlib import Path
             from datetime import datetime
-            
+
             archive_dir = Path("archive")
             archive_dir.mkdir(exist_ok=True)
-            
+
             time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            h, w = frame_data.frame.shape[:2]
-            
-            # Use actual measured FPS for correct playback speed.
-            archive_fps = max(10.0, self._actual_fps)
-            
+            h, w = frame.shape[:2]
+
+            # Fixed at 30 FPS so playback is always normal speed,
+            # regardless of how fast the system processed each frame.
+            archive_fps = 30.0
+
             # Try codecs in order of reliability
             for codec, ext in [('XVID', '.avi'), ('mp4v', '.mp4'), ('MJPG', '.avi')]:
                 filepath = archive_dir / f"archive_{time_str}{ext}"
@@ -918,20 +971,19 @@ class VideoPipeline:
             else:
                 logger.error("Failed to create archive writer — all codecs failed")
                 return
-        
-        # Non-blocking enqueue — drop frame if queue full rather than
-        # blocking the main thread (Fix 2)
+
+        # Non-blocking enqueue — drop frame rather than block main thread
         try:
-            self._archive_queue.put_nowait(frame_data.frame)
+            self._archive_queue.put_nowait(frame)
         except queue.Full:
-            pass  # Drop frame rather than block main thread
+            pass
 
     def _save_alert_video_async(
         self, frames: list[np.ndarray], track_id: int, timestamp: float,
         cheat_type: str = "gaze"
     ) -> None:
         """Save alert video in a background thread. Receives an independent frames list."""
-        actual_fps = self._actual_fps  # Capture current FPS for the writer thread
+        actual_fps = 30.0  # Always save alert videos at 30 FPS for consistent playback
         
         def writer_task():
             from pathlib import Path
@@ -994,15 +1046,15 @@ class VideoPipeline:
             
             frames_written = 0
             try:
-                for item in frames:
-                    # Fix 4: pre-event frames are raw ndarray, during/post are
-                    # (frame, track_id) tuples that need annotation.
-                    if isinstance(item, tuple):
-                        raw_frame, tid = item
+                for raw_frame, tid in frames:
+                    # All entries are (frame, track_id|None) tuples.
+                    # Pre-event frames have tid=None → write raw.
+                    # During/post frames have a track_id → annotate.
+                    if tid is not None:
                         annotated = self._render_alert_frame(raw_frame, tid)
                         writer.write(annotated)
                     else:
-                        writer.write(item)
+                        writer.write(raw_frame)
                     frames_written += 1
                 duration = frames_written / actual_fps
                 logger.info(
