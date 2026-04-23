@@ -35,6 +35,7 @@ DATA = {
             "floor": "1",
             "capacity": 120,
             "status": "ready",
+            "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
             "mics": ["ميكروفون 1", "ميكروفون 2"],
             "cameras": [
                 {
@@ -47,6 +48,11 @@ DATA = {
                     "name": "كاميرا 2 - خلفية",
                     "source": r"C:\Users\shady\Downloads\20260414_132048.mp4",
                 },
+                {
+                    "id": "hall101_cam_side",
+                    "name": "كاميرا 3 - جانبية",
+                    "source": "",
+                },
             ],
         },
         {
@@ -56,10 +62,12 @@ DATA = {
             "floor": "1",
             "capacity": 120,
             "status": "not_ready",
+            "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
             "mics": ["ميكروفون 1", "ميكروفون 2"],
             "cameras": [
                 {"id": "hall102_cam_front", "name": "كاميرا 1 - أمامية", "source": ""},
                 {"id": "hall102_cam_back", "name": "كاميرا 2 - خلفية", "source": ""},
+                {"id": "hall102_cam_side", "name": "كاميرا 3 - جانبية", "source": ""},
             ],
         },
         {
@@ -69,10 +77,12 @@ DATA = {
             "floor": "2",
             "capacity": 120,
             "status": "not_ready",
+            "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
             "mics": ["ميكروفون 1", "ميكروفون 2"],
             "cameras": [
                 {"id": "hall103_cam_front", "name": "كاميرا 1 - أمامية", "source": ""},
                 {"id": "hall103_cam_back", "name": "كاميرا 2 - خلفية", "source": ""},
+                {"id": "hall103_cam_side", "name": "كاميرا 3 - جانبية", "source": ""},
             ],
         },
         {
@@ -82,10 +92,12 @@ DATA = {
             "floor": "2",
             "capacity": 120,
             "status": "not_ready",
+            "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
             "mics": ["ميكروفون 1", "ميكروفون 2"],
             "cameras": [
                 {"id": "hall104_cam_front", "name": "كاميرا 1 - أمامية", "source": ""},
                 {"id": "hall104_cam_back", "name": "كاميرا 2 - خلفية", "source": ""},
+                {"id": "hall104_cam_side", "name": "كاميرا 3 - جانبية", "source": ""},
             ],
         },
     ],
@@ -128,6 +140,7 @@ def upsert_hall(db, institution: Institution, hall_data: dict) -> Hall:
             floor=hall_data.get("floor"),
             capacity=hall_data.get("capacity", 120),
             layout_map={"seed_id": hall_data["id"]},
+            image=hall_data.get("image"),
             status=hall_data.get("status", "not_ready"),
         )
         db.add(hall)
@@ -138,6 +151,7 @@ def upsert_hall(db, institution: Institution, hall_data: dict) -> Hall:
         hall.floor = hall_data.get("floor")
         hall.capacity = hall_data.get("capacity", hall.capacity)
         hall.layout_map = {"seed_id": hall_data["id"]}
+        hall.image = hall_data.get("image", hall.image)
         hall.status = hall_data.get("status", hall.status)
         db.add(hall)
         db.commit()
