@@ -83,14 +83,17 @@ class NeighborComputer:
             state.neighbor_papers = {track_ids[idx]: paper_centers[idx] for idx in sorted_row_indices}
 
     def compute_paper_neighbors(
-        self, registry: GlobalStudentRegistry, all_papers: list[tuple[int, int]]
+        self, registry: GlobalStudentRegistry, all_papers: list[tuple[int, int]],
+        selected_ids: set[int] | None = None,
     ) -> None:
         """
         Compute surrounding papers using exclusive greedy ownership assignment.
 
         Each detected paper is assigned to its single closest student (1-to-1).
         Students without a YOLO-detected paper fall back to their `paper_center`
-        (bottom-center of bbox), since in an exam setting every student has a paper.
+        (bottom-center of bbox) ONLY if they are currently selected for monitoring.
+        Deselected students don't get a virtual paper — their position can't
+        trigger false cheating alerts on remaining students.
 
         A student's `surrounding_papers` list is then populated from the papers
         owned by their spatial neighbors.
@@ -115,8 +118,7 @@ class NeighborComputer:
             diff = paper_centers_arr[:, np.newaxis, :] - student_centers[np.newaxis, :, :]
             dist_matrix = np.linalg.norm(diff, axis=2)
 
-            # Fix 3: Vectorized greedy assignment using argmin — O(min(M,N))
-            # iterations instead of O(MN log MN) sort.
+            # Vectorized greedy assignment using argmin (O(min(M,N)))
             # Compute per-student bbox width for threshold
             bbox_widths = np.array([s.bbox[2] - s.bbox[0] for s in all_states], dtype=float)
             thresholds = np.maximum(300, bbox_widths * 2)  # shape: (N,)
@@ -139,11 +141,16 @@ class NeighborComputer:
                 dist_masked[:, s_idx] = np.inf  # col: student assigned
 
         # Step C: Fallback — if no YOLO paper detected, use paper_center estimate
-        # ONLY for seated students. Standing/walking students (tall narrow bbox)
-        # don't have a paper on the desk in front of them — assigning one would
-        # create phantom paper targets and cause false positives.
+        # ONLY for SELECTED (monitored) students who are seated.
+        # Deselected students don't get a virtual paper so they can't appear
+        # as cheating "victims" for the remaining monitored students.
+        monitored = selected_ids or set()
         for state in all_states:
             if state.detected_paper is None:
+                # Skip non-monitored students — no virtual paper for them
+                if state.track_id not in monitored:
+                    continue
+                
                 bbox_w = state.bbox[2] - state.bbox[0]
                 bbox_h = state.bbox[3] - state.bbox[1]
                 aspect_ratio = bbox_h / max(bbox_w, 1)

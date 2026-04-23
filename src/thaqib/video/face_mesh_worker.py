@@ -1,12 +1,6 @@
 """
-Face mesh worker for multiprocessing pool (Fix 1).
-
-Each child process initializes its own FaceLandmarker singleton in IMAGE mode
-(process-safe, no timestamp tracking needed). Frames are received via shared
-memory for zero-copy transfer from the main process.
-
-Returns serializable dicts (not FaceMeshResult dataclasses) to avoid pickling
-issues across process boundaries. The main process converts them back.
+Multiprocessing worker for face mesh extraction using shared memory.
+Uses IMAGE mode for process-safe independent frame inference.
 """
 
 from multiprocessing import shared_memory

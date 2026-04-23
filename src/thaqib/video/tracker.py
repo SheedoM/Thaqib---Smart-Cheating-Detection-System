@@ -1,9 +1,6 @@
 """
 Object tracking using BoT-SORT via boxmot library.
-
-Maintains persistent identity for detected humans across frames.
-Extended with per-track bbox smoothing, lost-track memory, and
-ID locking.
+Maintains persistent identity with EMA smoothing and ID locking.
 """
 
 import logging
@@ -12,7 +9,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import cv2
-from boxmot.trackers.botsort.bot_sort import BoTSORT
+from boxmot.trackers.botsort.botsort import BotSort
 
 from thaqib.config import get_settings
 from thaqib.video.detector import Detection, DetectionResult
@@ -232,12 +229,12 @@ class ObjectTracker:
     def get_selected_ids(self) -> set[int]:
         return self._selected_ids.copy()
 
-    def _make_tracker(self) -> BoTSORT:
+    def _make_tracker(self) -> BotSort:
         """Factory method — single source of truth for BoT-SORT config."""
         import torch
         device = "cuda" if torch.cuda.is_available() else "cpu"
         use_half = device == "cuda"  # FP16 only works on CUDA
-        return BoTSORT(
+        return BotSort(
             reid_weights=Path(self.reid_weights_path),
             device=device,
             half=use_half,
@@ -246,7 +243,7 @@ class ObjectTracker:
             track_high_thresh=0.25,
             track_low_thresh=0.10,
             new_track_thresh=0.20,
-            track_buffer=60,       # 2s ghost tracks (was 4s — too long)
+            track_buffer=60,       # 2s ghost tracks
             match_thresh=0.8,      # Tighter matching reduces ID switches
             proximity_thresh=0.7,
             appearance_thresh=0.25,

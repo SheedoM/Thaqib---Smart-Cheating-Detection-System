@@ -1,12 +1,6 @@
 """
 Face mesh extraction using MediaPipe Face Landmarker.
-
-Detects 478 face landmarks in both 2D pixel space and 3D metric space.
-Does NOT compute gaze or head pose — only raw mesh geometry.
-
-Uses VIDEO running mode for temporal smoothing (reduces landmark jitter
-between consecutive frames). Each worker thread gets its own landmarker
-instance via threading.local() because VIDEO mode is not thread-safe.
+Uses thread-local VIDEO mode for temporal smoothing.
 """
 
 import logging

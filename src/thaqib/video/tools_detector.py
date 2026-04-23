@@ -53,6 +53,8 @@ class ToolsDetector:
         self._model: YOLO | None = None
         # Target classes from settings (configurable via .env)
         self.target_labels = list(self._settings.tools_target_labels)
+        # Confidence threshold — separate from person detection confidence
+        self._conf = self._settings.tools_confidence
 
     def load(self) -> None:
         """Load the YOLO model for tools."""
@@ -99,7 +101,7 @@ class ToolsDetector:
             verbose=False,
             device=self._model.device,
             imgsz=640,
-            conf=0.25,
+            conf=self._conf,
             iou=0.45,
             agnostic_nms=True,
         )

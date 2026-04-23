@@ -1,8 +1,6 @@
 """
 Video visualization layer.
-
 Responsible ONLY for drawing overlays onto frames.
-Does NOT perform detection, tracking, registry updates, or neighbor computation.
 """
 
 import cv2
@@ -21,12 +19,35 @@ def _track_color(track_id: int) -> tuple[int, int, int]:
     return tuple(int(c) for c in rng.randint(60, 230, 3))
 
 
+def _sc(frame: np.ndarray) -> float:
+    """
+    Compute a resolution scale factor relative to 720p.
+
+    At 720p  -> sc = 1.0  (baseline — all hardcoded values are designed here)
+    At 1080p -> sc = 1.5
+    At 1440p -> sc = 2.0
+    At 2160p -> sc = 3.0
+    """
+    return max(0.5, frame.shape[0] / 720.0)
+
+
+def _fs(sc: float, base: float) -> float:
+    """Scale a font size by sc."""
+    return base * sc
+
+
+def _th(sc: float, base: int) -> int:
+    """Scale a thickness/radius by sc, minimum 1."""
+    return max(1, int(round(base * sc)))
+
+
 class VideoVisualizer:
     """
     Visualization layer for the video processing pipeline.
 
     Draws bounding boxes, IDs, neighbor graph lines, and HUD info onto frames.
-    Fully decoupled from all processing logic — only reads data, never mutates it.
+    All UI elements are scaled proportionally to the frame resolution so that
+    the on-screen size looks identical across 720p, 1080p, 2K, and 4K.
     """
 
     def __init__(self) -> None:
@@ -61,38 +82,28 @@ class VideoVisualizer:
 
         Returns:
             A new annotated frame (the original is not modified).
-            At >1080p input, the returned frame is downscaled to 1080p
-            (Fix 5: saves 2–6ms at 4K by reducing the 23.7MB copy to 5.9MB).
         """
-        # Fix 5: downscale to max 1080p before copying to avoid 23.7MB copy at 4K
-        h, w = pipeline_frame.frame.shape[:2]
-        if h > 1080:
-            display_scale = 1080 / h
-            new_w = int(w * display_scale)
-            annotated = cv2.resize(
-                pipeline_frame.frame, (new_w, 1080),
-                interpolation=cv2.INTER_LINEAR,
-            )
-        else:
-            display_scale = 1.0
-            annotated = pipeline_frame.frame.copy()
+        annotated = pipeline_frame.frame.copy()
+        sc = _sc(annotated)
 
-        self._draw_unselected_tracks(annotated, pipeline_frame, display_scale)
-        self._draw_selected_students(annotated, pipeline_frame, display_scale)
+        # Student overlays use a reduced scale so the face stays clearly visible
+        ssc = sc * 0.65
+        self._draw_unselected_tracks(annotated, pipeline_frame, ssc)
+        self._draw_selected_students(annotated, pipeline_frame, ssc)
 
-        self._draw_cheating_tools(annotated, pipeline_frame, display_scale)
-        self._draw_surrounding_papers(annotated, pipeline_frame, display_scale)
+        self._draw_cheating_tools(annotated, pipeline_frame, ssc)
+        self._draw_surrounding_papers(annotated, pipeline_frame, ssc)
 
         if self.show_neighbors and registry is not None:
-            self.draw_neighbors(annotated, registry, display_scale)
-            self._draw_legend_panel(annotated, pipeline_frame)
+            self.draw_neighbors(annotated, registry, sc)
+            self._draw_legend_panel(annotated, pipeline_frame, sc)
 
-        self._draw_hud(annotated, pipeline_frame)
+        self._draw_hud(annotated, pipeline_frame, sc)
 
         if self.show_control_panel:
             self._draw_control_panel(annotated, pipeline_frame)
 
-        self._draw_instructions(annotated)
+        self._draw_instructions(annotated, sc)
 
         return annotated
 
@@ -100,55 +111,51 @@ class VideoVisualizer:
     # Feature 1 — bounding boxes & IDs
     # ------------------------------------------------------------------
 
-    def _draw_unselected_tracks(self, frame: np.ndarray, pipeline_frame: PipelineFrame, display_scale: float = 1.0) -> None:
+    def _draw_unselected_tracks(self, frame: np.ndarray, pipeline_frame: PipelineFrame, sc: float) -> None:
         """Draw all unselected tracks in gray."""
-        sc = display_scale
         for track in pipeline_frame.tracking_result.tracks:
             if track.is_selected:
                 continue
             x1, y1, x2, y2 = track.bbox
-            x1, y1, x2, y2 = int(x1*sc), int(y1*sc), int(x2*sc), int(y2*sc)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (128, 128, 128), 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (128, 128, 128), _th(sc, 2))
             cv2.putText(
                 frame,
                 f"ID:{track.track_id}",
-                (x1, y1 - 8),
+                (x1, max(0, y1 - _th(sc, 8))),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
+                _fs(sc, 0.5),
                 (128, 128, 128),
-                1,
+                _th(sc, 1),
                 cv2.LINE_AA,
             )
 
-    def _draw_selected_students(self, frame: np.ndarray, pipeline_frame: PipelineFrame, display_scale: float = 1.0) -> None:
+    def _draw_selected_students(self, frame: np.ndarray, pipeline_frame: PipelineFrame, sc: float) -> None:
         """Draw selected students with unique per-ID colors."""
-        sc = display_scale
         for state in pipeline_frame.student_states:
             x1, y1, x2, y2 = state.bbox
-            x1, y1, x2, y2 = int(x1*sc), int(y1*sc), int(x2*sc), int(y2*sc)
-            
+
             if getattr(state, "is_cheating", False):
                 color = (0, 0, 255)  # RED
-                thickness = 3
+                thickness = _th(sc, 3)
             else:
                 color = _track_color(state.track_id)
-                thickness = 2
+                thickness = _th(sc, 2)
 
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
             cv2.putText(
                 frame,
                 f"ID:{state.track_id}",
-                (x1, y1 - 8),
+                (x1, max(0, y1 - _th(sc, 8))),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
+                _fs(sc, 0.6),
                 color,
                 thickness,
                 cv2.LINE_AA,
             )
 
             # Center dot
-            cx, cy = int(state.center[0]*sc), int(state.center[1]*sc)
-            cv2.circle(frame, (cx, cy), 4, color, -1, cv2.LINE_AA)
+            cx, cy = state.center
+            cv2.circle(frame, (cx, cy), _th(sc, 4), color, -1, cv2.LINE_AA)
 
             # Face mesh overlay
             self._draw_face_mesh(frame, state, sc)
@@ -160,69 +167,56 @@ class VideoVisualizer:
     # Feature 2 — Cheating Tools & Spatial Papers
     # ------------------------------------------------------------------
 
-    def _draw_cheating_tools(self, frame: np.ndarray, pipeline_frame: PipelineFrame, display_scale: float = 1.0) -> None:
-        """Draw bounding boxes for detected tools (books, phones)."""
+    _PHONE_LABELS = frozenset(['phone', 'Using_phone', 'cell phone'])
+
+    def _draw_cheating_tools(self, frame: np.ndarray, pipeline_frame: PipelineFrame, sc: float) -> None:
+        """Draw bounding boxes for detected tools (documents/papers, phones)."""
         if pipeline_frame.tools_result is None:
             return
 
-        sc = display_scale
         for tool in pipeline_frame.tools_result.tools:
             x1, y1, x2, y2 = tool.bbox
-            x1, y1, x2, y2 = int(x1*sc), int(y1*sc), int(x2*sc), int(y2*sc)
-            
-            # Format label with confidence
             label = f"{tool.label} {tool.confidence:.2f}"
-            
-            if tool.label in ['phone', 'Using_phone', 'cell phone'] and self.show_phone:
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)  # RED for phone
+
+            if tool.label in self._PHONE_LABELS and self.show_phone:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), _th(sc, 2))
                 cv2.putText(
-                    frame, label, (x1, y1 - 8),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2, cv2.LINE_AA
+                    frame, label, (x1, max(0, y1 - _th(sc, 8))),
+                    cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.5), (0, 0, 255), _th(sc, 2), cv2.LINE_AA
                 )
-            elif tool.label == 'book' and self.show_paper:
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2) # YELLOW for book
+            elif tool.label not in self._PHONE_LABELS and self.show_paper:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), _th(sc, 2))
                 cv2.putText(
-                    frame, label, (x1, y1 - 8),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2, cv2.LINE_AA
+                    frame, label, (x1, max(0, y1 - _th(sc, 8))),
+                    cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.5), (0, 255, 255), _th(sc, 2), cv2.LINE_AA
                 )
 
-    def _draw_surrounding_papers(self, frame: np.ndarray, pipeline_frame: PipelineFrame, display_scale: float = 1.0) -> None:
+    def _draw_surrounding_papers(self, frame: np.ndarray, pipeline_frame: PipelineFrame, sc: float) -> None:
         """Draw cyan lines connecting a student to their k-nearest surrounding papers."""
         if not self.show_paper:
             return
 
-        sc = display_scale
         for state in pipeline_frame.student_states:
-            cx, cy = int(state.center[0]*sc), int(state.center[1]*sc)
+            cx, cy = state.center
             for paper_coord in state.surrounding_papers:
-                px, py = int(paper_coord[0]*sc), int(paper_coord[1]*sc)
-                # Draw a thin Cyan line
-                cv2.line(
-                    frame,
-                    (cx, cy),
-                    (px, py),
-                    (255, 255, 0),  # Cyan
-                    1,
-                    cv2.LINE_AA,
-                )
-                # Draw a small circle at the paper coordinate to mark it
-                cv2.circle(frame, (px, py), 3, (255, 255, 0), -1, cv2.LINE_AA)
+                px, py = paper_coord
+                cv2.line(frame, (cx, cy), (px, py), (255, 255, 0), _th(sc, 1), cv2.LINE_AA)
+                cv2.circle(frame, (px, py), _th(sc, 3), (255, 255, 0), -1, cv2.LINE_AA)
 
     # ------------------------------------------------------------------
     # Feature 3a — face mesh
     # ------------------------------------------------------------------
 
-    def _draw_face_mesh(self, frame: np.ndarray, state, sc: float = 1.0) -> None:
+    def _draw_face_mesh(self, frame: np.ndarray, state, sc: float) -> None:
         """Draw all face mesh landmarks as green dots on the student's face."""
         if state.face_mesh is None:
             return
+        r = max(1, int(sc))  # 1px at 720p, 2px at 1440p, 3px at 2160p
         for (x, y) in state.face_mesh.landmarks_2d:
-            cv2.circle(frame, (int(x*sc), int(y*sc)), 1, (0, 255, 0), -1)
+            cv2.circle(frame, (int(x), int(y)), r, (0, 255, 0), -1)
 
-    def _draw_gaze(self, frame: np.ndarray, state, sc: float = 1.0) -> None:
-        """
-        Draw a combined 3D gaze arrow using the shared gaze computation module.
-        """
+    def _draw_gaze(self, frame: np.ndarray, state, sc: float) -> None:
+        """Draw a combined 3D gaze arrow using the shared gaze computation module."""
         if state.face_mesh is None:
             return
 
@@ -230,215 +224,267 @@ class VideoVisualizer:
         if len(lm2d) < 474:
             return
 
-        # Use shared gaze computation (single source of truth with pipeline)
         gaze_dir = compute_gaze_direction(state.face_mesh)
         if gaze_dir is None:
             return
 
         dir_x, dir_y = gaze_dir[0], gaze_dir[1]
 
-        # Draw (Improved non-linear scale)
         bbox_height = state.bbox[3] - state.bbox[1]
-        
-        # Enlarge arrow for far students (small bbox), scale down for close ones
-        base_scale = bbox_height * 1.0 if bbox_height < 100 else bbox_height * 0.6
-        SCALE = int(max(60, min(base_scale, 200))) # Clamp between 60 and 200
+        base_scale = bbox_height * 1.0 if bbox_height < 100 * sc else bbox_height * 0.6
+        SCALE = int(max(60 * sc, min(base_scale, 200 * sc)))
 
         if not hasattr(state, "_gaze_scale"):
             state._gaze_scale = SCALE
         else:
-            # Smooth the scale to avoid flickering
             state._gaze_scale = int(0.8 * state._gaze_scale + 0.2 * SCALE)
         SCALE = state._gaze_scale
-        
-        GAZE_COLOR = (0, 0, 255) # Red
 
-        ox, oy = int(lm2d[168][0]*sc), int(lm2d[168][1]*sc)
+        GAZE_COLOR = (0, 0, 255)
+        ox, oy = int(lm2d[168][0]), int(lm2d[168][1])
         origin = (ox, oy)
-        end = (
-            int(origin[0] + dir_x * SCALE * sc),
-            int(origin[1] + dir_y * SCALE * sc)
-        )
+        end = (int(origin[0] + dir_x * SCALE), int(origin[1] + dir_y * SCALE))
 
-        cv2.circle(frame, origin, 4, GAZE_COLOR, -1, cv2.LINE_AA)
-        cv2.line(frame, origin, end, GAZE_COLOR, 5, cv2.LINE_AA)
-        cv2.line(frame, origin, end, (0, 255, 255), 2, cv2.LINE_AA)
-        cv2.circle(frame, end, 4, GAZE_COLOR, -1, cv2.LINE_AA)
+        cv2.circle(frame, origin, _th(sc, 4), GAZE_COLOR, -1, cv2.LINE_AA)
+        cv2.line(frame, origin, end, GAZE_COLOR, _th(sc, 5), cv2.LINE_AA)
+        cv2.line(frame, origin, end, (0, 255, 255), _th(sc, 2), cv2.LINE_AA)
+        cv2.circle(frame, end, _th(sc, 4), GAZE_COLOR, -1, cv2.LINE_AA)
+
     # ------------------------------------------------------------------
     # Feature 3 — neighbor graph
     # ------------------------------------------------------------------
 
-    def draw_neighbors(self, frame: np.ndarray, registry: GlobalStudentRegistry, display_scale: float = 1.0) -> None:
-        """
-        Draw neighbor connection lines between students.
-
-        For each student, draws a line to each of its k-nearest neighbors.
-        """
-        sc = display_scale
+    def draw_neighbors(self, frame: np.ndarray, registry: GlobalStudentRegistry, sc: float = 1.0) -> None:
+        """Draw neighbor connection lines between students."""
         all_states = [s for s in registry.get_all() if getattr(s, "is_active", True)]
 
         for state in all_states:
             if not state.neighbors:
                 continue
 
-            src_center = (int(state.center[0]*sc), int(state.center[1]*sc))
+            src_center = state.center
             src_color = _track_color(state.track_id)
 
             for neighbor_id in state.neighbors:
                 neighbor_state = registry.get(neighbor_id)
                 if neighbor_state is None or not getattr(neighbor_state, "is_active", True):
                     continue
+                cv2.line(frame, src_center, neighbor_state.center, src_color, _th(sc, 2), cv2.LINE_AA)
 
-                dst_center = (int(neighbor_state.center[0]*sc), int(neighbor_state.center[1]*sc))
-
-                # Draw connection line
-                cv2.line(
-                    frame,
-                    src_center,
-                    dst_center,
-                    src_color,
-                    2,
-                    cv2.LINE_AA,
-                )
-
-            # Draw circle at student center
-            cv2.circle(frame, src_center, 6, src_color, 2, cv2.LINE_AA)
+            cv2.circle(frame, src_center, _th(sc, 6), src_color, _th(sc, 2), cv2.LINE_AA)
 
     # ------------------------------------------------------------------
-    # HUD & instructions
+    # HUD & panels
     # ------------------------------------------------------------------
 
-    def _draw_hud(self, frame: np.ndarray, pipeline_frame: PipelineFrame) -> None:
-        """Draw top-left HUD with runtime stats."""
-        neighbors_label = "ON" if self.show_neighbors else "OFF"
-        info_lines = [
-            f"FPS: {1000 / max(pipeline_frame.processing_time_ms, 1):.1f}",
-            f"Tracked: {pipeline_frame.tracked_count}",
-            f"Selected: {pipeline_frame.selected_count}",
-            f"Frame: {pipeline_frame.frame_index}",
-            f"Neighbors: {neighbors_label}",
+    def _draw_hud(self, frame: np.ndarray, pipeline_frame: PipelineFrame, sc: float) -> None:
+        """Draw compact top-left stats (FPS + frame counter)."""
+        fps = 1000 / max(pipeline_frame.processing_time_ms, 1)
+        cheating_count = sum(1 for s in pipeline_frame.student_states if s.is_cheating)
+
+        lines = [
+            (f"FPS: {fps:.1f}", (0, 230, 120) if fps >= 20 else (0, 100, 255)),
+            (f"Frame: {pipeline_frame.frame_index}", (180, 180, 180)),
         ]
+        if cheating_count > 0:
+            lines.append((f"!! {cheating_count} CHEATING ALERT{'S' if cheating_count > 1 else ''} !!", (0, 0, 255)))
 
-        for i, line in enumerate(info_lines):
-            cv2.putText(
-                frame,
-                line,
-                (10, 30 + i * 25),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
+        lh = int(24 * sc)
+        for i, (text, color) in enumerate(lines):
+            cv2.putText(frame, text, (int(10 * sc), int(28 * sc) + i * lh),
+                        cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.6), color, _th(sc, 2), cv2.LINE_AA)
 
-    def _draw_instructions(self, frame: np.ndarray) -> None:
-        """Draw bottom instruction bar."""
-        instructions = "s: select all  |  c: clear  |  t: neighbors  |  p: panel  |  q: quit"
-        cv2.putText(
-            frame,
-            instructions,
-            (10, frame.shape[0] - 15),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (200, 200, 200),
-            1,
-            cv2.LINE_AA,
-        )
+    def _draw_instructions(self, frame: np.ndarray, sc: float) -> None:
+        """Draw slim bottom instruction bar."""
+        bar_h = int(26 * sc)
+        h, w = frame.shape[:2]
+        roi = frame[h - bar_h:h, 0:w]
+        overlay = roi.copy()
+        cv2.rectangle(overlay, (0, 0), (w, bar_h), (10, 10, 10), -1)
+        cv2.addWeighted(overlay, 0.70, roi, 0.30, 0, roi)
+        text = "[S] Select  [M] Deselect-click  [C] Clear  [T] Neighbors  [R] Archive  [P] Panel  [Q] Quit"
+        cv2.putText(frame, text, (int(10 * sc), h - int(7 * sc)),
+                    cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.42), (200, 200, 200), _th(sc, 1), cv2.LINE_AA)
 
     def _draw_control_panel(self, frame: np.ndarray, pipeline_frame: PipelineFrame) -> None:
-        """Draw a control panel on the bottom-left showing system status."""
+        """Draw a two-column panel: STATUS (left) and CONTROLS (right). Fully scaled."""
         h, w = frame.shape[:2]
-        panel_h = 130
-        panel_w = 320
-        panel_x = 10
-        panel_y = h - panel_h - 40  # Above the instruction bar
+        sc = _sc(frame)
 
-        # Semi-transparent background (ROI-only copy to avoid full-frame duplication)
-        roi = frame[panel_y:panel_y + panel_h, panel_x:panel_x + panel_w]
-        overlay_roi = roi.copy()
-        cv2.rectangle(overlay_roi, (0, 0), (panel_w, panel_h), (15, 15, 15), -1)
-        cv2.addWeighted(overlay_roi, 0.75, roi, 0.25, 0, roi)
+        # ── geometry ───────────────────────────────────────────────────
+        col_w   = int(270 * sc)
+        line_h  = int(22 * sc)
+        pad     = int(10 * sc)
+        title_h = int(28 * sc)
+        margin  = int(10 * sc)
+        dot_r   = int(5 * sc)
+        rows    = 9
 
-        # Border
-        cv2.rectangle(frame, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (80, 80, 80), 1)
+        panel_h = title_h + pad + rows * line_h + pad
+        panel_x = margin
+        panel_y = h - panel_h - int(30 * sc)
+        panel_y = max(0, panel_y)
 
-        # Title
-        cv2.putText(frame, "THAQIB CONTROL PANEL", (panel_x + 10, panel_y + 22),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2, cv2.LINE_AA)
-        cv2.line(frame, (panel_x + 10, panel_y + 30), (panel_x + panel_w - 10, panel_y + 30), (60, 60, 60), 1)
+        # ── background ─────────────────────────────────────────────────
+        for col in range(2):
+            bx = panel_x + col * (col_w + margin)
+            roi = frame[panel_y: panel_y + panel_h, bx: bx + col_w]
+            if roi.size == 0:
+                continue
+            ov = roi.copy()
+            cv2.rectangle(ov, (0, 0), (col_w, panel_h), (12, 12, 12), -1)
+            cv2.addWeighted(ov, 0.80, roi, 0.20, 0, roi)
+            cv2.rectangle(frame, (bx, panel_y), (bx + col_w, panel_y + panel_h), (70, 70, 70), _th(sc, 1))
 
-        # Status rows
-        y = panel_y + 50
-        line_h = 22
+        fs_label = _fs(sc, 0.42)
+        fs_title = _fs(sc, 0.52)
+        fs_sub   = _fs(sc, 0.38)
+        fs_key   = _fs(sc, 0.40)
+        tw       = _th(sc, 1)
+        col_off  = int(120 * sc)
+        badge_w  = int(22 * sc)
+        badge_h  = int(17 * sc)
 
-        # Tracked count
+        # ── helpers ────────────────────────────────────────────────────
+        def row(x, y, label, value, val_color=(200, 200, 200), bullet_color=None):
+            if bullet_color:
+                cv2.circle(frame, (x + dot_r + pad // 2, y - dot_r), dot_r, bullet_color, -1)
+                lx = x + dot_r * 2 + pad
+            else:
+                lx = x + pad
+            cv2.putText(frame, label, (lx, y), cv2.FONT_HERSHEY_SIMPLEX, fs_label, (150, 150, 150), tw, cv2.LINE_AA)
+            cv2.putText(frame, value, (lx + col_off, y), cv2.FONT_HERSHEY_SIMPLEX, fs_label, val_color, tw, cv2.LINE_AA)
+
+        def key_row(x, y, key, desc, state_str="", state_color=(200, 200, 200)):
+            bx0 = x + pad
+            by0 = y - badge_h + int(4 * sc)
+            bx1 = bx0 + badge_w
+            by1 = y + int(4 * sc)
+            cv2.rectangle(frame, (bx0, by0), (bx1, by1), (50, 50, 50), -1)
+            cv2.rectangle(frame, (bx0, by0), (bx1, by1), (120, 120, 120), tw)
+            cv2.putText(frame, key, (bx0 + int(4 * sc), y), cv2.FONT_HERSHEY_SIMPLEX, fs_label, (255, 230, 100), tw, cv2.LINE_AA)
+            cv2.putText(frame, desc, (bx1 + int(4 * sc), y), cv2.FONT_HERSHEY_SIMPLEX, fs_label, (190, 190, 190), tw, cv2.LINE_AA)
+            if state_str:
+                sx = x + col_w - pad - len(state_str) * int(7 * sc) - int(4 * sc)
+                cv2.putText(frame, state_str, (sx, y), cv2.FONT_HERSHEY_SIMPLEX, fs_key, state_color, tw, cv2.LINE_AA)
+
+        # ══════════════════════════════════════════════════════════════
+        # LEFT COLUMN — STATUS
+        # ══════════════════════════════════════════════════════════════
+        lx = panel_x
+
+        cv2.putText(frame, "  STATUS", (lx + pad, panel_y + int(20 * sc)),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs_title, (0, 200, 255), _th(sc, 2), cv2.LINE_AA)
+        cv2.line(frame, (lx + pad, panel_y + title_h),
+                 (lx + col_w - pad, panel_y + title_h), (50, 50, 50), tw)
+
+        y = panel_y + title_h + pad + line_h
+
         tracked = pipeline_frame.tracked_count
-        cv2.circle(frame, (panel_x + 20, y - 5), 5, (0, 255, 0) if tracked > 0 else (80, 80, 80), -1)
-        cv2.putText(frame, f"Tracked: {tracked}", (panel_x + 35, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
-
-        # Selected count
+        row(lx, y, "Tracked:", str(tracked), bullet_color=(0, 220, 0) if tracked > 0 else (80, 80, 80))
         y += line_h
+
         selected = pipeline_frame.selected_count
         sel_color = (0, 255, 255) if selected > 0 else (80, 80, 80)
-        cv2.circle(frame, (panel_x + 20, y - 5), 5, sel_color, -1)
-        cv2.putText(frame, f"Monitoring: {selected}", (panel_x + 35, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
-
-        # Cheating alerts
+        row(lx, y, "Monitoring:", str(selected), val_color=sel_color, bullet_color=sel_color)
         y += line_h
-        cheating_count = sum(1 for s in pipeline_frame.student_states if s.is_cheating)
-        if cheating_count > 0:
-            alert_color = (0, 0, 255)
-            cv2.circle(frame, (panel_x + 20, y - 5), 5, alert_color, -1)
-            cv2.putText(frame, f"ALERTS: {cheating_count} cheating!", (panel_x + 35, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, alert_color, 1, cv2.LINE_AA)
+
+        cheating = sum(1 for s in pipeline_frame.student_states if s.is_cheating)
+        if cheating > 0:
+            row(lx, y, "Alerts:", f"{cheating} CHEATING!", val_color=(0, 60, 255), bullet_color=(0, 0, 255))
         else:
-            cv2.circle(frame, (panel_x + 20, y - 5), 5, (0, 180, 0), -1)
-            cv2.putText(frame, "No alerts", (panel_x + 35, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 180, 0), 1, cv2.LINE_AA)
+            row(lx, y, "Alerts:", "None", val_color=(0, 180, 0), bullet_color=(0, 180, 0))
+        y += line_h + int(4 * sc)
 
-        # Neighbors status
+        sep_y = y - int(6 * sc)
+        cv2.line(frame, (lx + pad, sep_y), (lx + col_w - pad, sep_y), (40, 40, 40), tw)
+        cv2.putText(frame, "  SETTINGS", (lx + pad, y + int(2 * sc)),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs_sub, (120, 120, 120), tw, cv2.LINE_AA)
         y += line_h
-        nb_color = (0, 255, 0) if self.show_neighbors else (100, 100, 100)
-        cv2.putText(frame, f"Neighbors: {'ON' if self.show_neighbors else 'OFF'}", (panel_x + 35, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, nb_color, 1, cv2.LINE_AA)
 
-    def _draw_legend_panel(self, frame: np.ndarray, pipeline_frame: PipelineFrame) -> None:
+        arc_mode = pipeline_frame.archive_mode
+        arc_color = (0, 200, 255) if arc_mode == "annotated" else (160, 160, 160)
+        row(lx, y, "Archive:", arc_mode.upper(), val_color=arc_color)
+        y += line_h
+
+        nb_color = (0, 255, 0) if self.show_neighbors else (100, 100, 100)
+        row(lx, y, "Neighbors:", "ON" if self.show_neighbors else "OFF", val_color=nb_color)
+        y += line_h
+
+        pp_color = (0, 255, 255) if self.show_paper else (100, 100, 100)
+        row(lx, y, "Papers:", "ON" if self.show_paper else "OFF", val_color=pp_color)
+        y += line_h
+
+        ph_color = (0, 160, 255) if self.show_phone else (100, 100, 100)
+        row(lx, y, "Phone det.:", "ON" if self.show_phone else "OFF", val_color=ph_color)
+
+        # ══════════════════════════════════════════════════════════════
+        # RIGHT COLUMN — CONTROLS
+        # ══════════════════════════════════════════════════════════════
+        rx = panel_x + col_w + margin
+
+        cv2.putText(frame, "  CONTROLS", (rx + pad, panel_y + int(20 * sc)),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs_title, (0, 200, 255), _th(sc, 2), cv2.LINE_AA)
+        cv2.line(frame, (rx + pad, panel_y + title_h),
+                 (rx + col_w - pad, panel_y + title_h), (50, 50, 50), tw)
+
+        y = panel_y + title_h + pad + line_h
+
+        key_row(rx, y, "S", "Select all students")
+        y += line_h
+        key_row(rx, y, "M", "Deselect (click bbox)")
+        y += line_h
+        key_row(rx, y, "C", "Clear all selections")
+        y += line_h
+        key_row(rx, y, "T", "Toggle neighbors",
+                "ON" if self.show_neighbors else "OFF",
+                (0, 255, 0) if self.show_neighbors else (100, 100, 100))
+        y += line_h
+        key_row(rx, y, "R", "Toggle archive mode",
+                arc_mode.upper(),
+                (0, 200, 255) if arc_mode == "annotated" else (160, 160, 160))
+        y += line_h
+        key_row(rx, y, "P", "Toggle this panel",
+                "ON" if self.show_control_panel else "OFF",
+                (0, 255, 0) if self.show_control_panel else (100, 100, 100))
+        y += line_h + int(4 * sc)
+        sep_y2 = y - int(6 * sc)
+        cv2.line(frame, (rx + pad, sep_y2), (rx + col_w - pad, sep_y2), (40, 40, 40), tw)
+        key_row(rx, y, "Q", "Quit / Stop system")
+
+    def _draw_legend_panel(self, frame: np.ndarray, pipeline_frame: PipelineFrame, sc: float) -> None:
         """Draw a transparent color legend on the right side of the screen."""
         if not pipeline_frame.tracking_result.tracks:
             return
 
         h, w = frame.shape[:2]
-        panel_w = 180
+        panel_w = int(180 * sc)
         panel_x = w - panel_w
-        
-        # Draw transparent dark background (ROI-only copy)
+
         roi = frame[0:h, panel_x:w]
         overlay_roi = roi.copy()
         cv2.rectangle(overlay_roi, (0, 0), (panel_w, h), (20, 20, 20), -1)
         cv2.addWeighted(overlay_roi, 0.6, roi, 0.4, 0, roi)
 
-        # Draw title
-        cv2.putText(frame, "STUDENTS", (panel_x + 15, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.line(frame, (panel_x + 15, 40), (w - 15, 40), (100, 100, 100), 1)
+        cv2.putText(frame, "STUDENTS", (panel_x + int(15 * sc), int(30 * sc)),
+                    cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.6), (255, 255, 255), _th(sc, 2), cv2.LINE_AA)
+        cv2.line(frame, (panel_x + int(15 * sc), int(40 * sc)),
+                 (w - int(15 * sc), int(40 * sc)), (100, 100, 100), _th(sc, 1))
 
-        # Draw legend items
-        y_pos = 70
+        y_pos = int(70 * sc)
+        row_h  = int(30 * sc)
+        dot_r  = int(8 * sc)
+        dot_cx = panel_x + int(30 * sc)
+
         for track in pipeline_frame.tracking_result.tracks:
             color = _track_color(track.track_id)
-            
-            # Circle marker
-            cv2.circle(frame, (panel_x + 30, y_pos - 5), 8, color, -1, cv2.LINE_AA)
-            cv2.circle(frame, (panel_x + 30, y_pos - 5), 8, (255, 255, 255), 1, cv2.LINE_AA)
-            
-            # ID text
-            alpha = "" if not track.is_selected else "(*)"
+            cy = y_pos - int(5 * sc)
+            cv2.circle(frame, (dot_cx, cy), dot_r, color, -1, cv2.LINE_AA)
+            cv2.circle(frame, (dot_cx, cy), dot_r, (255, 255, 255), _th(sc, 1), cv2.LINE_AA)
+
+            alpha = "(*)" if track.is_selected else ""
             text = f"ID: {track.track_id} {alpha}"
             txt_color = (255, 255, 255) if track.is_selected else (150, 150, 150)
-            
-            cv2.putText(frame, text, (panel_x + 55, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, txt_color, 1, cv2.LINE_AA)
-            y_pos += 30
-
+            cv2.putText(frame, text, (panel_x + int(55 * sc), y_pos),
+                        cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.5), txt_color, _th(sc, 1), cv2.LINE_AA)
+            y_pos += row_h
