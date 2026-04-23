@@ -1,7 +1,5 @@
 """
 Global student spatial registry system.
-
-Stores the spatial state of all tracked students for the current frame.
 """
 
 from collections import deque

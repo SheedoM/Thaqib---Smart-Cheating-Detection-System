@@ -1,15 +1,22 @@
 """
 Shared gaze direction computation.
-
-Extracts a 2D gaze direction vector from a FaceMeshResult using
-MediaPipe's head rotation matrix and iris landmark deviations.
-
-Used by both pipeline.py (cheating evaluation) and visualizer.py (drawing).
+Extracts 2D gaze vector using MediaPipe head matrix and iris deviations.
 """
 
 import numpy as np
 
 from thaqib.video.face_mesh import FaceMeshResult
+
+# Weight applied to iris deviation when blending it with head pose.
+# Higher values make iris movement dominate; lower values make head pose dominate.
+# 3.0 is empirically calibrated so that ±1 eye-width iris shift ≈ ±45° gaze swing.
+_IRIS_WEIGHT = 3.0
+
+# Maximum iris deviation (in normalized eye-width units) before clamping.
+# Deviations beyond this are almost certainly noise or partial occlusion of
+# the iris landmark, not a real gaze shift. Clamping prevents a single bad
+# frame from wildly deflecting the gaze vector.
+_IRIS_MAX_DEV = 0.5
 
 
 def compute_gaze_direction(face_mesh: FaceMeshResult) -> np.ndarray | None:
@@ -49,9 +56,15 @@ def compute_gaze_direction(face_mesh: FaceMeshResult) -> np.ndarray | None:
     if eye_width > 1e-6:
         avg_eye_dev /= eye_width
 
-    # 3. Combine in 3D Space (Coordinate Alignment)
-    # CRITICAL FIX: Invert Eye X-axis to match MediaPipe's 3D Space
-    eye_3d = np.array([-avg_eye_dev[0], avg_eye_dev[1], 0.0]) * 3.0
+    # Clamp iris deviation to _IRIS_MAX_DEV to suppress noise / iris occlusion.
+    # Beyond half an eye-width, the signal is unreliable on distant or
+    # partially-occluded faces.
+    iris_mag = np.linalg.norm(avg_eye_dev)
+    if iris_mag > _IRIS_MAX_DEV:
+        avg_eye_dev = avg_eye_dev * (_IRIS_MAX_DEV / iris_mag)
+
+    # 3. Combine in 3D Space (Invert Eye X-axis to match MediaPipe 3D Space)
+    eye_3d = np.array([-avg_eye_dev[0], avg_eye_dev[1], 0.0]) * _IRIS_WEIGHT
     combined_3d = head_3d + eye_3d
 
     # 4. Project to 2D Screen Space (Convert +X=Left back to +X=Right for drawing)
