@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import CameraModal from '../components/CameraModal';
+import HallsTab from '../components/HallsTab';
 import { apiUrl, STREAM_BASE } from '../config/api';
 import { useInvigilatorPtt } from '../hooks/useInvigilatorPtt';
 
@@ -103,6 +104,7 @@ function timeSince(isoString: string): string {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function DashboardPage({ onLogout }: DashboardPageProps) {
+  const [activeNav, setActiveNav] = useState('home');
   const [activeTab, setActiveTab] = useState<TabType>('cameras');
   const [halls, setHalls] = useState<HallItem[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -374,7 +376,8 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
               {NAV_ITEMS.map((item) => (
                 <button
                   key={item.key}
-                  className={`dashboard-nav-item ${item.active ? 'active' : ''}`}
+                  className={`dashboard-nav-item ${activeNav === item.key ? 'active' : ''}`}
+                  onClick={() => setActiveNav(item.key)}
                 >
                   {item.label}
                 </button>
@@ -388,66 +391,79 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
           </div>
 
           {/* Page title */}
-          <h1 className="dashboard-page-title">الرئيسية</h1>
+          <h1 className="dashboard-page-title">
+            {NAV_ITEMS.find(n => n.key === activeNav)?.label || 'الرئيسية'}
+          </h1>
 
           {/* Sub-header: tabs + hall selector */}
-          <div className="dashboard-subheader">
-            {/* Left: hall selector */}
-            <div className="dashboard-hall-select">
-              <span>القاعة</span>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <polyline points="6 9 12 15 18 9"/>
-              </svg>
-            </div>
+          {activeNav === 'home' && (
+            <div className="dashboard-subheader">
+              {/* Right (in RTL): tab buttons */}
+              <div className="dashboard-tabs">
+                <button
+                  className={`dashboard-tab ${activeTab === 'cameras' ? '' : 'active'}`}
+                  onClick={() => setActiveTab('cases')}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <polyline points="12 6 12 12 16 14"/>
+                  </svg>
+                  أخر الحالات
+                </button>
+                <button
+                  className={`dashboard-tab ${activeTab === 'cameras' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('cameras')}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                    <circle cx="12" cy="13" r="4"/>
+                  </svg>
+                  عرض الكاميرات
+                </button>
+              </div>
 
-            {/* Right: tab buttons */}
-            <div className="dashboard-tabs">
-              <button
-                className={`dashboard-tab ${activeTab === 'cameras' ? '' : 'active'}`}
-                onClick={() => setActiveTab('cases')}
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="12" cy="12" r="10"/>
-                  <polyline points="12 6 12 12 16 14"/>
+              {/* Left (in RTL): hall selector */}
+              <div className="dashboard-hall-select">
+                <span>القاعة</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="6 9 12 15 18 9"/>
                 </svg>
-                أخر الحالات
-              </button>
-              <button
-                className={`dashboard-tab ${activeTab === 'cameras' ? 'active' : ''}`}
-                onClick={() => setActiveTab('cameras')}
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                  <circle cx="12" cy="13" r="4"/>
-                </svg>
-                عرض الكاميرات
-              </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </header>
 
       {/* ══════════ MAIN CONTENT ══════════ */}
       <main className="dashboard-content">
-        {activeTab === 'cases' ? (
-          <CasesTab
-            alerts={alerts}
-            onViewAlert={openAlertModal}
-            onPttStart={startPtt}
-            onPttStop={stopPtt}
-            pttStatusText={ptt.statusText}
-          />
+        {activeNav === 'home' ? (
+          activeTab === 'cases' ? (
+            <CasesTab
+              alerts={alerts}
+              onViewAlert={openAlertModal}
+              onPttStart={startPtt}
+              onPttStop={stopPtt}
+              pttStatusText={ptt.statusText}
+            />
+          ) : (
+            <CamerasTab
+              halls={halls}
+              statsByCamera={statsByCamera}
+              onClickCamera={openCameraModal}
+              recentAlertByCameraId={recentAlertByCameraId}
+              onViewAlert={openAlertModal}
+              onPttStart={startPtt}
+              onPttStop={stopPtt}
+              pttStatusText={ptt.statusText}
+            />
+          )
+        ) : activeNav === 'halls' ? (
+          <HallsTab />
         ) : (
-          <CamerasTab
-            halls={halls}
-            statsByCamera={statsByCamera}
-            onClickCamera={openCameraModal}
-            recentAlertByCameraId={recentAlertByCameraId}
-            onViewAlert={openAlertModal}
-            onPttStart={startPtt}
-            onPttStop={stopPtt}
-            pttStatusText={ptt.statusText}
-          />
+          <div className="dashboard-empty-state">
+            <h3>قريباً</h3>
+            <p>هذا القسم قيد التطوير وسيتم إضافته قريباً.</p>
+          </div>
         )}
       </main>
 

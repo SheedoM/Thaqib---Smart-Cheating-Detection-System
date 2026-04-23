@@ -12,6 +12,7 @@
       "floor": "1",
       "capacity": 120,
       "status": "ready",
+      "image": "/hall-demo.png",
       "mics": [
         "ميكروفون 1",
         "ميكروفون 2"
@@ -26,6 +27,11 @@
           "id": "hall101_cam_back",
           "name": "كاميرا 2 - خلفية",
           "source": "C:\\Users\\shady\\Downloads\\20260414_132048.mp4"
+        },
+        {
+          "id": "hall101_cam_side",
+          "name": "كاميرا 3 - جانبية",
+          "source": ""
         }
       ]
     },
@@ -36,6 +42,7 @@
       "floor": "1",
       "capacity": 120,
       "status": "not_ready",
+      "image": "/hall-demo.png",
       "mics": [
         "ميكروفون 1",
         "ميكروفون 2"
@@ -50,6 +57,11 @@
           "id": "hall102_cam_back",
           "name": "كاميرا 2 - خلفية",
           "source": ""
+        },
+        {
+          "id": "hall102_cam_side",
+          "name": "كاميرا 3 - جانبية",
+          "source": ""
         }
       ]
     },
@@ -60,6 +72,7 @@
       "floor": "2",
       "capacity": 120,
       "status": "not_ready",
+      "image": "/hall-demo.png",
       "mics": [
         "ميكروفون 1",
         "ميكروفون 2"
@@ -74,6 +87,11 @@
           "id": "hall103_cam_back",
           "name": "كاميرا 2 - خلفية",
           "source": ""
+        },
+        {
+          "id": "hall103_cam_side",
+          "name": "كاميرا 3 - جانبية",
+          "source": ""
         }
       ]
     },
@@ -84,6 +102,7 @@
       "floor": "2",
       "capacity": 120,
       "status": "not_ready",
+      "image": "/hall-demo.png",
       "mics": [
         "ميكروفون 1",
         "ميكروفون 2"
@@ -97,6 +116,11 @@
         {
           "id": "hall104_cam_back",
           "name": "كاميرا 2 - خلفية",
+          "source": ""
+        },
+        {
+          "id": "hall104_cam_side",
+          "name": "كاميرا 3 - جانبية",
           "source": ""
         }
       ]
