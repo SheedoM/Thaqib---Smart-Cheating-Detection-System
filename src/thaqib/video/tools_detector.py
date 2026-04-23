@@ -63,20 +63,24 @@ class ToolsDetector:
             
         model_path = self._settings.tools_model
         logger.info(f"Loading tools model: {model_path}")
-        self._model = YOLO(model_path)
-        
-        # Determine device
-        import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        self._model.to(device)
-        
-        # Log available classes
-        logger.info(f"Tools model classes: {self._model.names}")
-        logger.info(f"Target labels: {self.target_labels}")
-        
-        # Warmup
-        dummy_img = np.zeros((720, 1280, 3), dtype=np.uint8)
-        self._model(dummy_img, verbose=False)
+        try:
+            self._model = YOLO(model_path)
+            
+            # Determine device
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self._model.to(device)
+            
+            # Log available classes
+            logger.info(f"Tools model classes: {self._model.names}")
+            logger.info(f"Target labels: {self.target_labels}")
+            
+            # Warmup
+            dummy_img = np.zeros((720, 1280, 3), dtype=np.uint8)
+            self._model(dummy_img, verbose=False)
+        except Exception as e:
+            logger.error(f"Failed to load tools model '{model_path}': {e}. Tool detection will be disabled.")
+            self._model = None
 
     def detect(self, frame: np.ndarray, frame_index: int, timestamp: float) -> ToolsDetectionResult:
         """
@@ -91,7 +95,11 @@ class ToolsDetector:
             Detection results.
         """
         if self._model is None:
-            raise RuntimeError("Model not loaded. Call load() first.")
+            return ToolsDetectionResult(
+                frame_index=frame_index,
+                timestamp=timestamp,
+                tools=[],
+            )
 
         # Run inference with requested settings
         # Note: We let YOLO handle finding our target classes then filter in Python
