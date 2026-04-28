@@ -1,14 +1,22 @@
 """
 Write demo_db.json and sync it into the DB for the monitoring dashboard.
 
-Edit the paths in `demo_db.json` if you want to change the demo sources without
-hardcoding them in Python. Run from repo root:
+Seeds demo halls, cameras, and microphones with streaming URLs.
+For testing: Uses simulator HTTP streams
+For production: Uses RTSP URLs from actual IP cameras
+
+Run from repo root:
     .\\venv\\Scripts\\python scripts\\seed_demo.py
+
+With custom stream host (e.g., for production cameras):
+    .\\venv\\Scripts\\python scripts\\seed_demo.py --stream-host=192.168.1.100 --protocol=rtsp
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -20,6 +28,30 @@ from src.thaqib.db.models import Base
 from src.thaqib.db.models.infrastructure import Device, Hall, Institution
 
 OUT = ROOT / "demo_db.json"
+
+# Stream configuration (can be overridden via environment variables or CLI)
+STREAM_HOST = os.environ.get("STREAM_HOST", "localhost")
+STREAM_HTTP_PORT = int(os.environ.get("STREAM_HTTP_PORT", "8000"))
+STREAM_PROTOCOL = os.environ.get("STREAM_PROTOCOL", "http")  # 'http' for simulator, 'rtsp' for production
+
+
+def get_stream_url(camera_id: str, protocol: str = "http", host: str = "localhost", port: int = 8000) -> str:
+    """
+    Generate stream URL for a camera.
+    
+    Args:
+        camera_id: The camera identifier (e.g., 'hall101_cam_front')
+        protocol: 'http' for simulator testing, 'rtsp' for production cameras
+        host: Stream host (simulator IP or camera IP)
+        port: Stream port
+    
+    Returns:
+        Stream URL (http://host:port/camera/{id}/feed or rtsp://host:port/live/{id})
+    """
+    if protocol.lower() == "rtsp":
+        return f"rtsp://{host}:{port}/live/{camera_id}"
+    return f"http://{host}:{port}/camera/{camera_id}/feed"
+
 
 DATA = {
     "institution": {
@@ -38,21 +70,9 @@ DATA = {
             "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
             "mics": ["ميكروفون 1", "ميكروفون 2"],
             "cameras": [
-                {
-                    "id": "hall101_cam_front",
-                    "name": "كاميرا 1 - أمامية",
-                    "source": r"C:\Users\shady\Downloads\IMG_5123.MOV",
-                },
-                {
-                    "id": "hall101_cam_back",
-                    "name": "كاميرا 2 - خلفية",
-                    "source": r"C:\Users\shady\Downloads\20260414_132048.mp4",
-                },
-                {
-                    "id": "hall101_cam_side",
-                    "name": "كاميرا 3 - جانبية",
-                    "source": "",
-                },
+                {"id": "hall101_cam_front", "name": "كاميرا 1 - أمامية"},
+                {"id": "hall101_cam_back", "name": "كاميرا 2 - خلفية"},
+                {"id": "hall101_cam_side", "name": "كاميرا 3 - جانبية"},
             ],
         },
         {
@@ -65,9 +85,9 @@ DATA = {
             "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
             "mics": ["ميكروفون 1", "ميكروفون 2"],
             "cameras": [
-                {"id": "hall102_cam_front", "name": "كاميرا 1 - أمامية", "source": ""},
-                {"id": "hall102_cam_back", "name": "كاميرا 2 - خلفية", "source": ""},
-                {"id": "hall102_cam_side", "name": "كاميرا 3 - جانبية", "source": ""},
+                {"id": "hall102_cam_front", "name": "كاميرا 1 - أمامية"},
+                {"id": "hall102_cam_back", "name": "كاميرا 2 - خلفية"},
+                {"id": "hall102_cam_side", "name": "كاميرا 3 - جانبية"},
             ],
         },
         {
@@ -80,9 +100,9 @@ DATA = {
             "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
             "mics": ["ميكروفون 1", "ميكروفون 2"],
             "cameras": [
-                {"id": "hall103_cam_front", "name": "كاميرا 1 - أمامية", "source": ""},
-                {"id": "hall103_cam_back", "name": "كاميرا 2 - خلفية", "source": ""},
-                {"id": "hall103_cam_side", "name": "كاميرا 3 - جانبية", "source": ""},
+                {"id": "hall103_cam_front", "name": "كاميرا 1 - أمامية"},
+                {"id": "hall103_cam_back", "name": "كاميرا 2 - خلفية"},
+                {"id": "hall103_cam_side", "name": "كاميرا 3 - جانبية"},
             ],
         },
         {
@@ -95,9 +115,9 @@ DATA = {
             "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
             "mics": ["ميكروفون 1", "ميكروفون 2"],
             "cameras": [
-                {"id": "hall104_cam_front", "name": "كاميرا 1 - أمامية", "source": ""},
-                {"id": "hall104_cam_back", "name": "كاميرا 2 - خلفية", "source": ""},
-                {"id": "hall104_cam_side", "name": "كاميرا 3 - جانبية", "source": ""},
+                {"id": "hall104_cam_front", "name": "كاميرا 1 - أمامية"},
+                {"id": "hall104_cam_back", "name": "كاميرا 2 - خلفية"},
+                {"id": "hall104_cam_side", "name": "كاميرا 3 - جانبية"},
             ],
         },
     ],
@@ -201,7 +221,7 @@ def upsert_device(
     db.commit()
 
 
-def sync_to_db() -> None:
+def sync_to_db(protocol: str = "http", host: str = "localhost", port: int = 8000) -> None:
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
@@ -210,16 +230,19 @@ def sync_to_db() -> None:
             hall = upsert_hall(db, institution, hall_data)
             hall_is_ready = hall_data.get("status") == "ready"
             for camera_index, camera in enumerate(hall_data.get("cameras", []), start=1):
-                source = (camera.get("source") or "").strip()
+                # Generate streaming URL for this camera
+                stream_url = get_stream_url(camera["id"], protocol, host, port)
+                # Camera is online if hall is ready (streaming source is available)
+                is_online = hall_is_ready
                 upsert_device(
                     db,
                     hall,
                     identifier=camera["id"],
                     device_type="camera",
                     label=camera["name"],
-                    stream_url=source,
+                    stream_url=stream_url,
                     slot=camera_index,
-                    status="online" if hall_is_ready and source else "offline",
+                    status="online" if is_online else "offline",
                 )
             for mic_index, mic_name in enumerate(hall_data.get("mics", []), start=1):
                 upsert_device(
@@ -237,10 +260,47 @@ def sync_to_db() -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Seed demo data into database for Thaqib monitoring system"
+    )
+    parser.add_argument(
+        "--protocol",
+        default=os.environ.get("STREAM_PROTOCOL", "http"),
+        choices=["http", "rtsp"],
+        help="Stream protocol: 'http' for simulator testing, 'rtsp' for production cameras (default: http)",
+    )
+    parser.add_argument(
+        "--stream-host",
+        default=os.environ.get("STREAM_HOST", "localhost"),
+        help="Stream host address - simulator IP or camera server IP (default: localhost or STREAM_HOST env var)",
+    )
+    parser.add_argument(
+        "--stream-port",
+        type=int,
+        default=int(os.environ.get("STREAM_HTTP_PORT", "8000")),
+        help="Stream port (default: 8000 or STREAM_HTTP_PORT env var)",
+    )
+    args = parser.parse_args()
+
+    # Update global stream config from CLI args
+    global STREAM_HOST, STREAM_HTTP_PORT, STREAM_PROTOCOL
+    STREAM_HOST = args.stream_host
+    STREAM_HTTP_PORT = args.stream_port
+    STREAM_PROTOCOL = args.protocol
+
     write_json()
-    sync_to_db()
+    sync_to_db(protocol=args.protocol, host=args.stream_host, port=args.stream_port)
     print(f"Wrote {OUT}")
     print("Synced demo halls/devices into the database.")
+    print(f"\nStream Configuration:")
+    print(f"  Protocol: {args.protocol.upper()}")
+    print(f"  Host: {args.stream_host}:{args.stream_port}")
+    if args.protocol == "http":
+        print(f"  Example URL: http://{args.stream_host}:{args.stream_port}/camera/hall101_cam_front/feed")
+        print(f"\nMake sure the simulator is running:")
+        print(f"  docker-compose -f simulator/docker-compose.simulator.yml up")
+    else:
+        print(f"  Example URL: rtsp://{args.stream_host}:{args.stream_port}/live/hall101_cam_front")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,15 @@
 import { apiUrl } from '../config/api';
 
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return `${h}h ${rm}m`;
+}
+
 interface Alert {
   id: string;
   camera_id: string;
@@ -29,6 +39,10 @@ interface CameraStats {
   selected_count: number;
   frame_index: number;
   alert_count: number;
+  latency_ms: number;
+  resolution: string;
+  frame_drops: number;
+  uptime_seconds: number;
 }
 
 interface CameraModalProps {
@@ -125,16 +139,20 @@ function CameraView({
           <span className="modal-stat-value">{stats?.fps || 0}</span>
         </div>
         <div className="modal-stat">
-          <span className="modal-stat-label">BITRATE</span>
-          <span className="modal-stat-value">4.2 Mbps</span>
-        </div>
-        <div className="modal-stat">
-          <span className="modal-stat-label">CODEC</span>
-          <span className="modal-stat-value">H.265</span>
+          <span className="modal-stat-label">LATENCY</span>
+          <span className="modal-stat-value">{stats?.latency_ms ? `${Math.round(stats.latency_ms)} ms` : '—'}</span>
         </div>
         <div className="modal-stat">
           <span className="modal-stat-label">RESOLUTION</span>
-          <span className="modal-stat-value">1920×1080</span>
+          <span className="modal-stat-value">{stats?.resolution && stats.resolution !== 'N/A' ? stats.resolution : '—'}</span>
+        </div>
+        <div className="modal-stat">
+          <span className="modal-stat-label">UPTIME</span>
+          <span className="modal-stat-value">{stats?.uptime_seconds != null && stats.uptime_seconds > 0 ? formatUptime(stats.uptime_seconds) : '—'}</span>
+        </div>
+        <div className="modal-stat">
+          <span className="modal-stat-label">DROPS</span>
+          <span className="modal-stat-value">{stats?.frame_drops ?? 0}</span>
         </div>
         <div className="modal-stat">
           <span className="modal-stat-label">TRACKED</span>

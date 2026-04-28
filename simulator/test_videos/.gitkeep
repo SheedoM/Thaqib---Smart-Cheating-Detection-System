@@ -1,0 +1,5 @@
+# Place your test video files here
+# Files should be named according to config.yaml mappings:
+#   cam1.mp4, cam2.mp4, cam3.mp4, etc.
+#
+# The simulator will show a test pattern if a video file is not found.

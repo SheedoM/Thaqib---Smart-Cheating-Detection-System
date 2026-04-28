@@ -35,6 +35,10 @@ interface CameraStats {
   selected_count: number;
   frame_index: number;
   alert_count: number;
+  latency_ms: number;
+  resolution: string;
+  frame_drops: number;
+  uptime_seconds: number;
 }
 
 interface CameraItem {
@@ -87,6 +91,16 @@ function formatTime(isoString: string): string {
   } catch {
     return '—';
   }
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return `${h}h ${rm}m`;
 }
 
 function timeSince(isoString: string): string {
@@ -765,9 +779,11 @@ function CamerasTab({
                       <>
                         <span>FPS: {stats?.fps || 0}</span>
                         <span>•</span>
-                        <span>Tracked: {stats?.tracked_count || 0}</span>
+                        <span>{stats?.latency_ms ? `${Math.round(stats.latency_ms)}ms` : '—'}</span>
                         <span>•</span>
-                        <span>RES: 1080p</span>
+                        <span>{stats?.resolution && stats.resolution !== 'N/A' ? stats.resolution : '—'}</span>
+                        <span>•</span>
+                        <span>{stats?.uptime_seconds != null && stats.uptime_seconds > 0 ? formatUptime(stats.uptime_seconds) : '—'}</span>
                       </>
                     ) : (
                       <span>—</span>

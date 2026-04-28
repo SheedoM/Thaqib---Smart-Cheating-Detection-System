@@ -181,7 +181,7 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const handleAddCamera = () => {
-    setCameras([...cameras, { name: '', identifier: '', ip_address: '', rtsp_url: '', type: 'camera' }]);
+    setCameras([...cameras, { name: '', identifier: '', ip_address: '', stream_url: '', type: 'camera' }]);
   };
 
   const handleAddMic = () => {
@@ -265,7 +265,7 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
             identifier: dev.identifier || dev.name.replace(/\s+/g, '-').toLowerCase(),
             type: dev.type,
             ip_address: dev.ip_address || null,
-            rtsp_url: dev.rtsp_url || null,
+            stream_url: dev.stream_url || null,
             status: 'active'
           })
         });
@@ -410,8 +410,8 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
                         <input type="text" value={cam.identifier} disabled={!!cam.id} onChange={e => updateArray(cameras, setCameras, idx, 'identifier', e.target.value)} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="cam-main-1" />
                       </div>
                       <div className="col-span-2 space-y-1">
-                        <label className="text-xs text-gray-500">رابط البث (RTSP URL)</label>
-                        <input type="text" value={cam.rtsp_url || ''} disabled={!!cam.id} onChange={e => updateArray(cameras, setCameras, idx, 'rtsp_url', e.target.value)} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="rtsp://admin:admin@192.168.1.100/stream" />
+                        <label className="text-xs text-gray-500">رابط البث (Stream URL)</label>
+                        <input type="text" value={cam.stream_url || ''} disabled={!!cam.id} onChange={e => updateArray(cameras, setCameras, idx, 'stream_url', e.target.value)} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="rtsp://admin:admin@192.168.1.100/stream" />
                       </div>
                     </div>
                   </div>

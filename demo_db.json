@@ -12,7 +12,7 @@
       "floor": "1",
       "capacity": 120,
       "status": "ready",
-      "image": "/hall-demo.png",
+      "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
       "mics": [
         "ميكروفون 1",
         "ميكروفون 2"
@@ -20,18 +20,15 @@
       "cameras": [
         {
           "id": "hall101_cam_front",
-          "name": "كاميرا 1 - أمامية",
-          "source": "C:\\Users\\shady\\Downloads\\IMG_5123.MOV"
+          "name": "كاميرا 1 - أمامية"
         },
         {
           "id": "hall101_cam_back",
-          "name": "كاميرا 2 - خلفية",
-          "source": "C:\\Users\\shady\\Downloads\\20260414_132048.mp4"
+          "name": "كاميرا 2 - خلفية"
         },
         {
           "id": "hall101_cam_side",
-          "name": "كاميرا 3 - جانبية",
-          "source": ""
+          "name": "كاميرا 3 - جانبية"
         }
       ]
     },
@@ -42,7 +39,7 @@
       "floor": "1",
       "capacity": 120,
       "status": "not_ready",
-      "image": "/hall-demo.png",
+      "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
       "mics": [
         "ميكروفون 1",
         "ميكروفون 2"
@@ -50,18 +47,15 @@
       "cameras": [
         {
           "id": "hall102_cam_front",
-          "name": "كاميرا 1 - أمامية",
-          "source": ""
+          "name": "كاميرا 1 - أمامية"
         },
         {
           "id": "hall102_cam_back",
-          "name": "كاميرا 2 - خلفية",
-          "source": ""
+          "name": "كاميرا 2 - خلفية"
         },
         {
           "id": "hall102_cam_side",
-          "name": "كاميرا 3 - جانبية",
-          "source": ""
+          "name": "كاميرا 3 - جانبية"
         }
       ]
     },
@@ -72,7 +66,7 @@
       "floor": "2",
       "capacity": 120,
       "status": "not_ready",
-      "image": "/hall-demo.png",
+      "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
       "mics": [
         "ميكروفون 1",
         "ميكروفون 2"
@@ -80,18 +74,15 @@
       "cameras": [
         {
           "id": "hall103_cam_front",
-          "name": "كاميرا 1 - أمامية",
-          "source": ""
+          "name": "كاميرا 1 - أمامية"
         },
         {
           "id": "hall103_cam_back",
-          "name": "كاميرا 2 - خلفية",
-          "source": ""
+          "name": "كاميرا 2 - خلفية"
         },
         {
           "id": "hall103_cam_side",
-          "name": "كاميرا 3 - جانبية",
-          "source": ""
+          "name": "كاميرا 3 - جانبية"
         }
       ]
     },
@@ -102,7 +93,7 @@
       "floor": "2",
       "capacity": 120,
       "status": "not_ready",
-      "image": "/hall-demo.png",
+      "image": "/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg",
       "mics": [
         "ميكروفون 1",
         "ميكروفون 2"
@@ -110,18 +101,15 @@
       "cameras": [
         {
           "id": "hall104_cam_front",
-          "name": "كاميرا 1 - أمامية",
-          "source": ""
+          "name": "كاميرا 1 - أمامية"
         },
         {
           "id": "hall104_cam_back",
-          "name": "كاميرا 2 - خلفية",
-          "source": ""
+          "name": "كاميرا 2 - خلفية"
         },
         {
           "id": "hall104_cam_side",
-          "name": "كاميرا 3 - جانبية",
-          "source": ""
+          "name": "كاميرا 3 - جانبية"
         }
       ]
     }

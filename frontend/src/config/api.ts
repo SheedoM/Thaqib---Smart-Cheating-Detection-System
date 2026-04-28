@@ -12,7 +12,7 @@ export function apiUrl(path: string): string {
 export function wsOrigin(): string {
   const o = import.meta.env.VITE_WS_ORIGIN;
   if (typeof o === 'string' && o.length > 0) return o.replace(/\/$/, '');
-  if (import.meta.env.DEV) return 'ws://127.0.0.1:8000';
+  if (import.meta.env.DEV) return 'ws://127.0.0.1:8001';
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${window.location.host}`;
 }

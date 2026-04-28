@@ -94,6 +94,11 @@ class CameraRuntime:
             "alert_count": 0,
             "last_error": None,
             "last_error_at": None,
+            "latency_ms": 0.0,
+            "resolution": "N/A",
+            "frame_drops": 0,
+            "uptime_seconds": 0,
+            "started_at": None,
         }
 
 
@@ -444,6 +449,8 @@ def _run_pipeline(camera: CameraRuntime) -> None:
         camera.stats["is_running"] = True
         camera.stats["last_error"] = None
         camera.stats["last_error_at"] = None
+        camera.stats["started_at"] = datetime.now().isoformat()
+        camera.stats["frame_drops"] = 0
 
         # Throttle JPEG encoding rate to reduce CPU and avoid UI freezes.
         last_emit = 0.0
@@ -480,6 +487,7 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             annotated = _draw_annotations(display_frame, frame_data, scale=scale)
             now = time.time()
             if now - last_emit < min_interval:
+                camera.stats["frame_drops"] = camera.stats.get("frame_drops", 0) + 1
                 continue
 
             ok, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 60])
@@ -489,6 +497,15 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             with camera.frame_lock:
                 camera.latest_frame = jpeg.tobytes()
 
+            # Compute uptime
+            started_at = camera.stats.get("started_at")
+            uptime = 0
+            if started_at:
+                try:
+                    uptime = int((datetime.now() - datetime.fromisoformat(started_at)).total_seconds())
+                except Exception:
+                    pass
+
             camera.stats.update(
                 {
                     "is_running": True,
@@ -496,6 +513,9 @@ def _run_pipeline(camera: CameraRuntime) -> None:
                     "tracked_count": frame_data.tracked_count,
                     "selected_count": frame_data.selected_count,
                     "frame_index": frame_data.frame_index,
+                    "latency_ms": round(frame_data.processing_time_ms, 1),
+                    "resolution": f"{w}x{h}",
+                    "uptime_seconds": uptime,
                 }
             )
             last_emit = now
