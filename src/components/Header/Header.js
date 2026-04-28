@@ -1,14 +1,15 @@
 import React from 'react';
 import './Header.css';
 
-const Header = ({ activeTab, setActiveTab }) => {
+const Header = ({ activeTab, setActiveTab, transparent, hideLogo, hideReportsTab }) => {
   return (
-    <header className="dashboard-header">
+    <header className={`dashboard-header ${transparent ? 'transparent' : ''}`}>
       <div className="header-right">
-        <div className="brand-container">
-          <img src={process.env.PUBLIC_URL + '/logo.png'} alt="Thaqib Logo" className="brand-logo" />
-          <h1 className="main-title">{activeTab || 'الرئيسية'}</h1>
-        </div>
+        {!hideLogo && (
+          <div className="brand-container">
+            <img src={process.env.PUBLIC_URL + '/logo.png'} alt="Thaqib Logo" className="brand-logo" />
+          </div>
+        )}
       </div>
 
       <nav className="header-nav">
@@ -16,7 +17,9 @@ const Header = ({ activeTab, setActiveTab }) => {
         <a href="#rooms" className={`nav-item ${activeTab === 'القاعات' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setActiveTab('القاعات'); }}>القاعات</a>
         <a href="#exams" className={`nav-item ${activeTab === 'الإمتحانات' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setActiveTab('الإمتحانات'); }}>الإمتحانات</a>
         <a href="#supervisors" className={`nav-item ${activeTab === 'المشرفين' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setActiveTab('المشرفين'); }}>المشرفين</a>
-        <a href="#reports" className={`nav-item ${activeTab === 'التقارير' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setActiveTab('التقارير'); }}>التقارير</a>
+        {!hideReportsTab && (
+          <a href="#reports" className={`nav-item ${activeTab === 'التقارير' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setActiveTab('التقارير'); }}>التقارير</a>
+        )}
       </nav>
 
       <div className="header-left">

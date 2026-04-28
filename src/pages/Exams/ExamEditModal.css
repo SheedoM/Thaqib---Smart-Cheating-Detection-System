@@ -1,0 +1,315 @@
+.exam-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  z-index: 1000;
+  padding: 40px 20px 20px;
+}
+
+.exam-modal-content {
+  background: white;
+  width: 100%;
+  max-width: 1100px;
+  border-radius: 30px;
+  padding: 40px;
+  box-shadow: 0 15px 50px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.exam-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.exam-modal-title {
+  color: #2D005F;
+  font-size: 2rem;
+  font-weight: 700;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.edit-icon-inline {
+  width: 24px;
+  height: 24px;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.delete-exam-btn-modal {
+  background: #FFF1F1;
+  color: #FF4757;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.delete-exam-btn-modal:hover {
+  background: #FFE0E0;
+}
+
+.delete-icon-modal {
+  width: 20px;
+  height: 20px;
+}
+
+.exam-modal-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 50px;
+}
+
+.exam-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 25px;
+}
+
+.exam-input-group label {
+  color: #2D3436;
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.exam-text-input {
+  background: #F9F9F9;
+  border: 1px solid #EDEDED;
+  padding: 0 20px;
+  border-radius: 12px;
+  font-size: 1rem;
+  color: #2D3436;
+  width: 100%;
+  height: 50px;
+  align-self: stretch;
+  box-sizing: border-box;
+}
+
+.exam-select-box, .exam-multi-select {
+  background: #F9F9F9;
+  border: 1px solid #EDEDED;
+  padding: 0 20px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  height: 50px;
+  align-self: stretch;
+  box-sizing: border-box;
+}
+
+.select-chevron {
+  width: 14px;
+  height: 14px;
+  opacity: 0.4;
+}
+
+.exam-image-upload {
+  display: flex;
+  flex-direction: column;
+  margin-top: 5px;
+}
+
+.exam-image-edit-container {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  width: 100%;
+}
+
+.exam-change-img-btn {
+  background: white;
+  border: 1.5px solid #2D005F;
+  padding: 8px 15px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: #2D005F;
+  cursor: pointer;
+  height: fit-content;
+  font-size: 0.85rem;
+  transition: all 0.3s;
+}
+
+.exam-change-img-btn:hover {
+  background: #f8f8f8;
+  transform: translateY(-1px);
+}
+
+.cam-icon {
+  width: 20px;
+  height: 20px;
+  opacity: 0.6;
+}
+
+.exam-image-preview {
+  width: 90px;
+  height: 80px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 2px solid #F1F2F6;
+}
+
+.preview-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.exam-chips {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.exam-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.exam-chip {
+  background: white;
+  border: 1px solid #F1F2F6;
+  color: #636E72;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+}
+
+.chip-close {
+  width: 10px;
+  height: 10px;
+  opacity: 0.4;
+  cursor: pointer;
+}
+
+.add-icon-inline {
+  width: 28px;
+  height: 28px;
+  margin-left: 10px;
+}
+
+.placeholder-text {
+  color: #B2BEC3;
+}
+
+.exam-add-image-placeholder {
+  background: #F1F2F6;
+  width: 90px;
+  height: 80px;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #636E72;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 2px dashed #DFE6E9;
+  margin-right: auto;
+  transition: all 0.3s;
+}
+
+.exam-add-image-placeholder:hover {
+  background: #E1E2E6;
+  border-color: #B2BEC3;
+}
+
+.add-img-icon {
+  width: 32px;
+  height: 32px;
+  opacity: 0.7;
+}
+
+.exam-image-edit-container {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.exam-modal-bottom-section {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-top: 20px;
+}
+
+.exam-modal-actions-left {
+  display: flex;
+  gap: 15px;
+}
+
+.exam-image-upload-right {
+  display: flex;
+  flex-direction: column;
+}
+
+.exam-save-btn {
+  background: #2D005F;
+  color: white;
+  border: none;
+  padding: 10px 30px;
+  border-radius: 12px;
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.exam-save-btn:hover {
+  background: #3e0085;
+  transform: translateY(-2px);
+}
+
+.exam-cancel-btn {
+  background: white;
+  color: #FF4757;
+  border: 1.5px solid #FF4757;
+  padding: 10px 30px;
+  border-radius: 12px;
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.exam-cancel-btn:hover {
+  background: #FFF1F1;
+}
+
+/* RTL Specifics */
+[dir="rtl"] .edit-icon-inline {
+  margin-right: 10px;
+}

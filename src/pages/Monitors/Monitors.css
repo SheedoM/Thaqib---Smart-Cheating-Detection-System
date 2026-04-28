@@ -1,0 +1,188 @@
+.monitors-main {
+  padding-bottom: 50px;
+}
+
+.monitors-content-container {
+  background: white;
+  border-radius: 24px;
+  padding: 40px;
+  margin-top: 20px;
+  position: relative;
+  z-index: 10;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+  min-height: 800px;
+}
+
+.create-monitor-btn {
+  background: #00C950;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.create-monitor-btn:hover {
+  background: #00b347;
+  transform: translateY(-2px);
+}
+
+.monitors-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.monitor-card {
+  background: white;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.monitor-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.08);
+}
+
+.monitor-card-header {
+  background: rgba(3, 23, 140, 0.15);
+  height: 88px;
+  width: 100%;
+  position: relative;
+}
+
+.monitor-status-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.monitor-status-badge.available {
+  background: #DCEBDD;
+  color: #2DAF42;
+}
+
+.monitor-status-badge.unavailable {
+  background: rgba(230, 41, 41, 0.1);
+  color: #E62929;
+}
+
+.monitor-card-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: -38px;
+  padding: 0 20px 20px;
+}
+
+.monitor-image-wrap {
+  width: 76px;
+  height: 77px;
+  border-radius: 50%;
+  border: 3px solid white;
+  overflow: hidden;
+  background: white;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+}
+
+.monitor-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.monitor-name {
+  color: #4F4F4F;
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 15px 0 0;
+}
+
+.monitor-card-footer {
+  display: flex;
+  gap: 16px;
+  padding: 0 20px 20px;
+  justify-content: center;
+}
+
+.monitor-edit-btn {
+  background: #44006E;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  height: 40px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.monitor-edit-btn:hover {
+  background: #350057;
+}
+
+.monitor-delete-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  border: 1px solid #E62929;
+  background: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.monitor-delete-btn:hover {
+  background: #FFF1F1;
+}
+
+.edit-icon-small {
+  width: 15px;
+  height: 16px;
+}
+
+.delete-icon-small {
+  width: 21px;
+  height: 21px;
+}
+
+/* RTL Adjustments */
+[dir="rtl"] .monitor-edit-btn img {
+  order: 2;
+}
+
+[dir="rtl"] .monitor-edit-btn span {
+  order: 1;
+}
+
+/* Title adjustments */
+.monitors-main .hero-title {
+  font-size: 24px;
+}
+
+.monitors-main .content-section-title {
+  font-size: 28px;
+}
