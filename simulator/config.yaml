@@ -1,0 +1,76 @@
+# Camera Streaming Simulator Configuration
+# Map camera IDs to video files
+
+cameras:
+  # Hall 101 cameras
+  hall101_cam_front:
+    video_path: /app/videos/cam1.mp4
+    fps: 30
+    resolution: [1280, 720]
+    
+  hall101_cam_back:
+    video_path: /app/videos/cam2.mp4
+    fps: 30
+    resolution: [1280, 720]
+    
+  hall101_cam_side:
+    video_path: /app/videos/cam3.mp4
+    fps: 30
+    resolution: [1280, 720]
+    
+  # Hall 102 cameras
+  hall102_cam_front:
+    video_path: /app/videos/cam4.mp4
+    fps: 30
+    resolution: [1280, 720]
+    
+  hall102_cam_back:
+    video_path: /app/videos/cam5.mp4
+    fps: 30
+    resolution: [1280, 720]
+    
+  hall102_cam_side:
+    video_path: /app/videos/cam6.mp4
+    fps: 30
+    resolution: [1280, 720]
+    
+  # Hall 103 cameras
+  hall103_cam_front:
+    video_path: /app/videos/cam7.mp4
+    fps: 30
+    resolution: [1280, 720]
+    
+  hall103_cam_back:
+    video_path: /app/videos/cam8.mp4
+    fps: 30
+    resolution: [1280, 720]
+    
+  hall103_cam_side:
+    video_path: /app/videos/cam9.mp4
+    fps: 30
+    resolution: [1280, 720]
+    
+  # Hall 104 cameras
+  hall104_cam_front:
+    video_path: /app/videos/cam10.mp4
+    fps: 30
+    resolution: [1280, 720]
+    
+  hall104_cam_back:
+    video_path: /app/videos/cam11.mp4
+    fps: 30
+    resolution: [1280, 720]
+    
+  hall104_cam_side:
+    video_path: /app/videos/cam12.mp4
+    fps: 30
+    resolution: [1280, 720]
+
+# Server settings
+server:
+  host: 0.0.0.0
+  port: 8000
+  # Quality for MJPEG streaming (1-100)
+  jpeg_quality: 85
+  # Frame skip for bandwidth control (1 = every frame, 2 = every 2nd frame)
+  frame_skip: 1

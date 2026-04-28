@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  camera-simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: thaqib-camera-simulator
+    restart: unless-stopped
+    ports:
+      - "8000:8000"  # HTTP MJPEG streams
+    volumes:
+      # Mount your video files directory
+      - ./test_videos:/app/videos:ro
+      # Optional: Override config
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - thaqib-sim-network
+
+networks:
+  thaqib-sim-network:
+    driver: bridge
