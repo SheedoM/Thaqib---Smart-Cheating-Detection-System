@@ -5,7 +5,7 @@ from thaqib.api.ws_manager import manager
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/ptt", tags=["Push-to-Talk"])
+router = APIRouter(tags=["Push-to-Talk"])
 
 @router.websocket("/ws/{client_id}")
 async def ptt_websocket_endpoint(websocket: WebSocket, client_id: str):

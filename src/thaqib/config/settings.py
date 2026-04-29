@@ -1,7 +1,5 @@
 """
 Configuration management for Thaqib.
-
-Loads settings from environment variables and .env file.
 """
 
 from functools import lru_cache
@@ -36,24 +34,30 @@ class Settings(BaseSettings):
 
     # Detection
     detection_interval: float = 1.0  # Seconds between full detection runs
-    yolo_model: str = "yolov8s"
-    detection_confidence: float = 0.5
+    yolo_model: str = "models/yolo11m.pt"
+    detection_confidence: float = 0.15
+    tools_target_labels: list[str] = ["document"]  # Classes from best.pt paper-detector model
+    tools_model: str = "models/best.pt"  # Custom paper-detection model (class: 'document')
+    tools_confidence: float = 0.45  # Confidence threshold for paper/tool detection
+    detection_imgsz: int = 640  # YOLO inference resolution (640 for speed, 1280 for accuracy)
 
     # Tracking
     tracking_max_distance: int = 100
     tracking_max_age: int = 30
-
-    # Neighbor Modeling
-    neighbor_distance_threshold: int = 200
-    neighbor_k: int = 4
-
-    # Head Pose
-    head_pose_model: Literal["mediapipe", "6drepnet"] = "mediapipe"
+    neighbor_k: int = 6  # Number of nearest neighbors per student
 
     # Risk Detection
-    risk_angle_tolerance: float = 15.0  # Degrees
+    risk_angle_tolerance: float = 25.0  # Degrees (accounts for MediaPipe + iris detection noise)
     suspicious_duration_threshold: float = 2.0  # Seconds
     suspicious_match_ratio: float = 0.7
+
+    # Re-Identification
+    reid_match_threshold: float = 0.80  # Cosine similarity threshold for face re-ID
+    reid_similarity_debug: bool = False  # Log per-frame similarity scores for threshold tuning
+
+    # Performance
+    face_mesh_workers: int = 4  # Max parallel face mesh threads
+    torch_num_threads: int | None = None  # PyTorch CPU threads (None = use default)
 
     # Data Storage
     data_dir: Path = Field(default=Path("./data"))
@@ -75,6 +79,9 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
+
+    # Archive Recording
+    archive_mode: Literal["raw", "annotated"] = "raw"  # raw = original video, annotated = with overlays
 
     @property
     def camera_source_parsed(self) -> int | str:
