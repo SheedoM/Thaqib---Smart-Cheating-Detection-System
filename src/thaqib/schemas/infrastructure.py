@@ -9,6 +9,7 @@ class HallBase(BaseModel):
     floor: Optional[str] = Field(None, max_length=50)
     capacity: int = Field(..., gt=0, le=1000)
     layout_map: Optional[dict] = None
+    image: Optional[str] = None
     status: Optional[str] = "not_ready"
 
 class HallCreate(HallBase):

@@ -1,0 +1,116 @@
+.monitor-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start; /* Lifted up */
+  padding-top: 60px; /* Lifted up higher */
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.monitor-delete-card {
+  background: white;
+  width: 483px;
+  border-radius: 24px;
+  padding: 36px 30px;
+  box-shadow: 0 20px 72px rgba(227, 230, 236, 0.25);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 30px;
+}
+
+.delete-icon-wrapper {
+  margin-bottom: 0;
+}
+
+.delete-icon-circle {
+  width: 62px;
+  height: 62px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.delete-main-icon {
+  width: 62px;
+  height: 62px;
+}
+
+.delete-modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+
+.delete-modal-title {
+  color: #11142D;
+  font-size: 20px;
+  font-weight: 500;
+  margin: 0;
+  line-height: 24px;
+  font-family: 'IBM Plex Sans Arabic', sans-serif;
+}
+
+.delete-modal-subtitle {
+  color: rgba(17, 20, 45, 0.5);
+  font-size: 16px;
+  margin: 0;
+  line-height: 24px;
+  font-family: 'IBM Plex Sans Arabic', sans-serif;
+  padding: 0 20px;
+}
+
+.delete-modal-actions {
+  display: flex;
+  gap: 15px;
+  width: 100%;
+  padding-top: 20px;
+}
+
+.confirm-delete-btn {
+  flex: 1;
+  background: #FF3636;
+  color: white;
+  border: none;
+  height: 48px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-family: 'IBM Plex Sans Arabic', sans-serif;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.confirm-delete-btn:hover {
+  background: #e02d2d;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(255, 54, 54, 0.2);
+}
+
+.cancel-delete-btn {
+  flex: 1;
+  background: transparent;
+  color: rgba(0, 0, 0, 0.36);
+  border: 1px solid rgba(0, 0, 0, 0.36);
+  height: 48px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-family: 'IBM Plex Sans Arabic', sans-serif;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.cancel-delete-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: rgba(0, 0, 0, 0.6);
+  border-color: rgba(0, 0, 0, 0.6);
+}
