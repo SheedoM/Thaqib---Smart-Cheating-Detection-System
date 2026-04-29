@@ -1,0 +1,286 @@
+.exams-main {
+  padding: 0 64px 40px;
+  position: relative;
+  z-index: 2;
+  margin-top: 10px;
+}
+
+.exams-header-section {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-bottom: 30px;
+}
+
+.exams-header-right {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.hero-title {
+  color: white;
+  font-size: 30px;
+  font-weight: 700;
+  margin: 0;
+  font-family: 'IBM Plex Sans Arabic', sans-serif;
+}
+
+.exam-status-badge-button {
+  background: white;
+  padding: 8px 12px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #2D005F;
+  font-weight: 500;
+  font-size: 20px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+}
+
+.status-badge-icon {
+  width: 24px;
+  height: 24px;
+  filter: brightness(0) saturate(100%) invert(11%) sepia(87%) saturate(3685%) hue-rotate(264deg) brightness(85%) contrast(117%);
+}
+
+.search-dropdown-box {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  padding: 8px 12px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 80px;
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.search-dropdown-box:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.search-icon-chevron {
+  width: 20px;
+  height: 20px;
+  filter: brightness(0) invert(1);
+}
+
+.exams-content-container {
+  background: white;
+  border-radius: 30px;
+  padding: 40px;
+  min-height: 600px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+}
+
+.exams-list-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 40px;
+}
+
+.content-section-title {
+  color: #2D005F;
+  font-size: 32px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.create-exam-btn {
+  background: #00D261;
+  color: white;
+  border: none;
+  padding: 10px 16px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  font-size: 20px;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 210, 97, 0.3);
+  transition: all 0.3s ease;
+}
+
+.create-exam-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 25px rgba(0, 210, 97, 0.4);
+}
+
+.btn-add-icon {
+  width: 24px;
+  height: 24px;
+  filter: brightness(0) invert(1);
+}
+
+.exams-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 30px;
+}
+
+.exam-card-item {
+  background: #FFF;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  padding: 14px 17px;
+  width: 322px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  transition: all 0.3s ease;
+  box-sizing: border-box;
+}
+
+.exam-card-item:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+  border-color: #e0e0e0;
+}
+
+.exam-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.exam-badge {
+  padding: 6px 14px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.exam-badge.midterm {
+  background: #F3E8FF;
+  color: #6C5CE7;
+}
+
+.exam-badge.practical {
+  background: #E1F7FF;
+  color: #0984E3;
+}
+
+.exam-badge.final {
+  background: #FFF0E1;
+  color: #E67E22;
+}
+
+.exam-card-date {
+  color: #A0A0A0;
+  font-size: 0.85rem;
+}
+
+.exam-card-divider {
+  width: 100%;
+  height: 1px;
+  background: rgba(0, 0, 0, 0.08);
+  margin: 0;
+}
+
+.exam-card-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  width: 100%;
+  gap: 20px;
+}
+
+.exam-card-info-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 80px;
+}
+
+.exam-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: right;
+}
+
+.exam-card-title {
+  color: rgba(0, 0, 0, 0.74);
+  font-size: 18px;
+  font-weight: 500;
+  margin: 0;
+  font-family: 'IBM Plex Sans Arabic', sans-serif;
+}
+
+.exam-card-halls,
+.exam-card-period {
+  color: rgba(95, 95, 95, 0.69);
+  font-size: 14px;
+  margin: 0;
+  font-weight: 400;
+  font-family: 'IBM Plex Sans Arabic', sans-serif;
+}
+
+.exam-card-icon-wrap {
+  width: 51px;
+  height: 48.6px;
+  flex-shrink: 0;
+}
+
+.exam-card-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.exam-card-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  width: 100%;
+  margin-top: auto;
+}
+
+.exam-student-stat {
+  color: #44006E;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: 'IBM Plex Sans Arabic', sans-serif;
+}
+
+.exam-card-edit {
+  color: #44006E;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: opacity 0.2s;
+  font-family: 'IBM Plex Sans Arabic', sans-serif;
+}
+
+.exam-card-edit:hover {
+  opacity: 0.8;
+}
+
+.edit-link-icon {
+  width: 8px;
+  height: 8px;
+  transform: rotate(90deg);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+  animation: fadeIn 0.6s ease-out forwards;
+}
