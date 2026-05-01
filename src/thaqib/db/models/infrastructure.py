@@ -47,6 +47,7 @@ class Hall(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     floor: Mapped[Optional[str]] = mapped_column(String(20))
     capacity: Mapped[int] = mapped_column(Integer, nullable=False)
     layout_map: Mapped[Optional[dict]] = mapped_column(JSON)
+    image: Mapped[Optional[str]] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(20), default="not_ready")
     # SRS FR-03.7: 'ready' when all devices online, 'not_ready' otherwise
 

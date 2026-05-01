@@ -1,7 +1,11 @@
 import React, { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 
-export default function LoginPage() {
+interface LoginPageProps {
+  onLoginSuccess?: () => void;
+}
+
+export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const [formData, setFormData] = useState({
     identifier: '',
     password: '',
@@ -39,9 +43,9 @@ export default function LoginPage() {
         localStorage.setItem('thaqib_refresh_token', data.refresh_token);
         
         console.log('Login successful', data);
-        alert('تم تسجيل الدخول بنجاح!');
-        // In a real app, we would use a router to redirect here
-        window.location.reload(); 
+        if (onLoginSuccess) {
+          onLoginSuccess();
+        }
       } else {
         const errData = await response.json();
         setErrorMsg(errData.detail || 'خطأ في اسم المستخدم أو كلمة المرور');

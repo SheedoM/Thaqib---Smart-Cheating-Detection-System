@@ -55,6 +55,8 @@ coverage.xml
 .venv
 env/
 venv/
+.venv/
+frontend/public/profile.jpg
 ENV/
 env.bak/
 venv.bak/
@@ -114,3 +116,10 @@ temp/
 *.wav
 *.mp3
 !tests/fixtures/*
+
+# Thaqib specific
+alerts/
+scratch/
+*/.vite/
+node_modules/
+frontend/dist/
