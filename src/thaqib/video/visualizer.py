@@ -10,6 +10,7 @@ import functools
 from thaqib.video.pipeline import PipelineFrame
 from thaqib.video.registry import GlobalStudentRegistry
 from thaqib.video.gaze import compute_gaze_direction
+from thaqib.video.timestamps import draw_timestamp_overlay
 
 
 @functools.lru_cache(maxsize=1024)
@@ -54,7 +55,9 @@ class VideoVisualizer:
         self.show_neighbors: bool = False
         self.show_phone: bool = True
         self.show_paper: bool = True
+        self.show_gaze_lines: bool = True  # Lines: student → surrounding papers
         self.show_control_panel: bool = True
+        self.show_timestamp: bool = True  # Live display only; recordings always have it
 
     def toggle_neighbors(self) -> None:
         """Toggle neighbor graph rendering on/off."""
@@ -63,6 +66,26 @@ class VideoVisualizer:
     def toggle_control_panel(self) -> None:
         """Toggle control panel visibility on/off."""
         self.show_control_panel = not self.show_control_panel
+
+    def toggle_paper(self) -> None:
+        """Toggle paper bbox rendering on/off (display only — detection still runs)."""
+        self.show_paper = not self.show_paper
+
+    def toggle_gaze_lines(self) -> None:
+        """Toggle student→surrounding-paper lines on/off (display only)."""
+        self.show_gaze_lines = not self.show_gaze_lines
+
+    def toggle_phone(self) -> None:
+        """Toggle phone bbox rendering on/off (display only — detection still runs)."""
+        self.show_phone = not self.show_phone
+
+    def toggle_timestamp(self) -> None:
+        """Toggle live timestamp display on/off.
+
+        Note: Archive and alert recordings ALWAYS have the timestamp burned in,
+        regardless of this setting.
+        """
+        self.show_timestamp = not self.show_timestamp
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -192,8 +215,8 @@ class VideoVisualizer:
                 )
 
     def _draw_surrounding_papers(self, frame: np.ndarray, pipeline_frame: PipelineFrame, sc: float) -> None:
-        """Draw cyan lines connecting a student to their k-nearest surrounding papers."""
-        if not self.show_paper:
+        """Draw cyan lines connecting a student to their surrounding (neighbor) papers."""
+        if not self.show_gaze_lines:
             return
 
         for state in pipeline_frame.student_states:
@@ -278,9 +301,17 @@ class VideoVisualizer:
     # ------------------------------------------------------------------
 
     def _draw_hud(self, frame: np.ndarray, pipeline_frame: PipelineFrame, sc: float) -> None:
-        """Draw compact top-left stats (FPS + frame counter)."""
+        """Draw compact top-left stats (FPS + frame counter + phone alert)."""
         fps = 1000 / max(pipeline_frame.processing_time_ms, 1)
         cheating_count = sum(1 for s in pipeline_frame.student_states if s.is_cheating)
+
+        # Count detected phones from tools_result
+        phone_count = 0
+        if pipeline_frame.tools_result:
+            phone_count = sum(
+                1 for t in pipeline_frame.tools_result.tools
+                if t.label in self._PHONE_LABELS
+            )
 
         lines = [
             (f"FPS: {fps:.1f}", (0, 230, 120) if fps >= 20 else (0, 100, 255)),
@@ -288,11 +319,20 @@ class VideoVisualizer:
         ]
         if cheating_count > 0:
             lines.append((f"!! {cheating_count} CHEATING ALERT{'S' if cheating_count > 1 else ''} !!", (0, 0, 255)))
+        if phone_count > 0:
+            lines.append((f"!! PHONE DETECTED ({phone_count}) !!", (0, 140, 255)))
 
         lh = int(24 * sc)
         for i, (text, color) in enumerate(lines):
             cv2.putText(frame, text, (int(10 * sc), int(28 * sc) + i * lh),
                         cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.6), color, _th(sc, 2), cv2.LINE_AA)
+
+        # Draw a thick red border around the entire frame when phone is detected
+        if phone_count > 0:
+            h, w = frame.shape[:2]
+            border = _th(sc, 8)
+            cv2.rectangle(frame, (0, 0), (w - 1, h - 1), (0, 0, 255), border)
+
 
     def _draw_instructions(self, frame: np.ndarray, sc: float) -> None:
         """Draw slim bottom instruction bar."""
@@ -302,7 +342,7 @@ class VideoVisualizer:
         overlay = roi.copy()
         cv2.rectangle(overlay, (0, 0), (w, bar_h), (10, 10, 10), -1)
         cv2.addWeighted(overlay, 0.70, roi, 0.30, 0, roi)
-        text = "[S] Select  [M] Deselect-click  [C] Clear  [T] Neighbors  [R] Archive  [P] Panel  [Q] Quit"
+        text = "[S] Monitor  [M] Remove-click  [C] Clear  [T] Neighbors  [R] Archive  [D] Papers  [F] Phone  [L] Lines  [V] Quality  [G] Speed  [W] Clock  [P] Panel  [Q] Quit"
         cv2.putText(frame, text, (int(10 * sc), h - int(7 * sc)),
                     cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.42), (200, 200, 200), _th(sc, 1), cv2.LINE_AA)
 
@@ -318,7 +358,7 @@ class VideoVisualizer:
         title_h = int(28 * sc)
         margin  = int(10 * sc)
         dot_r   = int(5 * sc)
-        rows    = 9
+        rows    = 16
 
         panel_h = title_h + pad + rows * line_h + pad
         panel_x = margin
@@ -417,6 +457,27 @@ class VideoVisualizer:
 
         ph_color = (0, 160, 255) if self.show_phone else (100, 100, 100)
         row(lx, y, "Phone det.:", "ON" if self.show_phone else "OFF", val_color=ph_color)
+        y += line_h
+
+        vq = pipeline_frame.video_quality
+        if vq >= 90:
+            vq_label, vq_color = "HIGH",   (0, 255, 100)
+        elif vq >= 75:
+            vq_label, vq_color = "MED",    (0, 200, 255)
+        else:
+            vq_label, vq_color = "LOW",    (80, 160, 255)
+        row(lx, y, "Vid.Quality:", f"{vq_label} ({vq}%)", val_color=vq_color)
+        y += line_h
+
+        pres = pipeline_frame.processing_res
+        frame_h, frame_w = pipeline_frame.frame.shape[:2]
+        pres_detail = f"{pres} ({frame_w}x{frame_h})"
+        pres_color = (0, 255, 0) if pres == "NATIVE" else (80, 200, 255)
+        row(lx, y, "Input Res.:", pres_detail, val_color=pres_color)
+        y += line_h
+
+        ts_color = (0, 255, 150) if self.show_timestamp else (100, 100, 100)
+        row(lx, y, "Timestamp:", "ON (live)" if self.show_timestamp else "OFF (live)", val_color=ts_color)
 
         # ══════════════════════════════════════════════════════════════
         # RIGHT COLUMN — CONTROLS
@@ -430,27 +491,52 @@ class VideoVisualizer:
 
         y = panel_y + title_h + pad + line_h
 
-        key_row(rx, y, "S", "Select all students")
+        key_row(rx, y, "S", "Monitor all students")
         y += line_h
-        key_row(rx, y, "M", "Deselect (click bbox)")
+        key_row(rx, y, "M", "Remove student (click)")
         y += line_h
-        key_row(rx, y, "C", "Clear all selections")
+        key_row(rx, y, "C", "Stop all monitoring")
         y += line_h
-        key_row(rx, y, "T", "Toggle neighbors",
+        key_row(rx, y, "T", "Neighbor links",
                 "ON" if self.show_neighbors else "OFF",
                 (0, 255, 0) if self.show_neighbors else (100, 100, 100))
         y += line_h
-        key_row(rx, y, "R", "Toggle archive mode",
+        key_row(rx, y, "R", "Archive overlay",
                 arc_mode.upper(),
                 (0, 200, 255) if arc_mode == "annotated" else (160, 160, 160))
         y += line_h
-        key_row(rx, y, "P", "Toggle this panel",
+        key_row(rx, y, "D", "Show paper detections",
+                "ON" if self.show_paper else "OFF",
+                (0, 255, 255) if self.show_paper else (100, 100, 100))
+        y += line_h
+        key_row(rx, y, "F", "Show phone detections",
+                "ON" if self.show_phone else "OFF",
+                (0, 160, 255) if self.show_phone else (100, 100, 100))
+        y += line_h
+        gl_color = (255, 220, 0) if self.show_gaze_lines else (100, 100, 100)
+        key_row(rx, y, "L", "Paper link lines",
+                "ON" if self.show_gaze_lines else "OFF", gl_color)
+        y += line_h
+        vq = pipeline_frame.video_quality
+        vq_label = "HIGH" if vq >= 90 else ("MED" if vq >= 75 else "LOW")
+        vq_color  = (0, 255, 100) if vq >= 90 else ((0, 200, 255) if vq >= 75 else (80, 160, 255))
+        key_row(rx, y, "V", "Save quality (file size)", vq_label, vq_color)
+        y += line_h
+        pres = pipeline_frame.processing_res
+        pres_color = (0, 255, 0) if pres == "NATIVE" else (80, 200, 255)
+        key_row(rx, y, "G", "Processing speed (FPS)", pres, pres_color)
+        y += line_h
+        ts_color = (0, 255, 150) if self.show_timestamp else (100, 100, 100)
+        ts_state = "ON" if self.show_timestamp else "OFF"
+        key_row(rx, y, "W", "Clock on screen", ts_state, ts_color)
+        y += line_h
+        key_row(rx, y, "P", "Hide/show this panel",
                 "ON" if self.show_control_panel else "OFF",
                 (0, 255, 0) if self.show_control_panel else (100, 100, 100))
         y += line_h + int(4 * sc)
         sep_y2 = y - int(6 * sc)
         cv2.line(frame, (rx + pad, sep_y2), (rx + col_w - pad, sep_y2), (40, 40, 40), tw)
-        key_row(rx, y, "Q", "Quit / Stop system")
+        key_row(rx, y, "Q", "Quit & save recordings")
 
     def _draw_legend_panel(self, frame: np.ndarray, pipeline_frame: PipelineFrame, sc: float) -> None:
         """Draw a transparent color legend on the right side of the screen."""

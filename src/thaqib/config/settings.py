@@ -11,7 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
+    """Application settings loaded from environment variables / .env file."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -22,64 +22,63 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "Thaqib"
-    app_env: Literal["development", "production", "testing"] = "development"
-    debug: bool = True
+    app_env: Literal["development", "production", "testing"] = "production"
+    debug: bool = False
     log_level: str = "INFO"
 
     # Camera
-    camera_source: str = "0"  # Webcam index or RTSP URL
+    camera_source: str = "0"  # Webcam index, RTSP URL, or video file path
     camera_width: int = 1280
     camera_height: int = 720
     camera_fps: int = 30
 
     # Detection
-    detection_interval: float = 1.0  # Seconds between full detection runs
+    detection_interval: float = 1.0   # Seconds between full YOLO detection runs
     yolo_model: str = "models/yolo11m.pt"
     detection_confidence: float = 0.15
-    tools_target_labels: list[str] = ["document"]  # Classes from best.pt paper-detector model
-    tools_model: str = "models/best.pt"  # Custom paper-detection model (class: 'document')
-    tools_confidence: float = 0.45  # Confidence threshold for paper/tool detection
-    detection_imgsz: int = 640  # YOLO inference resolution (640 for speed, 1280 for accuracy)
+    tools_target_labels: list[str] = ["document"]  # Classes treated as papers
+    tools_model: str = "models/best.pt"
+    tools_confidence: float = 0.45    # Confidence threshold for paper/phone detection
+    detection_imgsz: int = 640        # YOLO inference resolution (640=fast, 1280=accurate)
 
     # Tracking
     tracking_max_distance: int = 100
     tracking_max_age: int = 30
-    neighbor_k: int = 6  # Number of nearest neighbors per student
+    neighbor_k: int = 6               # Number of nearest neighbors per student
 
-    # Risk Detection
-    risk_angle_tolerance: float = 25.0  # Degrees (accounts for MediaPipe + iris detection noise)
-    suspicious_duration_threshold: float = 2.0  # Seconds
+    # Cheating Evaluation
+    risk_angle_tolerance: float = 25.0           # Max gaze-to-paper angle (degrees)
+    suspicious_duration_threshold: float = 2.0   # Seconds of sustained gaze to flag
     suspicious_match_ratio: float = 0.7
 
     # Re-Identification
-    reid_match_threshold: float = 0.80  # Cosine similarity threshold for face re-ID
-    reid_similarity_debug: bool = False  # Log per-frame similarity scores for threshold tuning
+    reid_match_threshold: float = 0.80   # Cosine similarity threshold for face re-ID
+    reid_similarity_debug: bool = False  # Log per-frame similarity scores
 
     # Performance
-    face_mesh_workers: int = 4  # Max parallel face mesh threads
-    torch_num_threads: int | None = None  # PyTorch CPU threads (None = use default)
+    face_mesh_workers: int = 4           # Max parallel face mesh worker processes
+    torch_num_threads: int | None = None # PyTorch CPU threads (None = OS default)
 
-    # Data Storage
-    data_dir: Path = Field(default=Path("./data"))
-    enable_logging: bool = True
-    log_format: Literal["csv", "parquet"] = "csv"
-
-    # Server
-    server_host: str = "0.0.0.0"
-    server_port: int = 8000
-
-    # Database
-    database_url: str = "sqlite:///./data/thaqib.db"
-
-    # WebSocket
-    ws_heartbeat_interval: int = 30
+    # Video Output
+    # video_quality: 0–100. Lower = smaller files.
+    #   50  → LOW  (~smallest files)
+    #   75  → MED  (default — ~40% size reduction vs uncompressed)
+    #   90  → HIGH (best quality)
+    # alert_max_height: Alert videos are downscaled to this height (px).
+    #   720  → ~720p  (recommended)
+    #   1080 → ~1080p (higher quality, larger files)
+    #   0    → no downscaling (full native resolution)
+    video_quality: int = 75
+    alert_max_height: int = 720
 
     # Archive Recording
-    archive_mode: Literal["raw", "annotated"] = "raw"  # raw = original video, annotated = with overlays
+    archive_mode: Literal["raw", "annotated"] = "raw"
+    # raw       → original camera feed saved as-is
+    # annotated → saved with bounding boxes and overlays
 
     @property
     def camera_source_parsed(self) -> int | str:
-        """Parse camera source as int (webcam) or str (RTSP URL)."""
+        """Parse camera source as int (webcam index) or str (RTSP URL / file path)."""
         try:
             return int(self.camera_source)
         except ValueError:
@@ -88,5 +87,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Get cached settings instance."""
+    """Get cached settings instance (loaded once at startup)."""
     return Settings()

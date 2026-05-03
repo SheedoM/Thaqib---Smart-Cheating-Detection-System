@@ -14,6 +14,7 @@ sys.path.insert(0, str(__file__).replace("\\", "/").rsplit("/", 2)[0] + "/src")
 
 from thaqib.video.pipeline import VideoPipeline
 from thaqib.video.visualizer import VideoVisualizer
+from thaqib.video.timestamps import draw_timestamp_overlay
 
 
 # Configure logging
@@ -140,8 +141,15 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA,
                     )
 
+                # Live timestamp — shown on screen only, toggleable via W key.
+                # Archive and alert recordings always have timestamp from pipeline writers.
+                display = annotated
+                if visualizer.show_timestamp:
+                    display = annotated.copy()
+                    draw_timestamp_overlay(display)
+
                 # Show frame
-                cv2.imshow(window_name, annotated)
+                cv2.imshow(window_name, display)
 
                 # Handle key presses
                 key = cv2.waitKey(1) & 0xFF
@@ -181,6 +189,39 @@ def main():
                     # Toggle archive recording mode (raw / annotated)
                     mode = pipeline.toggle_archive_mode()
                     logger.info(f"Archive recording mode: {mode.upper()} {'(original video)' if mode == 'raw' else '(with overlays)'}")
+
+                elif key == ord("d"):
+                    # Toggle paper bbox display (detection still runs)
+                    visualizer.toggle_paper()
+                    logger.info(f"Paper display: {'ON' if visualizer.show_paper else 'OFF'} (detection unaffected)")
+
+                elif key == ord("f"):
+                    # Toggle phone bbox display (detection still runs)
+                    visualizer.toggle_phone()
+                    logger.info(f"Phone display: {'ON' if visualizer.show_phone else 'OFF'} (detection unaffected)")
+
+                elif key == ord("l"):
+                    # Toggle student→paper link lines display
+                    visualizer.toggle_gaze_lines()
+                    logger.info(f"Paper link lines: {'ON' if visualizer.show_gaze_lines else 'OFF'}")
+
+                elif key == ord("v"):
+                    # Cycle video quality: LOW (50) → MED (75) → HIGH (90) → ...
+                    pipeline.toggle_video_quality()
+                    q = pipeline._video_quality
+                    label = "HIGH" if q >= 90 else ("MED" if q >= 75 else "LOW")
+                    logger.info(f"Video quality: {label} ({q}%) — applies to next recorded video")
+
+                elif key == ord("g"):
+                    # Cycle processing resolution: NATIVE → 1080p → 720p → ...
+                    label = pipeline.toggle_processing_resolution()
+                    logger.info(f"Processing resolution: {label} — takes effect next frame")
+
+                elif key == ord("w"):
+                    # Toggle live timestamp display (recordings always have it)
+                    visualizer.toggle_timestamp()
+                    state = "ON" if visualizer.show_timestamp else "OFF"
+                    logger.info(f"Live timestamp: {state} (archive/alert recordings unaffected)")
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

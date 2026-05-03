@@ -114,3 +114,11 @@ temp/
 *.wav
 *.mp3
 !tests/fixtures/*
+
+# Thaqib System Outputs
+archive/
+alerts/
+
+# Large archives and dev folders
+*.zip
+ved/
