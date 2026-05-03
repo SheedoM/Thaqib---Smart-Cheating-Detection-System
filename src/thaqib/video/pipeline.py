@@ -26,6 +26,7 @@ from thaqib.video.camera import CameraStream, FrameData
 from thaqib.video.detector import HumanDetector, DetectionResult
 from thaqib.video.tracker import ObjectTracker, TrackingResult, TrackedObject
 from thaqib.video.registry import GlobalStudentRegistry, StudentSpatialState
+from thaqib.video.timestamps import draw_timestamp_overlay
 from thaqib.video.neighbors import NeighborComputer
 from thaqib.video.face_mesh import FaceMeshResult
 from thaqib.video.tools_detector import ToolsDetector, ToolsDetectionResult
@@ -65,6 +66,8 @@ class PipelineFrame:
     student_states: list[StudentState] = field(default_factory=list)
     processing_time_ms: float = 0.0
     archive_mode: str = "raw"  # Current archive recording mode ('raw' or 'annotated')
+    video_quality: int = 75    # Current video quality (50=LOW / 75=MED / 90=HIGH)
+    processing_res: str = "NATIVE"  # Current processing resolution label
     # Annotated frame rendered once per cycle — reused by archive and display.
     # None when no visualizer is attached (e.g. headless/testing mode).
     annotated_frame: np.ndarray | None = None
@@ -86,8 +89,8 @@ class VideoPipeline:
 
     Orchestrates all video processing components:
     1. Camera capture
-    2. Periodic human detection (YOLOv8)
-    3. Continuous tracking (ByteTrack)
+    2. Periodic human detection (YOLO)
+    3. Continuous tracking (BoT-SORT)
 
     Example:
         >>> pipeline = VideoPipeline(source=0)  # Webcam
@@ -120,6 +123,7 @@ class VideoPipeline:
             on_alert: Callback function when suspicious behavior detected.
         """
         settings = get_settings()
+        self._settings = settings  # Keep reference for alert writers
 
         self.detection_interval = detection_interval or settings.detection_interval
 
@@ -175,6 +179,7 @@ class VideoPipeline:
         # Archive recording: continuous video save to archive/ folder
         self._archive_writer: cv2.VideoWriter | None = None
         self._archive_path: str | None = None
+        self._archive_size: tuple[int, int] | None = None  # (width, height) of archive writer
         
         # Archive mode: 'raw' = original camera feed, 'annotated' = with overlays
         self._archive_annotated: bool = (settings.archive_mode == "annotated")
@@ -183,10 +188,6 @@ class VideoPipeline:
         # Background archive writer thread (offloads 1-3ms/frame)
         self._archive_queue: queue.Queue = queue.Queue(maxsize=60)
         self._archive_thread: threading.Thread | None = None
-        
-        # Actual FPS tracking for correct video playback speed
-        self._fps_tracker: deque[float] = deque(maxlen=60)
-        self._actual_fps: float = 30.0
         
         # Track which track IDs we've already warned about recording cap
         # to avoid per-frame log spam.
@@ -198,6 +199,54 @@ class VideoPipeline:
         self._recording_max_h: int = 1080  # Used only for face mesh resize target
         self._fm_scale: float = 1.0
         self._fm_scale_computed: bool = False
+
+        # Maps paper center (x, y) → full YOLO bbox (x1, y1, x2, y2).
+        # Updated every frame from tools_result so _render_alert_frame
+        # can draw a precise yellow box around the paper.
+        self._paper_bboxes: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+
+        # Phone alert recording — independent of student tracking.
+        # A phone anywhere in frame triggers its own 2s+event+2s clip.
+        self._phone_detected: bool = False
+        self._phone_is_recording: bool = False
+        self._phone_recording_buffer: deque = deque(maxlen=300)
+        self._phone_frames_to_record: int = 0
+        self._phone_current_bboxes: list = []  # phone bboxes in the current frame
+
+        # Runtime video quality — cycles LOW/MED/HIGH via V key.
+        # 50 = LOW  (smallest files), 75 = MED (default), 90 = HIGH (best quality)
+        self._video_quality: int = settings.video_quality
+        self._quality_presets: tuple[int, ...] = (50, 75, 90)
+
+        # Runtime processing resolution — cycles NATIVE/1080p/720p via G key.
+        # Downscales camera frames before ALL processing to improve FPS on 4K.
+        # 0 = native (no resize).
+        self._processing_max_height: int = 0
+        self._processing_presets: tuple[tuple[str, int], ...] = (
+            ("NATIVE", 0),
+            ("1080p", 1080),
+            ("720p", 720),
+        )
+        self._processing_preset_idx: int = 0
+
+    def toggle_video_quality(self) -> None:
+        """Cycle through LOW/MED/HIGH video quality presets."""
+        idx = self._quality_presets.index(self._video_quality)
+        self._video_quality = self._quality_presets[(idx + 1) % len(self._quality_presets)]
+        logger.info(f"Video quality changed to: {self._video_quality}")
+
+    def toggle_processing_resolution(self) -> str:
+        """Cycle through NATIVE/1080p/720p processing resolution presets.
+
+        Returns the new preset label.
+        """
+        self._processing_preset_idx = (
+            self._processing_preset_idx + 1
+        ) % len(self._processing_presets)
+        label, max_h = self._processing_presets[self._processing_preset_idx]
+        self._processing_max_height = max_h
+        logger.info(f"Processing resolution changed to: {label} (max_height={max_h})")
+        return label
 
     def _detection_worker(self) -> None:
         """Background thread running YOLO detection."""
@@ -293,7 +342,20 @@ class VideoPipeline:
             if state.is_alert_recording and len(state.recording_buffer) > 0:
                 frames_snapshot = list(state.recording_buffer)
                 state.is_alert_recording = False
-                self._save_alert_video_async(frames_snapshot, state.track_id, time.time())
+                cheat_ctx = {
+                    'target_paper': state.cheating_target_paper,
+                    'target_neighbor': state.cheating_target_neighbor,
+                    'paper_bbox': self._paper_bboxes.get(
+                        state.cheating_target_paper
+                    ) if state.cheating_target_paper else None,
+                    'is_heuristic_paper': state.is_heuristic_paper,
+                    'is_using_phone': getattr(state, 'is_using_phone', False),
+                    'phone_bbox': getattr(state, 'phone_bbox', None),
+                }
+                self._save_alert_video_async(
+                    frames_snapshot, state.track_id, time.time(),
+                    cheat_ctx=cheat_ctx
+                )
         
         # Drain and close archive writer thread (Fix 2)
         if self._archive_thread is not None:
@@ -338,6 +400,22 @@ class VideoPipeline:
             if not self._is_running:
                 break
 
+            # ── Downscale to processing resolution if set ──
+            max_h = self._processing_max_height
+            if max_h > 0:
+                h_orig = frame_data.frame.shape[0]
+                if h_orig > max_h:
+                    scale = max_h / h_orig
+                    new_w = int(frame_data.frame.shape[1] * scale)
+                    frame_data = FrameData(
+                        frame=cv2.resize(frame_data.frame, (new_w, max_h),
+                                         interpolation=cv2.INTER_AREA),
+                        frame_index=frame_data.frame_index,
+                        timestamp=frame_data.timestamp,
+                        width=new_w,
+                        height=max_h,
+                    )
+
             # Update latest frame for the detection thread
             with self._frame_lock:
                 self._current_frame_data = frame_data
@@ -355,21 +433,12 @@ class VideoPipeline:
         
         t0 = time.perf_counter()
 
-        # Track actual FPS for correct video playback speed
-        self._fps_tracker.append(time.time())
-        if len(self._fps_tracker) >= 2:
-            elapsed = self._fps_tracker[-1] - self._fps_tracker[0]
-            if elapsed > 0:
-                self._actual_fps = max(5.0, min(60.0, (len(self._fps_tracker) - 1) / elapsed))
-
         # Add to global frame ring buffer for alert recordings.
-        # Only buffer when students are being monitored.
+        # Always buffer — needed for both student gaze alerts AND phone alerts.
         # No copy needed: cv2.VideoCapture.read() allocates a fresh ndarray per call.
         # Stored as (frame, None) tuples for type consistency with recording buffers.
-        if self._selected_ids:
-            self._global_frame_buffer.append((frame_data.frame, None))
+        self._global_frame_buffer.append((frame_data.frame, None))
 
-        
         # Check for new detection async result
         new_detection = False
         try:
@@ -444,67 +513,19 @@ class VideoPipeline:
         if tools_result is not None:
             # Labels that are NOT phones — treat as papers on the desk
             phone_labels = {'phone', 'Using_phone', 'cell phone'}
-            paper_centers = [
-                tool.center for tool in tools_result.tools
-                if tool.label not in phone_labels
-            ]
+            paper_tools = [t for t in tools_result.tools if t.label not in phone_labels]
+            paper_centers = [t.center for t in paper_tools]
+            # Keep a center→bbox map so alert frames can draw exact paper boxes
+            self._paper_bboxes = {t.center: t.bbox for t in paper_tools}
             self._neighbor_computer.compute_paper_neighbors(self._registry, paper_centers, self._selected_ids)
             
-            # Phone-to-student assignment: check if any phone bbox overlaps a student bbox.
-            # If so, mark that student as using a phone (cheating).
+            # Phone detection — NOT linked to any student.
+            # A phone anywhere in the frame triggers an independent alert clip.
             phone_tools = [t for t in tools_result.tools if t.label in ('phone', 'Using_phone', 'cell phone')]
-            phone_assigned_students: set[int] = set()
-            
-            for phone in phone_tools:
-                px1, py1, px2, py2 = phone.bbox
-                phone_cx = (px1 + px2) // 2
-                phone_cy = (py1 + py2) // 2
-                
-                # Find which student "owns" this phone (phone center inside student bbox)
-                best_student = None
-                best_dist = float('inf')
-                for s in self._registry.get_all():
-                    if not getattr(s, 'is_active', True):
-                        continue
-                    sx1, sy1, sx2, sy2 = s.bbox
-                    # Expand bbox by 20% for robustness
-                    bw, bh = sx2 - sx1, sy2 - sy1
-                    ex1 = sx1 - int(bw * 0.1)
-                    ey1 = sy1 - int(bh * 0.1)
-                    ex2 = sx2 + int(bw * 0.1)
-                    ey2 = sy2 + int(bh * 0.1)
-                    
-                    if ex1 <= phone_cx <= ex2 and ey1 <= phone_cy <= ey2:
-                        dist = abs(phone_cx - s.center[0]) + abs(phone_cy - s.center[1])
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_student = s
-                
-                if best_student is not None:
-                    best_student.is_using_phone = True
-                    best_student.phone_bbox = phone.bbox
-                    phone_assigned_students.add(best_student.track_id)
-                    
-                    # Phone = immediate cheating (no 2s delay needed)
-                    if not best_student.is_cheating:
-                        best_student.is_cheating = True
-                        best_student.cheating_cooldown = 90  # ~3s at 30fps (must outlast recording)
-                        logger.warning(
-                            f"PHONE CHEATING: Track {best_student.track_id} "
-                            f"using phone (conf={phone.confidence:.2f})"
-                        )
-                    else:
-                        # Already cheating — keep refreshing cooldown
-                        best_student.cheating_cooldown = 90
-            
-            # Clear phone flag for students no longer holding a phone,
-            # BUT keep it sticky during an active alert recording so brief
-            # occlusions don't cut the video short or change the cheat type.
-            for s in self._registry.get_all():
-                if s.track_id not in phone_assigned_students:
-                    if not s.is_alert_recording:
-                        s.is_using_phone = False
-                        s.phone_bbox = None
+            self._phone_detected = len(phone_tools) > 0
+            self._phone_current_bboxes = [t.bbox for t in phone_tools]
+            if self._phone_detected:
+                logger.warning(f"PHONE DETECTED: {len(phone_tools)} phone(s) in frame")
         
         t4 = time.perf_counter()
 
@@ -703,6 +724,21 @@ class VideoPipeline:
                     # Determine cheat type BEFORE resetting state
                     cheat_type = "phone" if state.is_using_phone else "gaze"
                     
+                    # Snapshot cheating context BEFORE reset so the background
+                    # writer can render paper/victim annotations correctly.
+                    # Without this, cheating_target_paper is already None by
+                    # the time the writer thread calls _render_alert_frame.
+                    cheat_ctx = {
+                        'target_paper': state.cheating_target_paper,
+                        'target_neighbor': state.cheating_target_neighbor,
+                        'paper_bbox': self._paper_bboxes.get(
+                            state.cheating_target_paper
+                        ) if state.cheating_target_paper else None,
+                        'is_heuristic_paper': state.is_heuristic_paper,
+                        'is_using_phone': state.is_using_phone,
+                        'phone_bbox': state.phone_bbox,
+                    }
+                    
                     # Fully reset cheating state — the event is captured.
                     # Student returns to normal (no more red box).
                     state.is_cheating = False
@@ -715,8 +751,40 @@ class VideoPipeline:
                     
                     self._save_alert_video_async(
                         frames_snapshot, state.track_id, frame_data.timestamp,
-                        cheat_type=cheat_type
+                        cheat_type=cheat_type, cheat_ctx=cheat_ctx
                     )
+
+        # ── Phone alert recording state machine ──────────────────────────────
+        # Completely independent of student tracking.
+        # START: phone detected and not yet recording → snapshot 2s pre-buffer
+        # DURING: phone still detected → keep recording, reset countdown
+        # POST: phone gone → count down 2s (60 frames), then save
+        if self._phone_detected and not self._phone_is_recording:
+            self._phone_is_recording = True
+            # Pre-event frames stored with empty bboxes [] — the phone wasn't
+            # visible yet, so no red box should appear in the pre-buffer section.
+            pre = list(self._global_frame_buffer)[-60:]  # last 2s
+            self._phone_recording_buffer = deque(
+                [(item[0], []) for item in pre],
+                maxlen=300,
+            )
+            self._phone_frames_to_record = 60
+            logger.info("Phone alert recording STARTED")
+
+        if self._phone_is_recording:
+            # Store frame alongside current phone bboxes (may be [] if phone just left)
+            self._phone_recording_buffer.append(
+                (frame_data.frame, list(self._phone_current_bboxes))
+            )
+            if self._phone_detected:
+                self._phone_frames_to_record = 60  # reset post-countdown
+            else:
+                self._phone_frames_to_record -= 1
+                if self._phone_frames_to_record <= 0:
+                    frames_snapshot = list(self._phone_recording_buffer)
+                    self._phone_is_recording = False
+                    self._phone_recording_buffer = deque(maxlen=300)
+                    self._save_phone_alert_video_async(frames_snapshot, frame_data.timestamp)
 
         t5 = time.perf_counter()
         
@@ -741,6 +809,8 @@ class VideoPipeline:
             registry=self._registry,
             student_states=student_states,
             archive_mode=self.archive_mode,
+            video_quality=self._video_quality,
+            processing_res=self._processing_presets[self._processing_preset_idx][0],
         )
 
         # Single rendering pass: draw annotations once, store for both
@@ -838,33 +908,47 @@ class VideoPipeline:
         return "annotated" if self._archive_annotated else "raw"
 
 
-    def _render_alert_frame(self, raw_frame: np.ndarray, cheater_track_id: int) -> np.ndarray:
+    def _render_alert_frame(
+        self, raw_frame: np.ndarray, cheater_track_id: int,
+        cheat_ctx: dict | None = None,
+    ) -> np.ndarray:
         """
         Render an annotated frame for alert video recording.
 
-        Frames are stored at full native resolution. Registry bbox coordinates
-        are also in native resolution so no scaling is needed.
+        Args:
+            raw_frame: The raw camera frame.
+            cheater_track_id: Track ID of the cheating student.
+            cheat_ctx: Frozen snapshot of cheating state captured before reset.
+                       Contains target_paper, target_neighbor, paper_bbox, etc.
+                       If None, falls back to live registry (may be stale).
 
         Draws:
           - RED thick bbox + label on the cheater
-          - YELLOW thick bbox + label on the victim (student being copied from)
-          - GREEN circle on the actual paper location (only if YOLO-detected)
-          - RED bbox on phone (if phone cheating)
+          - YELLOW thick bbox + label on the victim paper
           - Gaze arrow from cheater to paper
+          - RED bbox on phone (if phone cheating)
+          - Status banner at top
         """
         frame = raw_frame.copy()
         cheater = self._registry.get(cheater_track_id)
         if cheater is None:
             return frame
-        
-        # Frames are stored at native resolution — coordinates used directly.
-        
+
+        # Use frozen snapshot if available; fall back to live state.
+        ctx = cheat_ctx or {}
+        is_using_phone = ctx.get('is_using_phone', getattr(cheater, 'is_using_phone', False))
+        phone_bbox = ctx.get('phone_bbox', getattr(cheater, 'phone_bbox', None))
+        target_paper = ctx.get('target_paper', cheater.cheating_target_paper)
+        target_neighbor = ctx.get('target_neighbor', cheater.cheating_target_neighbor)
+        paper_bbox_snap = ctx.get('paper_bbox')  # YOLO bbox from snapshot
+        is_heuristic = ctx.get('is_heuristic_paper', getattr(cheater, 'is_heuristic_paper', True))
+
         # Draw the cheater in RED with full body bbox
         cx1, cy1, cx2, cy2 = cheater.bbox
         cv2.rectangle(frame, (cx1, cy1), (cx2, cy2), (0, 0, 255), 3)
         
         # Label depends on cheating type
-        if cheater.is_using_phone:
+        if is_using_phone:
             cheat_label = f"PHONE CHEATER ID:{cheater_track_id}"
         else:
             cheat_label = f"CHEATER ID:{cheater_track_id}"
@@ -877,51 +961,173 @@ class VideoPipeline:
                     (255, 255, 255), 2, cv2.LINE_AA)
         
         # Draw phone bbox in bright RED if phone cheating
-        if cheater.is_using_phone and cheater.phone_bbox is not None:
-            px1, py1, px2, py2 = cheater.phone_bbox
+        if is_using_phone and phone_bbox is not None:
+            px1, py1, px2, py2 = phone_bbox
             cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 0, 255), 3)
             cv2.putText(frame, "PHONE", (px1, py1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
         
-        # Draw the victim in YELLOW (if known — paper-copying cheating)
-        victim_id = cheater.cheating_target_neighbor
-        if victim_id is not None:
-            victim = self._registry.get(victim_id)
-            if victim is not None:
-                vx1, vy1, vx2, vy2 = victim.bbox
-                cv2.rectangle(frame, (vx1, vy1), (vx2, vy2), (0, 255, 255), 3)
-                victim_label = f"VICTIM ID:{victim_id}"
-                (vw, vh), _ = cv2.getTextSize(victim_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                cv2.rectangle(frame, (vx1, vy1 - vh - 8), (vx1 + vw, vy1), (0, 255, 255), -1)
-                cv2.putText(frame, victim_label,
-                            (vx1, vy1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+        # Draw YELLOW box around the paper being looked at
+        if target_paper is not None and not is_using_phone:
+            # Try snapshot bbox first, then fall back to live _paper_bboxes
+            p_bbox = paper_bbox_snap or self._paper_bboxes.get(target_paper)
+            if p_bbox is not None:
+                # YOLO-detected paper — draw precise bbox
+                px1, py1, px2, py2 = p_bbox
+                cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 255, 255), 3)
+                paper_label = "PAPER"
+                (lw, lh), _ = cv2.getTextSize(paper_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(frame, (px1, py1 - lh - 8), (px1 + lw, py1), (0, 255, 255), -1)
+                cv2.putText(frame, paper_label,
+                            (px1, py1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                             (0, 0, 0), 2, cv2.LINE_AA)
-        
-        # Draw the paper location — ONLY when YOLO-detected (not heuristic guesses)
-        paper_pt = cheater.cheating_target_paper
-        if paper_pt is not None and not cheater.is_heuristic_paper:
-            px, py = paper_pt
-            cv2.circle(frame, (px, py), 18, (0, 255, 0), 3, cv2.LINE_AA)
-            cv2.circle(frame, (px, py), 6, (0, 255, 0), -1, cv2.LINE_AA)
-            cv2.putText(frame, "PAPER", (px - 25, py - 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2, cv2.LINE_AA)
-            
-            # Draw gaze line from cheater center to paper
-            cv2.line(frame, cheater.center, (px, py), (0, 0, 255), 2, cv2.LINE_AA)
+                # Gaze line from cheater center to paper center
+                paper_cx = (px1 + px2) // 2
+                paper_cy = (py1 + py2) // 2
+                cv2.line(frame, cheater.center, (paper_cx, paper_cy), (0, 0, 255), 2, cv2.LINE_AA)
+            elif not is_heuristic:
+                # YOLO paper but bbox not in cache — draw circle fallback
+                px, py = target_paper
+                cv2.circle(frame, (px, py), 22, (0, 255, 255), 3, cv2.LINE_AA)
+                cv2.putText(frame, "PAPER", (px - 28, py - 28),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA)
+                cv2.line(frame, cheater.center, (px, py), (0, 0, 255), 2, cv2.LINE_AA)
         
         # Draw status banner at top
         banner_h = 40
         cv2.rectangle(frame, (0, 0), (frame.shape[1], banner_h), (0, 0, 180), -1)
-        if cheater.is_using_phone:
+        if is_using_phone:
             status_text = f"PHONE ALERT - Student {cheater_track_id} using phone"
         else:
             status_text = f"CHEATING ALERT - Student {cheater_track_id}"
-            if victim_id is not None:
-                status_text += f" copying from Student {victim_id}"
+            if target_neighbor is not None:
+                status_text += f" copying from Student {target_neighbor}"
         cv2.putText(frame, status_text, (10, 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
         
         return frame
+
+    def _render_phone_alert_frame(
+        self, raw_frame: np.ndarray, phone_bboxes: list
+    ) -> np.ndarray:
+        """
+        Render a frame for phone alert recording.
+
+        Draws a red bounding box around each detected phone.
+        No student information is shown — phone-only annotation.
+        """
+        frame = raw_frame.copy()
+
+        for bbox in phone_bboxes:
+            if bbox is None:
+                continue
+            px1, py1, px2, py2 = bbox
+            cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 0, 255), 3)
+            label = "PHONE"
+            (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+            cv2.rectangle(frame, (px1, py1 - lh - 10), (px1 + lw + 4, py1), (0, 0, 255), -1)
+            cv2.putText(frame, label, (px1 + 2, py1 - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+
+        # Banner at the top
+        banner_h = 40
+        cv2.rectangle(frame, (0, 0), (frame.shape[1], banner_h), (0, 0, 180), -1)
+        cv2.putText(frame, "PHONE ALERT - Mobile device detected",
+                    (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+
+        return frame
+
+    def _save_phone_alert_video_async(
+        self, frames: list, timestamp: float
+    ) -> None:
+        """Save phone alert clip in a background thread.
+
+        Each entry in frames is a (raw_frame, phone_bboxes) tuple.
+        Pre-event frames (phone not yet visible) have phone_bboxes = [] and
+        are written raw. During/post frames are annotated with red phone boxes.
+        """
+        def writer_task():
+            from pathlib import Path
+            from datetime import datetime
+
+            if not frames:
+                return
+
+            # Determine frame size from first valid frame
+            height, width = None, None
+            for raw_frame, _ in frames:
+                if raw_frame is not None:
+                    height, width = raw_frame.shape[:2]
+                    break
+            if height is None:
+                return
+
+            # Downscale to alert_max_height if needed (same as gaze alert)
+            max_h = self._settings.alert_max_height
+            if max_h > 0 and height > max_h:
+                scale = max_h / height
+                width  = int(width * scale)
+                height = max_h
+            out_size = (width, height)
+
+            alerts_dir = Path("alerts")
+            alerts_dir.mkdir(exist_ok=True)
+            time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
+
+            codec_options = [
+                ('avc1', '.mp4'),
+                ('mp4v', '.mp4'),
+                ('XVID', '.avi'),
+                ('MJPG', '.avi'),
+            ]
+
+            writer = None
+            filename = None
+            for codec, ext in codec_options:
+                filename = alerts_dir / f"phone_alert_{time_str}{ext}"
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                writer = cv2.VideoWriter(str(filename), fourcc, 30.0, out_size)
+                if writer.isOpened():
+                    writer.set(cv2.VIDEOWRITER_PROP_QUALITY, self._video_quality)
+                    logger.info(f"Phone alert: using codec '{codec}' → {filename}")
+                    break
+                writer.release()
+                writer = None
+
+            if writer is None:
+                logger.error("Phone alert: all codecs failed — video not saved")
+                return
+
+            frames_written = 0
+            try:
+                for raw_frame, phone_bboxes in frames:
+                    if raw_frame is None:
+                        continue
+                    if phone_bboxes:
+                        out_frame = self._render_phone_alert_frame(raw_frame, phone_bboxes)
+                    else:
+                        out_frame = raw_frame
+                    if out_frame.shape[:2] != (height, width):
+                        out_frame = cv2.resize(out_frame, out_size, interpolation=cv2.INTER_AREA)
+                    # Always burn timestamp into phone alert videos.
+                    # _render_phone_alert_frame already returns a copy, and
+                    # pre-event raw frames are consumed once — safe in-place.
+                    draw_timestamp_overlay(out_frame)
+                    writer.write(out_frame)
+                    frames_written += 1
+                duration = frames_written / 30.0
+                logger.info(
+                    f"Saved phone alert video: {filename} "
+                    f"({duration:.1f}s, {frames_written} frames)"
+                )
+            except Exception as e:
+                logger.error(f"Error saving phone alert video: {e}")
+            finally:
+                writer.release()
+
+        threading.Thread(
+            target=writer_task, daemon=True, name="PhoneAlertWriter"
+        ).start()
 
     def _archive_writer_loop(self) -> None:
         """Background thread: drain archive queue and write frames to disk.
@@ -935,6 +1141,11 @@ class VideoPipeline:
             except queue.Empty:
                 continue
             if self._archive_writer is not None:
+                # Resize if frame dimensions don't match writer (e.g. G key changed resolution).
+                if self._archive_size is not None and frame.shape[:2] != (self._archive_size[1], self._archive_size[0]):
+                    frame = cv2.resize(frame, self._archive_size, interpolation=cv2.INTER_AREA)
+                # Always burn real-time timestamp into archived frames.
+                draw_timestamp_overlay(frame)
                 self._archive_writer.write(frame)
 
     def _write_archive_frame(self, frame: np.ndarray) -> None:
@@ -957,15 +1168,20 @@ class VideoPipeline:
             # regardless of how fast the system processed each frame.
             archive_fps = 30.0
 
-            # Try codecs in order of reliability
-            for codec, ext in [('XVID', '.avi'), ('mp4v', '.mp4'), ('MJPG', '.avi')]:
+            # Try codecs in order of preference — MP4 first
+            for codec, ext in [('avc1', '.mp4'), ('mp4v', '.mp4'), ('XVID', '.avi'), ('MJPG', '.avi')]:
                 filepath = archive_dir / f"archive_{time_str}{ext}"
                 fourcc = cv2.VideoWriter_fourcc(*codec)
                 writer = cv2.VideoWriter(str(filepath), fourcc, archive_fps, (w, h))
                 if writer.isOpened():
+                    writer.set(cv2.VIDEOWRITER_PROP_QUALITY, self._video_quality)
                     self._archive_writer = writer
                     self._archive_path = str(filepath)
-                    logger.info(f"Archive recording started: {filepath} (codec={codec})")
+                    self._archive_size = (w, h)
+                    logger.info(
+                        f"Archive recording started: {filepath} "
+                        f"(codec={codec}, quality={self._video_quality}, size={w}x{h})"
+                    )
                     break
                 writer.release()
             else:
@@ -980,9 +1196,19 @@ class VideoPipeline:
 
     def _save_alert_video_async(
         self, frames: list[np.ndarray], track_id: int, timestamp: float,
-        cheat_type: str = "gaze"
+        cheat_type: str = "gaze", cheat_ctx: dict | None = None,
     ) -> None:
-        """Save alert video in a background thread. Receives an independent frames list."""
+        """Save alert video in a background thread.
+
+        Args:
+            frames: Independent frame list (snapshot of recording buffer).
+            track_id: The cheating student's track ID.
+            timestamp: Event timestamp for filename.
+            cheat_type: 'gaze' or 'phone'.
+            cheat_ctx: Frozen snapshot of cheating state (paper, victim, etc.).
+                       Captured BEFORE state reset so the writer can render
+                       paper/victim annotations correctly.
+        """
         actual_fps = 30.0  # Always save alert videos at 30 FPS for consistent playback
         
         def writer_task():
@@ -999,32 +1225,30 @@ class VideoPipeline:
             time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
             
             height, width = None, None
-            # Determine frame dimensions from first valid element.
-            # Buffer is mixed: raw ndarray (pre-event) and (frame, tid) tuples.
             for item in frames:
-                if isinstance(item, tuple):
-                    height, width = item[0].shape[:2]
+                raw_frame = item[0] if isinstance(item, tuple) else item
+                if raw_frame is not None:
+                    height, width = raw_frame.shape[:2]
                     break
-                else:
-                    height, width = item.shape[:2]
-                    break
-            
+
             if height is None:
                 logger.warning(f"Alert video for track {track_id}: no valid frames, skipping.")
                 return
+
+            # Downscale alert videos to alert_max_height if needed.
+            max_h = self._settings.alert_max_height
+            if max_h > 0 and height > max_h:
+                scale = max_h / height
+                width  = int(width  * scale)
+                height = max_h
+            out_size = (width, height)
             
-            # Differentiate filenames by cheating type:
-            #   phone_alert_track3_20260417_053000.avi
-            #   gaze_alert_track3_20260417_053000.avi
             prefix = "phone_alert" if cheat_type == "phone" else "gaze_alert"
             
-            # Codec fallback chain — ordered by reliability on Windows:
-            #   1. XVID + .avi  (universally available, no external DLLs)
-            #   2. mp4v + .mp4  (works on most builds)
-            #   3. MJPG + .avi  (always works, larger files)
             codec_options = [
-                ('XVID', '.avi'),
+                ('avc1', '.mp4'),
                 ('mp4v', '.mp4'),
+                ('XVID', '.avi'),
                 ('MJPG', '.avi'),
             ]
             
@@ -1033,8 +1257,9 @@ class VideoPipeline:
             for codec, ext in codec_options:
                 filename = alerts_dir / f"{prefix}_track{track_id}_{time_str}{ext}"
                 fourcc = cv2.VideoWriter_fourcc(*codec)
-                writer = cv2.VideoWriter(str(filename), fourcc, actual_fps, (width, height))
+                writer = cv2.VideoWriter(str(filename), fourcc, actual_fps, out_size)
                 if writer.isOpened():
+                    writer.set(cv2.VIDEOWRITER_PROP_QUALITY, self._video_quality)
                     logger.info(f"Using codec '{codec}' for {filename}")
                     break
                 writer.release()
@@ -1047,14 +1272,18 @@ class VideoPipeline:
             frames_written = 0
             try:
                 for raw_frame, tid in frames:
-                    # All entries are (frame, track_id|None) tuples.
                     # Pre-event frames have tid=None → write raw.
-                    # During/post frames have a track_id → annotate.
+                    # During/post frames have track_id → annotate.
                     if tid is not None:
-                        annotated = self._render_alert_frame(raw_frame, tid)
-                        writer.write(annotated)
+                        out = self._render_alert_frame(raw_frame, tid, cheat_ctx=cheat_ctx)
                     else:
-                        writer.write(raw_frame)
+                        out = raw_frame
+                    # Resize if needed
+                    if out.shape[:2] != (height, width):
+                        out = cv2.resize(out, out_size, interpolation=cv2.INTER_AREA)
+                    # Always burn timestamp into gaze alert videos
+                    draw_timestamp_overlay(out)
+                    writer.write(out)
                     frames_written += 1
                 duration = frames_written / actual_fps
                 logger.info(
