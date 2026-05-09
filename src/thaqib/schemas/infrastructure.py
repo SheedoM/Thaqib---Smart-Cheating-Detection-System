@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Hall Schemas
 class HallBase(BaseModel):
@@ -50,13 +51,19 @@ class DeviceBase(BaseModel):
     type: str = Field(..., pattern="^(camera|microphone|other)$")
     identifier: str = Field(..., min_length=2, max_length=100)
     ip_address: Optional[str] = Field(None, pattern=r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
-    stream_url: str = Field(..., max_length=500)
-    position: dict
+    stream_url: Optional[str] = Field(None, max_length=500)
+    position: dict = Field(default_factory=dict)
     coverage_area: Optional[dict] = None
     status: Optional[str] = "offline"
 
 class DeviceCreate(DeviceBase):
     hall_id: uuid.UUID
+
+    @model_validator(mode="after")
+    def require_camera_stream_url(self) -> "DeviceCreate":
+        if self.type == "camera" and not (self.stream_url or "").strip():
+            raise ValueError("Camera devices require stream_url")
+        return self
 
 class DeviceUpdate(BaseModel):
     identifier: Optional[str] = None
@@ -69,6 +76,6 @@ class DeviceUpdate(BaseModel):
 class DeviceResponse(DeviceBase):
     id: uuid.UUID
     hall_id: uuid.UUID
-    last_health_check: Optional[str] = None
+    last_health_check: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import { apiUrl } from '../config/api';
+import { authFetch } from '../config/api';
 
 interface LoginPageProps {
   onLoginSuccess?: () => void;
@@ -29,7 +29,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
       params.append('username', formData.identifier);
       params.append('password', formData.password);
 
-      const response = await fetch(apiUrl('/api/auth/login'), {
+      const response = await authFetch('/api/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -39,10 +39,6 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
 
       if (response.ok) {
         const data = await response.json();
-        // Save tokens to localStorage
-        localStorage.setItem('thaqib_access_token', data.access_token);
-        localStorage.setItem('thaqib_refresh_token', data.refresh_token);
-        
         console.log('Login successful', data);
         if (onLoginSuccess) {
           onLoginSuccess();

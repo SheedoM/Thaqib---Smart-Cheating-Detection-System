@@ -19,17 +19,19 @@ from typing import Any, Optional
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session, selectinload
 
 from src.thaqib.db.database import SessionLocal
 from src.thaqib.db.models.infrastructure import Device, Hall
+from src.thaqib.api.dependencies import RequireRole
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+require_stream_user = RequireRole(["admin", "referee"])
 
 ALERTS_DIR = Path("./alerts")
 ALERTS_DIR.mkdir(exist_ok=True)
@@ -216,8 +218,9 @@ def _serialize_camera(device: Device, hall: Hall, runtime: CameraRuntime | None)
 
 
 def _hall_to_payload(hall: Hall) -> dict[str, Any]:
-    camera_devices = [device for device in hall.devices if device.type == "camera"]
-    mic_devices = [device for device in hall.devices if device.type == "microphone"]
+    active_devices = [d for d in hall.devices if d.deleted_at is None]
+    camera_devices = [device for device in active_devices if device.type == "camera"]
+    mic_devices = [device for device in active_devices if device.type == "microphone"]
     cameras = [
         _serialize_camera(device, hall, _camera_states.get(str(device.id)))
         for device in camera_devices
@@ -229,6 +232,7 @@ def _hall_to_payload(hall: Hall) -> dict[str, Any]:
         "building": hall.building,
         "floor": hall.floor,
         "capacity": hall.capacity,
+        "image": hall.image,
         "cameras": cameras,
         "mics": [
             {
@@ -245,6 +249,7 @@ def _hall_to_payload(hall: Hall) -> dict[str, Any]:
 def _load_halls_with_devices(db: Session) -> list[Hall]:
     return (
         db.query(Hall)
+        .filter(Hall.deleted_at.is_(None))
         .options(selectinload(Hall.devices))
         .order_by(Hall.name.asc())
         .all()
@@ -258,6 +263,8 @@ def _load_active_camera_rows(db: Session) -> list[tuple[Hall, Device]]:
         if hall.status != "ready":
             continue
         for device in hall.devices:
+            if device.deleted_at is not None:
+                continue
             if device.type != "camera":
                 continue
             source = (device.stream_url or "").strip()
@@ -607,7 +614,7 @@ def _force_restart_all_cameras() -> None:
 
 
 @router.post("/reload")
-async def reload_monitoring() -> JSONResponse:
+async def reload_monitoring(_=Depends(require_stream_user)) -> JSONResponse:
     _refresh_camera_states()
     return JSONResponse(
         {
@@ -618,7 +625,7 @@ async def reload_monitoring() -> JSONResponse:
 
 
 @router.post("/refresh")
-async def refresh_monitoring() -> JSONResponse:
+async def refresh_monitoring(_=Depends(require_stream_user)) -> JSONResponse:
     _force_restart_all_cameras()
     return JSONResponse(
         {
@@ -629,7 +636,7 @@ async def refresh_monitoring() -> JSONResponse:
 
 
 @router.get("/monitoring")
-async def monitoring_layout() -> JSONResponse:
+async def monitoring_layout(_=Depends(require_stream_user)) -> JSONResponse:
     db = SessionLocal()
     try:
         halls = _load_halls_with_devices(db)
@@ -640,7 +647,7 @@ async def monitoring_layout() -> JSONResponse:
 
 
 @router.get("/status")
-async def pipeline_status() -> JSONResponse:
+async def pipeline_status(_=Depends(require_stream_user)) -> JSONResponse:
     try:
         with _manager_lock:
             # Use jsonable_encoder to ensure numpy / datetime / other types are converted
@@ -652,7 +659,7 @@ async def pipeline_status() -> JSONResponse:
 
 
 @router.get("/feed/{device_id}")
-async def video_feed(device_id: str) -> StreamingResponse:
+async def video_feed(device_id: str, _=Depends(require_stream_user)) -> StreamingResponse:
     runtime = _camera_states.get(device_id)
     if runtime is None:
         raise HTTPException(status_code=404, detail="Camera feed not available")
@@ -670,14 +677,14 @@ async def video_feed(device_id: str) -> StreamingResponse:
 
 
 @router.get("/alerts")
-async def list_alerts() -> JSONResponse:
+async def list_alerts(_=Depends(require_stream_user)) -> JSONResponse:
     with _alerts_lock:
         alerts = list(_alerts)
     return JSONResponse({"alerts": alerts})
 
 
 @router.get("/alerts/snapshot/{path:path}")
-async def get_alert_snapshot(path: str) -> FileResponse:
+async def get_alert_snapshot(path: str, _=Depends(require_stream_user)) -> FileResponse:
     safe_rel = Path(path)
     filepath = (ALERTS_DIR / safe_rel).resolve()
     if _ROOT_ALERTS_DIR not in filepath.parents or not filepath.exists():
@@ -686,7 +693,7 @@ async def get_alert_snapshot(path: str) -> FileResponse:
 
 
 @router.get("/alerts/video/{path:path}")
-async def get_alert_video(path: str) -> FileResponse:
+async def get_alert_video(path: str, _=Depends(require_stream_user)) -> FileResponse:
     safe_rel = Path(path)
     filepath = (ALERTS_DIR / safe_rel).resolve()
     if _ROOT_ALERTS_DIR not in filepath.parents or not filepath.exists():
@@ -697,7 +704,7 @@ async def get_alert_video(path: str) -> FileResponse:
 
 
 @router.get("/alerts/report/{alert_id}.pdf")
-async def get_alert_report_pdf(alert_id: str) -> Response:
+async def get_alert_report_pdf(alert_id: str, _=Depends(require_stream_user)) -> Response:
     with _alerts_lock:
         alert = next((a for a in _alerts if a.get("id") == alert_id), None)
     if not alert:

@@ -7,17 +7,20 @@ from src.thaqib.db.database import get_db
 from src.thaqib.db.models.events import DetectionEvent
 from src.thaqib.db.models.exams import ExamSession
 from src.thaqib.schemas.events import DetectionEventCreate, DetectionEventResponse
+from src.thaqib.api.dependencies import RequireRole, require_internal_event_token
 from src.thaqib.api.ws_manager import manager
 from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
+require_monitor_user = RequireRole(["admin", "referee"])
 
 @router.post("/", response_model=DetectionEventResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("60/minute")
 async def ingest_event(
     request: Request,
     event_in: DetectionEventCreate, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _ = Depends(require_internal_event_token),
 ) -> Any:
     """
     Ingest a new detection event from the AI pipeline and broadcast it via WebSocket.
@@ -70,7 +73,8 @@ def read_events(
     exam_session_id: uuid.UUID,
     skip: int = 0, 
     limit: int = 100, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _ = Depends(require_monitor_user),
 ) -> Any:
     """
     Retrieve detection events for a specific exam session.

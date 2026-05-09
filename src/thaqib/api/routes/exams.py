@@ -28,7 +28,7 @@ def create_exam_session(
     # Verify halls exist
     halls = []
     if session_data.hall_ids:
-        halls = db.query(Hall).filter(Hall.id.in_(session_data.hall_ids)).all()
+        halls = db.query(Hall).filter(Hall.id.in_(session_data.hall_ids), Hall.deleted_at.is_(None)).all()
         if len(halls) != len(session_data.hall_ids):
             raise HTTPException(status_code=400, detail="One or more halls could not be found.")
 

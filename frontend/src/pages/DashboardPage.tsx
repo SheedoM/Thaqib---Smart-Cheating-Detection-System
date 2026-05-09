@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import CameraModal from '../components/CameraModal';
 import HallsTab from '../components/HallsTab';
-import { apiUrl, STREAM_BASE } from '../config/api';
+import { apiUrl, authFetch, STREAM_BASE } from '../config/api';
 import { useInvigilatorPtt } from '../hooks/useInvigilatorPtt';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -72,6 +72,11 @@ interface DashboardPageProps {
   onLogout: () => void;
 }
 
+interface CurrentUser {
+  full_name: string;
+  role: string;
+}
+
 type TabType = 'cases' | 'cameras';
 
 const NAV_ITEMS = [
@@ -126,6 +131,7 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [recentAlertByCameraId, setRecentAlertByCameraId] = useState<Record<string, Alert | null>>({});
   const [statsByCamera, setStatsByCamera] = useState<Record<string, CameraStats>>({});
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [modalMode, setModalMode] = useState<'camera' | 'alert' | null>(null);
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
   const [selectedCamera, setSelectedCamera] = useState<{
@@ -182,9 +188,18 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
   }, []);
 
   useEffect(() => {
+    const loadCurrentUser = async () => {
+      try {
+        const res = await authFetch('/api/auth/me');
+        if (res.ok) setCurrentUser(await res.json());
+      } catch {
+        // ignore; the app shell will handle unauthenticated sessions
+      }
+    };
+
     const pollMonitoring = async () => {
       try {
-        const res = await fetch(apiUrl(`${STREAM_BASE}/monitoring`));
+        const res = await authFetch(`${STREAM_BASE}/monitoring`);
         const data = await res.json();
         setHalls(data.halls || []);
       } catch {
@@ -197,7 +212,7 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
 
     const pollAlerts = async () => {
       try {
-        const res = await fetch(apiUrl(`${STREAM_BASE}/alerts`));
+        const res = await authFetch(`${STREAM_BASE}/alerts`);
         const data = await res.json();
         const nextAlerts: Alert[] = data.alerts || [];
         setAlerts(nextAlerts);
@@ -232,12 +247,13 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
 
     const pollStats = async () => {
       try {
-        const res = await fetch(apiUrl(`${STREAM_BASE}/status`));
+        const res = await authFetch(`${STREAM_BASE}/status`);
         const data = await res.json();
         setStatsByCamera(data.cameras || {});
       } catch { /* ignore */ }
     };
 
+    loadCurrentUser();
     pollMonitoring();
     pollAlerts();
     pollStats();
@@ -278,7 +294,7 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
 
   const refreshStreams = async () => {
     try {
-      await fetch(apiUrl(`${STREAM_BASE}/refresh`), { method: 'POST' });
+      await authFetch(`${STREAM_BASE}/refresh`, { method: 'POST' });
     } catch {
       // ignore
     }
@@ -307,8 +323,8 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
             {/* Left side: user info */}
             <div className="dashboard-user-area" ref={notifWrapRef}>
               <div className="dashboard-user-info">
-                <span className="dashboard-user-name">شادي فرج الله</span>
-                <span className="dashboard-user-role">مشرف النظام</span>
+                <span className="dashboard-user-name">{currentUser?.full_name || 'المستخدم'}</span>
+                <span className="dashboard-user-role">{currentUser?.role || '—'}</span>
               </div>
               <div className="dashboard-avatar">
                 <img
