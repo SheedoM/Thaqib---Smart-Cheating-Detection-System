@@ -31,6 +31,7 @@ class UserUpdate(BaseModel):
 
 class UserResponse(UserBase):
     id: uuid.UUID
+    institution_id: uuid.UUID
     status: str
     ptt_id: Optional[str] = None
 

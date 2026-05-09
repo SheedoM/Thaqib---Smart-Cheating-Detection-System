@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session, selectinload
 
 from src.thaqib.db.database import SessionLocal
@@ -640,9 +641,14 @@ async def monitoring_layout() -> JSONResponse:
 
 @router.get("/status")
 async def pipeline_status() -> JSONResponse:
-    with _manager_lock:
-        cameras = {camera_id: dict(runtime.stats) for camera_id, runtime in _camera_states.items()}
-    return JSONResponse({"cameras": cameras})
+    try:
+        with _manager_lock:
+            # Use jsonable_encoder to ensure numpy / datetime / other types are converted
+            cameras = {camera_id: jsonable_encoder(runtime.stats) for camera_id, runtime in _camera_states.items()}
+        return JSONResponse({"cameras": cameras})
+    except Exception:
+        logger.exception("Failed to build pipeline status payload")
+        raise HTTPException(status_code=500, detail="Failed to build pipeline status")
 
 
 @router.get("/feed/{device_id}")

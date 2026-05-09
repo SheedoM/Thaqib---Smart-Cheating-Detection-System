@@ -121,6 +121,7 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
   const [activeNav, setActiveNav] = useState('home');
   const [activeTab, setActiveTab] = useState<TabType>('cameras');
   const [halls, setHalls] = useState<HallItem[]>([]);
+  const [hallsLoaded, setHallsLoaded] = useState(false);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [recentAlertByCameraId, setRecentAlertByCameraId] = useState<Record<string, Alert | null>>({});
@@ -188,6 +189,9 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
         setHalls(data.halls || []);
       } catch {
         // ignore polling errors
+      } finally {
+        // mark that we've attempted the first load so UI doesn't stay blank
+        setHallsLoaded(true);
       }
     };
 
@@ -460,16 +464,17 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
               pttStatusText={ptt.statusText}
             />
           ) : (
-            <CamerasTab
-              halls={halls}
-              statsByCamera={statsByCamera}
-              onClickCamera={openCameraModal}
-              recentAlertByCameraId={recentAlertByCameraId}
-              onViewAlert={openAlertModal}
-              onPttStart={startPtt}
-              onPttStop={stopPtt}
-              pttStatusText={ptt.statusText}
-            />
+              <CamerasTab
+                halls={halls}
+                hallsLoaded={hallsLoaded}
+                statsByCamera={statsByCamera}
+                onClickCamera={openCameraModal}
+                recentAlertByCameraId={recentAlertByCameraId}
+                onViewAlert={openAlertModal}
+                onPttStart={startPtt}
+                onPttStop={stopPtt}
+                pttStatusText={ptt.statusText}
+              />
           )
         ) : activeNav === 'halls' ? (
           <HallsTab />
@@ -665,6 +670,7 @@ function AlertCard({
 
 function CamerasTab({
   halls,
+  hallsLoaded,
   statsByCamera,
   onClickCamera,
   recentAlertByCameraId,
@@ -674,6 +680,7 @@ function CamerasTab({
   pttStatusText,
 }: {
   halls: HallItem[];
+  hallsLoaded: boolean;
   statsByCamera: Record<string, CameraStats>;
   onClickCamera: (camera: CameraItem, hallName: string) => void;
   recentAlertByCameraId: Record<string, Alert | null>;
@@ -682,6 +689,31 @@ function CamerasTab({
   onPttStop: () => void;
   pttStatusText: string;
 }) {
+  if (!hallsLoaded) {
+    return (
+      <div className="dashboard-empty-state">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
+          <path d="M12 2v6m0 8v6m10-12h-6M2 12h6" />
+        </svg>
+        <h3>جارٍ تحميل القاعات...</h3>
+        <p>الرجاء الانتظار</p>
+      </div>
+    );
+  }
+
+  if (halls.length === 0) {
+    return (
+      <div className="dashboard-empty-state">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+          <circle cx="12" cy="13" r="4"/>
+        </svg>
+        <h3>لا توجد قاعات مضافة</h3>
+        <p>الرجاء إضافة قاعات وكاميرات من قسم إدارة القاعات</p>
+      </div>
+    );
+  }
+
   return (
     <div className="cameras-section">
       {halls.map((hall) => (
@@ -717,8 +749,17 @@ function CamerasTab({
               الاتصال بالمراقب
             </button>
           </div>
-          <div className="cameras-grid">
-            {hall.cameras.map((camera) => {
+          {hall.cameras.length === 0 ? (
+            <div className="dashboard-empty-state" style={{ minHeight: '200px', backgroundColor: 'rgba(255,255,255,0.5)', borderRadius: '14px' }}>
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                <circle cx="12" cy="13" r="4"/>
+              </svg>
+              <p>لا توجد كاميرات في هذه القاعة</p>
+            </div>
+          ) : (
+            <div className="cameras-grid">
+              {hall.cameras.map((camera) => {
               const stats = statsByCamera[camera.id];
               const recentAlert = recentAlertByCameraId[camera.id] ?? null;
               const hasActiveAlert = Boolean(recentAlert);
@@ -791,8 +832,9 @@ function CamerasTab({
                   </div>
                 </div>
               );
-            })}
-          </div>
+              })}
+            </div>
+          )}
         </div>
       ))}
     </div>

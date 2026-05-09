@@ -86,3 +86,21 @@ def read_users_me(
     Get current user profile.
     """
     return current_user
+
+
+@router.get("/me-debug")
+def read_users_me_debug(
+    current_user: User = Depends(get_current_active_user)
+) -> Any:
+    """
+    Debug version of /me which returns a simple JSON dict of user attributes.
+    Use this to isolate serialization issues from dependency/auth failures.
+    """
+    return {
+        "id": str(current_user.id),
+        "username": current_user.username,
+        "email": current_user.email,
+        "full_name": current_user.full_name,
+        "role": current_user.role,
+        "status": current_user.status,
+    }
