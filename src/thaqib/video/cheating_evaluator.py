@@ -6,6 +6,7 @@ Evaluates rules synchronously to ensure state consistency with recording.
 import math
 import time
 import logging
+from typing import Callable
 
 import numpy as np
 
@@ -32,7 +33,7 @@ class CheatingEvaluator:
     def __init__(self, registry: GlobalStudentRegistry, cooldown_frames: int = 30):
         self._registry = registry
         self._cooldown_frames = cooldown_frames
-        self._on_alert: callable = None
+        self._on_alert: Callable | None = None
 
     @property
     def on_alert(self):

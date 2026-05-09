@@ -117,9 +117,14 @@ temp/
 *.mp3
 !tests/fixtures/*
 
-# Thaqib specific
+# Thaqib System Outputs
+archive/
 alerts/
 scratch/
 */.vite/
 node_modules/
 frontend/dist/
+
+# Large archives and dev folders
+*.zip
+ved/
