@@ -200,8 +200,8 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
         'Content-Type': 'application/json'
       };
 
-      // 1. Get User/Institution
-      const userRes = await fetch(apiUrl('/api/auth/me'), { headers });
+      // 1. Get User/Institution (use debug endpoint to avoid server-side serialization issues)
+      const userRes = await fetch(apiUrl('/api/auth/me-debug'), { headers });
       if (!userRes.ok) throw new Error('Failed to get user context');
       const user = await userRes.json();
       const institution_id = user.institution_id;

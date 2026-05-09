@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { CloudUpload, CheckCircle2, Loader2, Copy } from 'lucide-react';
+import { apiUrl } from '../config/api';
 
 interface SetupWizardProps {
   onSuccess: () => void;
@@ -54,7 +55,7 @@ export default function SetupWizard({ onSuccess }: SetupWizardProps) {
         logo_url: formData.logo_file ? formData.logo_file.name : null,
       };
 
-      const response = await fetch('http://localhost:8000/api/setup/install', {
+      const response = await fetch(apiUrl('/api/setup/install'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

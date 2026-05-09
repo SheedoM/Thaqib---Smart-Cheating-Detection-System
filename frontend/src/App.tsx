@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Loader2 } from 'lucide-react';
+import { apiUrl } from './config/api';
 import SetupWizard from './components/SetupWizard';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
@@ -20,7 +21,7 @@ export default function App() {
       }
 
       try {
-        const response = await fetch('http://localhost:8000/api/setup/status');
+        const response = await fetch(apiUrl('/api/setup/status'));
         if (response.ok) {
           const data = await response.json();
           setView(data.is_installed ? 'login' : 'setup');

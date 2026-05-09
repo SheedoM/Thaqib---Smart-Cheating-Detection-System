@@ -75,7 +75,8 @@
 
 .dashboard-header-content {
   position: relative;
-  z-index: 10;
+  /* keep header above other content/overlays so dropdowns are visible */
+  z-index: 100020;
   padding: 16px 32px 0;
 }
 
@@ -233,7 +234,8 @@
   border: 1px solid rgba(17, 24, 39, 0.08);
   border-radius: 14px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
-  z-index: 50;
+  /* Ensure the notifications dropdown appears above all other overlays */
+  z-index: 100030;
 }
 
 .dashboard-notifications-header {

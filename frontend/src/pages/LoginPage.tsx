@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Loader2 } from 'lucide-react';
+import { apiUrl } from '../config/api';
 
 interface LoginPageProps {
   onLoginSuccess?: () => void;
@@ -28,7 +29,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
       params.append('username', formData.identifier);
       params.append('password', formData.password);
 
-      const response = await fetch('http://localhost:8000/api/auth/login', {
+      const response = await fetch(apiUrl('/api/auth/login'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
