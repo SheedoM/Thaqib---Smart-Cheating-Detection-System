@@ -1,5 +1,5 @@
 """
-Human detection using YOLOv8.
+Human detection using YOLO.
 """
 
 import logging
