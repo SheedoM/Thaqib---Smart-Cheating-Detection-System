@@ -1,0 +1,76 @@
+2026-04-17 14:00:57,849 | INFO | Event#2 | Cheating 🚨 | conf=0.70 | dur=0.78s | cheat=False
+2026-04-17 14:00:57,852 | WARNING | Stream: input overflow
+2026-04-17 14:00:58,705 | INFO | Event#3 | Cheating 🚨 | conf=0.63 | dur=0.63s | cheat=False
+2026-04-17 14:00:58,710 | WARNING | Stream: input overflow
+2026-04-17 14:01:15,495 | INFO | Event#5 | Cheating 🚨 | conf=0.71 | dur=0.81s | cheat=False
+2026-04-17 14:01:15,501 | WARNING | Stream: input overflow
+2026-04-17 14:01:19,251 | INFO | Event#6 | Cheating 🚨 | conf=0.80 | dur=0.84s | cheat=False
+2026-04-17 14:01:19,257 | WARNING | Stream: input overflow
+2026-04-17 14:01:21,679 | INFO | Event#7 | Cheating 🚨 | conf=0.70 | dur=0.30s | cheat=False
+2026-04-17 14:01:21,685 | WARNING | Stream: input overflow
+2026-04-17 14:01:27,632 | INFO | Event#8 | Cheating 🚨 | conf=0.89 | dur=0.84s | cheat=False
+2026-04-17 14:01:27,638 | WARNING | Stream: input overflow
+2026-04-17 14:01:30,939 | INFO | Event#9 | Cheating 🚨 | conf=0.83 | dur=0.87s | cheat=False
+2026-04-17 14:01:30,943 | WARNING | Stream: input overflow
+2026-04-17 14:01:38,110 | INFO | Event#10 | Cheating 🚨 | conf=0.81 | dur=1.74s | cheat=False
+2026-04-17 14:01:38,114 | WARNING | Stream: input overflow
+2026-04-17 14:01:54,319 | INFO | Event#11 | Cheating 🚨 | conf=0.80 | dur=6.66s | cheat=False
+2026-04-17 14:01:54,324 | WARNING | Stream: input overflow
+2026-04-17 14:02:19,238 | INFO | Event#16 | Cheating 🚨 | conf=0.91 | dur=0.57s | cheat=False
+2026-04-17 14:02:19,243 | WARNING | Stream: input overflow
+2026-04-17 14:02:39,557 | INFO | Event#18 | Cheating 🚨 | conf=0.71 | dur=0.54s | cheat=False
+2026-04-17 14:02:39,561 | WARNING | Stream: input overflow
+2026-04-17 14:02:45,429 | INFO | Event#19 | Cheating 🚨 | conf=0.74 | dur=0.60s | cheat=False
+2026-04-17 14:02:45,434 | WARNING | Stream: input overflow
+2026-04-17 14:02:53,992 | INFO | Event#20 | Cheating 🚨 | conf=0.83 | dur=1.17s | cheat=False
+2026-04-17 14:02:53,997 | WARNING | Stream: input overflow
+2026-04-17 14:03:00,754 | INFO | Event#21 | Non-Cheating ✅ | conf=0.55 | dur=1.26s | cheat=False
+2026-04-17 14:03:00,759 | WARNING | Stream: input overflow
+2026-04-17 14:03:11,244 | INFO | Event#22 | Cheating 🚨 | conf=0.54 | dur=0.99s | cheat=False
+2026-04-17 14:03:11,247 | WARNING | Stream: input overflow
+2026-04-17 14:03:20,928 | INFO | Event#24 | Cheating 🚨 | conf=0.54 | dur=1.17s | cheat=False
+2026-04-17 14:03:20,933 | WARNING | Stream: input overflow
+2026-04-17 14:03:25,544 | INFO | Event#25 | Cheating 🚨 | conf=0.57 | dur=1.38s | cheat=False
+2026-04-17 14:03:25,548 | WARNING | Stream: input overflow
+2026-04-17 14:03:30,452 | INFO | Event#26 | Cheating 🚨 | conf=0.54 | dur=1.50s | cheat=False
+2026-04-17 14:03:30,455 | WARNING | Stream: input overflow
+2026-04-17 14:03:46,151 | INFO | Event#30 | Cheating 🚨 | conf=0.56 | dur=1.17s | cheat=False
+2026-04-17 14:03:46,156 | WARNING | Stream: input overflow
+2026-04-17 14:03:50,909 | INFO | Event#31 | Non-Cheating ✅ | conf=0.54 | dur=1.41s | cheat=False
+2026-04-17 14:03:50,914 | WARNING | Stream: input overflow
+2026-04-17 14:03:57,876 | INFO | Event#32 | Non-Cheating ✅ | conf=0.54 | dur=1.62s | cheat=False
+2026-04-17 14:03:57,881 | WARNING | Stream: input overflow
+2026-04-17 14:04:05,330 | INFO | Event#33 | Cheating 🚨 | conf=0.84 | dur=1.08s | cheat=False
+2026-04-17 14:04:05,334 | WARNING | Stream: input overflow
+2026-04-17 14:04:13,679 | INFO | Event#35 | Cheating 🚨 | conf=0.81 | dur=0.78s | cheat=False
+2026-04-17 14:04:13,682 | WARNING | Stream: input overflow
+2026-04-17 14:04:19,032 | INFO | Event#36 | Cheating 🚨 | conf=0.70 | dur=1.29s | cheat=False
+2026-04-17 14:04:19,036 | WARNING | Stream: input overflow
+2026-04-17 14:04:22,859 | INFO | Event#37 | Cheating 🚨 | conf=0.63 | dur=1.11s | cheat=False
+2026-04-17 14:04:22,865 | WARNING | Stream: input overflow
+2026-04-17 14:04:27,877 | INFO | Event#38 | Cheating 🚨 | conf=0.52 | dur=1.44s | cheat=False
+2026-04-17 14:04:27,880 | WARNING | Stream: input overflow
+2026-04-17 14:04:32,443 | INFO | Event#39 | Cheating 🚨 | conf=0.55 | dur=1.35s | cheat=False
+2026-04-17 14:04:32,447 | WARNING | Stream: input overflow
+2026-04-17 14:04:38,449 | INFO | Event#40 | Cheating 🚨 | conf=0.62 | dur=1.29s | cheat=False
+2026-04-17 14:04:38,455 | WARNING | Stream: input overflow
+2026-04-17 14:04:43,040 | INFO | Event#41 | Non-Cheating ✅ | conf=0.52 | dur=1.29s | cheat=False
+2026-04-17 14:04:43,044 | WARNING | Stream: input overflow
+2026-04-17 14:04:49,667 | INFO | Event#42 | Cheating 🚨 | conf=0.52 | dur=1.35s | cheat=False
+2026-04-17 14:04:49,673 | WARNING | Stream: input overflow
+2026-04-17 14:04:53,489 | INFO | Event#43 | Cheating 🚨 | conf=0.55 | dur=1.20s | cheat=False
+2026-04-17 14:04:53,493 | WARNING | Stream: input overflow
+2026-04-17 14:04:58,155 | INFO | Event#44 | Cheating 🚨 | conf=0.55 | dur=1.26s | cheat=False
+2026-04-17 14:04:58,159 | WARNING | Stream: input overflow
+2026-04-17 14:05:02,220 | INFO | Event#45 | Cheating 🚨 | conf=0.80 | dur=1.08s | cheat=False
+2026-04-17 14:05:02,226 | WARNING | Stream: input overflow
+2026-04-17 14:05:06,057 | INFO | Event#46 | Cheating 🚨 | conf=0.62 | dur=0.84s | cheat=False
+2026-04-17 14:05:06,062 | WARNING | Stream: input overflow
+2026-04-17 14:05:09,563 | INFO | Event#47 | Cheating 🚨 | conf=0.66 | dur=0.48s | cheat=False
+2026-04-17 14:05:09,567 | WARNING | Stream: input overflow
+2026-04-17 14:05:18,834 | INFO | Event#49 | Cheating 🚨 | conf=0.66 | dur=0.60s | cheat=False
+2026-04-17 14:05:18,839 | WARNING | Stream: input overflow
+2026-04-17 14:05:23,564 | INFO | Event#50 | Cheating 🚨 | conf=0.51 | dur=1.44s | cheat=False
+2026-04-17 14:05:23,569 | WARNING | Stream: input overflow
+2026-04-17 14:05:31,232 | WARNING | Stream: input overflow
+2026-04-17 14:05:31,232 | INFO | Event#51 | Cheating 🚨 | conf=0.79 | dur=2.73s | cheat=False

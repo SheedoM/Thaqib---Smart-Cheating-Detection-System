@@ -1,0 +1,198 @@
+2026-05-01 22:21:57,581 | INFO | Calibration done | base=0.0000035 | multiplier=×5.0 | threshold=0.0000176
+2026-05-01 22:22:11,370 | WARNING | Stream status: input overflow
+2026-05-01 22:22:15,205 | INFO | Event#1 | Cheating 🚨 | conf=0.754 | dur=0.84s | cheat=False
+2026-05-01 22:22:15,995 | WARNING | Stream status: input overflow
+2026-05-01 22:22:16,043 | INFO | Event#2 | Cheating 🚨 | conf=0.609 | dur=0.84s | cheat=False
+2026-05-01 22:22:20,344 | WARNING | Stream status: input overflow
+2026-05-01 22:22:20,390 | INFO | Event#3 | Cheating 🚨 | conf=0.679 | dur=0.87s | cheat=False
+2026-05-01 22:22:24,645 | WARNING | Stream status: input overflow
+2026-05-01 22:22:24,699 | INFO | Event#4 | Cheating 🚨 | conf=0.636 | dur=0.96s | cheat=False
+2026-05-01 22:22:29,567 | WARNING | Stream status: input overflow
+2026-05-01 22:22:29,619 | INFO | Event#5 | Cheating 🚨 | conf=0.802 | dur=1.02s | cheat=True
+2026-05-01 22:22:29,628 | WARNING | 🚨 CHEAT #1 | Cheating 🚨 | conf=0.802 | dur=1.02s | file=detections\cheat_0001_22-22-29.wav
+2026-05-01 22:22:36,793 | WARNING | Stream status: input overflow
+2026-05-01 22:22:36,851 | INFO | Event#6 | Cheating 🚨 | conf=0.802 | dur=0.69s | cheat=False
+2026-05-01 22:22:41,211 | WARNING | Stream status: input overflow
+2026-05-01 22:22:41,267 | INFO | Event#7 | Cheating 🚨 | conf=0.806 | dur=0.69s | cheat=False
+2026-05-01 22:22:47,134 | WARNING | Stream status: input overflow
+2026-05-01 22:22:47,188 | INFO | Event#8 | Cheating 🚨 | conf=0.786 | dur=0.54s | cheat=False
+2026-05-01 22:22:54,216 | WARNING | Stream status: input overflow
+2026-05-01 22:22:54,360 | INFO | Event#10 | Cheating 🚨 | conf=0.706 | dur=1.02s | cheat=False
+2026-05-01 22:22:58,873 | WARNING | Stream status: input overflow
+2026-05-01 22:22:58,918 | INFO | Event#11 | Cheating 🚨 | conf=0.588 | dur=1.29s | cheat=False
+2026-05-01 22:23:02,904 | WARNING | Stream status: input overflow
+2026-05-01 22:23:02,947 | INFO | Event#12 | Cheating 🚨 | conf=0.779 | dur=0.30s | cheat=False
+2026-05-01 22:23:07,815 | WARNING | Stream status: input overflow
+2026-05-01 22:23:07,858 | INFO | Event#13 | Cheating 🚨 | conf=0.736 | dur=1.11s | cheat=False
+2026-05-01 22:23:12,632 | WARNING | Stream status: input overflow
+2026-05-01 22:23:12,688 | INFO | Event#14 | Cheating 🚨 | conf=0.737 | dur=0.93s | cheat=False
+2026-05-01 22:23:21,016 | WARNING | Stream status: input overflow
+2026-05-01 22:23:21,075 | INFO | Event#15 | Cheating 🚨 | conf=0.889 | dur=1.02s | cheat=True
+2026-05-01 22:23:21,223 | WARNING | 🚨 CHEAT #2 | Cheating 🚨 | conf=0.889 | dur=1.02s | file=detections\cheat_0002_22-23-21.wav
+2026-05-01 22:23:30,673 | WARNING | Stream status: input overflow
+2026-05-01 22:23:30,725 | INFO | Event#16 | Cheating 🚨 | conf=0.869 | dur=1.20s | cheat=True
+2026-05-01 22:23:30,731 | WARNING | 🚨 CHEAT #3 | Cheating 🚨 | conf=0.869 | dur=1.20s | file=detections\cheat_0003_22-23-30.wav
+2026-05-01 22:23:37,700 | WARNING | Stream status: input overflow
+2026-05-01 22:23:37,771 | INFO | Event#17 | Cheating 🚨 | conf=0.926 | dur=0.81s | cheat=False
+2026-05-01 22:23:42,295 | WARNING | Stream status: input overflow
+2026-05-01 22:23:42,363 | INFO | Event#18 | Cheating 🚨 | conf=0.866 | dur=0.54s | cheat=False
+2026-05-01 22:23:47,092 | WARNING | Stream status: input overflow
+2026-05-01 22:23:47,148 | INFO | Event#19 | Cheating 🚨 | conf=0.866 | dur=0.93s | cheat=False
+2026-05-01 22:23:51,233 | WARNING | Stream status: input overflow
+2026-05-01 22:23:51,277 | INFO | Event#20 | Cheating 🚨 | conf=0.866 | dur=0.81s | cheat=False
+2026-05-01 22:23:56,114 | WARNING | Stream status: input overflow
+2026-05-01 22:23:56,152 | INFO | Event#21 | Cheating 🚨 | conf=0.659 | dur=0.42s | cheat=False
+2026-05-01 22:24:00,722 | WARNING | Stream status: input overflow
+2026-05-01 22:24:00,777 | INFO | Event#22 | Cheating 🚨 | conf=0.862 | dur=0.69s | cheat=False
+2026-05-01 22:24:05,078 | WARNING | Stream status: input overflow
+2026-05-01 22:24:05,123 | INFO | Event#23 | Cheating 🚨 | conf=0.866 | dur=0.90s | cheat=False
+2026-05-01 22:24:10,475 | WARNING | Stream status: input overflow
+2026-05-01 22:24:10,523 | INFO | Event#24 | Cheating 🚨 | conf=0.722 | dur=0.63s | cheat=False
+2026-05-01 22:24:15,417 | WARNING | Stream status: input overflow
+2026-05-01 22:24:15,470 | INFO | Event#25 | Cheating 🚨 | conf=0.751 | dur=0.63s | cheat=False
+2026-05-01 22:24:19,676 | WARNING | Stream status: input overflow
+2026-05-01 22:24:19,720 | INFO | Event#26 | Cheating 🚨 | conf=0.790 | dur=1.11s | cheat=True
+2026-05-01 22:24:19,863 | WARNING | 🚨 CHEAT #4 | Cheating 🚨 | conf=0.790 | dur=1.11s | file=detections\cheat_0004_22-24-19.wav
+2026-05-01 22:24:29,962 | WARNING | Stream status: input overflow
+2026-05-01 22:24:30,020 | INFO | Event#28 | Cheating 🚨 | conf=0.632 | dur=0.96s | cheat=False
+2026-05-01 22:24:35,740 | WARNING | Stream status: input overflow
+2026-05-01 22:24:35,791 | INFO | Event#29 | Cheating 🚨 | conf=0.761 | dur=1.11s | cheat=False
+2026-05-01 22:24:40,801 | WARNING | Stream status: input overflow
+2026-05-01 22:24:40,855 | INFO | Event#30 | Cheating 🚨 | conf=0.909 | dur=0.54s | cheat=False
+2026-05-01 22:24:46,023 | WARNING | Stream status: input overflow
+2026-05-01 22:24:46,071 | INFO | Event#31 | Cheating 🚨 | conf=0.886 | dur=0.33s | cheat=False
+2026-05-01 22:24:50,682 | WARNING | Stream status: input overflow
+2026-05-01 22:24:50,728 | INFO | Event#32 | Cheating 🚨 | conf=0.659 | dur=1.23s | cheat=False
+2026-05-01 22:24:56,550 | WARNING | Stream status: input overflow
+2026-05-01 22:24:56,600 | INFO | Event#33 | Cheating 🚨 | conf=0.761 | dur=1.26s | cheat=False
+2026-05-01 22:25:01,731 | WARNING | Stream status: input overflow
+2026-05-01 22:25:01,788 | INFO | Event#34 | Cheating 🚨 | conf=0.766 | dur=0.84s | cheat=False
+2026-05-01 22:25:08,174 | WARNING | Stream status: input overflow
+2026-05-01 22:25:08,231 | INFO | Event#35 | Cheating 🚨 | conf=0.866 | dur=1.14s | cheat=True
+2026-05-01 22:25:08,369 | WARNING | 🚨 CHEAT #5 | Cheating 🚨 | conf=0.866 | dur=1.14s | file=detections\cheat_0005_22-25-08.wav
+2026-05-01 22:25:16,501 | WARNING | Stream status: input overflow
+2026-05-01 22:25:16,544 | INFO | Event#36 | Cheating 🚨 | conf=0.736 | dur=1.08s | cheat=False
+2026-05-01 22:25:21,856 | WARNING | Stream status: input overflow
+2026-05-01 22:25:21,900 | INFO | Event#37 | Cheating 🚨 | conf=0.859 | dur=1.08s | cheat=True
+2026-05-01 22:25:21,907 | WARNING | 🚨 CHEAT #6 | Cheating 🚨 | conf=0.859 | dur=1.08s | file=detections\cheat_0006_22-25-21.wav
+2026-05-01 22:25:32,942 | WARNING | Stream status: input overflow
+2026-05-01 22:25:32,983 | INFO | Event#38 | Cheating 🚨 | conf=0.883 | dur=0.42s | cheat=False
+2026-05-01 22:25:37,893 | WARNING | Stream status: input overflow
+2026-05-01 22:25:37,937 | INFO | Event#39 | Cheating 🚨 | conf=0.946 | dur=1.05s | cheat=True
+2026-05-01 22:25:38,083 | WARNING | 🚨 CHEAT #7 | Cheating 🚨 | conf=0.946 | dur=1.05s | file=detections\cheat_0007_22-25-37.wav
+2026-05-01 22:25:43,999 | WARNING | Stream status: input overflow
+2026-05-01 22:25:44,068 | INFO | Event#40 | Cheating 🚨 | conf=0.926 | dur=0.33s | cheat=False
+2026-05-01 22:25:47,715 | WARNING | Stream status: input overflow
+2026-05-01 22:25:47,767 | INFO | Event#41 | Cheating 🚨 | conf=0.879 | dur=0.36s | cheat=False
+2026-05-01 22:25:51,809 | WARNING | Stream status: input overflow
+2026-05-01 22:25:51,853 | INFO | Event#42 | Non-Cheating ✅ | conf=0.555 | dur=1.08s | cheat=False
+2026-05-01 22:26:18,390 | WARNING | Stream status: input overflow
+2026-05-01 22:26:18,444 | INFO | Event#43 | Cheating 🚨 | conf=0.548 | dur=0.78s | cheat=False
+2026-05-01 22:26:24,411 | WARNING | Stream status: input overflow
+2026-05-01 22:26:24,464 | INFO | Event#44 | Cheating 🚨 | conf=0.562 | dur=0.72s | cheat=False
+2026-05-01 22:26:34,572 | WARNING | Stream status: input overflow
+2026-05-01 22:26:34,627 | INFO | Event#45 | Cheating 🚨 | conf=0.942 | dur=0.30s | cheat=False
+2026-05-01 22:26:45,243 | WARNING | Stream status: input overflow
+2026-05-01 22:26:45,299 | INFO | Event#47 | Cheating 🚨 | conf=0.866 | dur=0.81s | cheat=False
+2026-05-01 22:27:00,063 | WARNING | Stream status: input overflow
+2026-05-01 22:27:00,117 | INFO | Event#50 | Cheating 🚨 | conf=0.743 | dur=0.81s | cheat=False
+2026-05-01 22:27:04,698 | WARNING | Stream status: input overflow
+2026-05-01 22:27:04,742 | INFO | Event#51 | Cheating 🚨 | conf=0.619 | dur=1.08s | cheat=False
+2026-05-01 22:27:11,642 | WARNING | Stream status: input overflow
+2026-05-01 22:27:11,684 | INFO | Event#52 | Cheating 🚨 | conf=0.703 | dur=0.78s | cheat=False
+2026-05-01 22:27:19,958 | WARNING | Stream status: input overflow
+2026-05-01 22:27:20,014 | INFO | Event#53 | Cheating 🚨 | conf=0.946 | dur=1.08s | cheat=True
+2026-05-01 22:27:20,158 | WARNING | 🚨 CHEAT #8 | Cheating 🚨 | conf=0.946 | dur=1.08s | file=detections\cheat_0008_22-27-20.wav
+2026-05-01 22:27:31,085 | WARNING | Stream status: input overflow
+2026-05-01 22:27:31,131 | INFO | Event#54 | Cheating 🚨 | conf=0.882 | dur=0.39s | cheat=False
+2026-05-01 22:27:36,373 | WARNING | Stream status: input overflow
+2026-05-01 22:27:36,427 | INFO | Event#55 | Cheating 🚨 | conf=0.869 | dur=0.90s | cheat=False
+2026-05-01 22:27:41,832 | WARNING | Stream status: input overflow
+2026-05-01 22:27:41,877 | INFO | Event#56 | Cheating 🚨 | conf=0.922 | dur=1.02s | cheat=True
+2026-05-01 22:27:42,043 | WARNING | 🚨 CHEAT #9 | Cheating 🚨 | conf=0.922 | dur=1.02s | file=detections\cheat_0009_22-27-41.wav
+2026-05-01 22:28:11,155 | WARNING | Stream status: input overflow
+2026-05-01 22:28:11,211 | INFO | Event#57 | Cheating 🚨 | conf=0.922 | dur=0.66s | cheat=False
+2026-05-01 22:28:22,992 | WARNING | Stream status: input overflow
+2026-05-01 22:28:23,040 | INFO | Event#58 | Cheating 🚨 | conf=0.943 | dur=0.96s | cheat=False
+2026-05-01 22:28:31,298 | WARNING | Stream status: input overflow
+2026-05-01 22:28:31,354 | INFO | Event#59 | Cheating 🚨 | conf=0.790 | dur=0.48s | cheat=False
+2026-05-01 22:28:54,319 | WARNING | Stream status: input overflow
+2026-05-01 22:28:54,371 | INFO | Event#60 | Cheating 🚨 | conf=0.866 | dur=0.96s | cheat=False
+2026-05-01 22:29:01,347 | WARNING | Stream status: input overflow
+2026-05-01 22:29:01,405 | INFO | Event#61 | Cheating 🚨 | conf=0.883 | dur=0.81s | cheat=False
+2026-05-01 22:29:29,622 | WARNING | Stream status: input overflow
+2026-05-01 22:29:29,681 | INFO | Event#62 | Cheating 🚨 | conf=0.809 | dur=0.84s | cheat=False
+2026-05-01 22:29:33,971 | WARNING | Stream status: input overflow
+2026-05-01 22:29:34,018 | INFO | Event#63 | Cheating 🚨 | conf=0.879 | dur=0.60s | cheat=False
+2026-05-01 22:29:40,470 | WARNING | Stream status: input overflow
+2026-05-01 22:29:40,514 | INFO | Event#64 | Cheating 🚨 | conf=0.906 | dur=0.63s | cheat=False
+2026-05-01 22:29:44,869 | WARNING | Stream status: input overflow
+2026-05-01 22:29:44,929 | INFO | Event#65 | Cheating 🚨 | conf=0.772 | dur=0.90s | cheat=False
+2026-05-01 22:29:50,734 | INFO | Event#66 | Cheating 🚨 | conf=0.762 | dur=0.93s | cheat=False
+2026-05-01 22:29:50,809 | WARNING | Stream status: input overflow
+2026-05-01 22:29:56,728 | WARNING | Stream status: input overflow
+2026-05-01 22:29:56,786 | INFO | Event#67 | Cheating 🚨 | conf=0.749 | dur=1.14s | cheat=False
+2026-05-01 22:30:03,363 | WARNING | Stream status: input overflow
+2026-05-01 22:30:03,417 | INFO | Event#68 | Cheating 🚨 | conf=0.757 | dur=0.87s | cheat=False
+2026-05-01 22:30:07,900 | WARNING | Stream status: input overflow
+2026-05-01 22:30:07,955 | INFO | Event#69 | Cheating 🚨 | conf=0.939 | dur=0.48s | cheat=False
+2026-05-01 22:30:12,388 | WARNING | Stream status: input overflow
+2026-05-01 22:30:12,444 | INFO | Event#70 | Cheating 🚨 | conf=0.664 | dur=1.35s | cheat=False
+2026-05-01 22:30:23,651 | WARNING | Stream status: input overflow
+2026-05-01 22:30:23,713 | INFO | Event#71 | Cheating 🚨 | conf=0.722 | dur=1.35s | cheat=False
+2026-05-01 22:30:28,607 | WARNING | Stream status: input overflow
+2026-05-01 22:30:28,665 | INFO | Event#72 | Cheating 🚨 | conf=0.744 | dur=1.23s | cheat=False
+2026-05-01 22:30:36,509 | WARNING | Stream status: input overflow
+2026-05-01 22:30:36,573 | INFO | Event#73 | Cheating 🚨 | conf=0.759 | dur=1.47s | cheat=False
+2026-05-01 22:30:41,783 | WARNING | Stream status: input overflow
+2026-05-01 22:30:41,849 | INFO | Event#74 | Cheating 🚨 | conf=0.930 | dur=0.48s | cheat=False
+2026-05-01 22:30:53,115 | WARNING | Stream status: input overflow
+2026-05-01 22:30:53,187 | INFO | Event#75 | Cheating 🚨 | conf=0.909 | dur=1.08s | cheat=True
+2026-05-01 22:30:53,194 | WARNING | 🚨 CHEAT #10 | Cheating 🚨 | conf=0.909 | dur=1.08s | file=detections\cheat_0010_22-30-53.wav
+2026-05-01 22:31:06,456 | WARNING | Stream status: input overflow
+2026-05-01 22:31:06,522 | INFO | Event#76 | Cheating 🚨 | conf=0.763 | dur=1.44s | cheat=False
+2026-05-01 22:31:12,780 | WARNING | Stream status: input overflow
+2026-05-01 22:31:12,835 | INFO | Event#77 | Cheating 🚨 | conf=0.779 | dur=1.20s | cheat=False
+2026-05-01 22:31:17,774 | WARNING | Stream status: input overflow
+2026-05-01 22:31:17,839 | INFO | Event#78 | Cheating 🚨 | conf=0.719 | dur=1.08s | cheat=False
+2026-05-01 22:31:22,015 | WARNING | Stream status: input overflow
+2026-05-01 22:31:22,073 | INFO | Event#79 | Cheating 🚨 | conf=0.725 | dur=1.20s | cheat=False
+2026-05-01 22:31:26,148 | WARNING | Stream status: input overflow
+2026-05-01 22:31:26,193 | INFO | Event#80 | Cheating 🚨 | conf=0.887 | dur=0.93s | cheat=False
+2026-05-01 22:31:30,446 | WARNING | Stream status: input overflow
+2026-05-01 22:31:30,505 | INFO | Event#81 | Cheating 🚨 | conf=0.675 | dur=1.29s | cheat=False
+2026-05-01 22:31:35,350 | WARNING | Stream status: input overflow
+2026-05-01 22:31:35,406 | INFO | Event#82 | Cheating 🚨 | conf=0.729 | dur=1.35s | cheat=False
+2026-05-01 22:31:40,080 | WARNING | Stream status: input overflow
+2026-05-01 22:31:40,140 | INFO | Event#83 | Cheating 🚨 | conf=0.705 | dur=1.38s | cheat=False
+2026-05-01 22:31:59,390 | WARNING | Stream status: input overflow
+2026-05-01 22:31:59,450 | INFO | Event#84 | Cheating 🚨 | conf=0.777 | dur=0.93s | cheat=False
+2026-05-01 22:32:03,855 | WARNING | Stream status: input overflow
+2026-05-01 22:32:03,908 | INFO | Event#85 | Cheating 🚨 | conf=0.935 | dur=0.72s | cheat=False
+2026-05-01 22:32:08,399 | WARNING | Stream status: input overflow
+2026-05-01 22:32:08,454 | INFO | Event#86 | Cheating 🚨 | conf=0.867 | dur=0.81s | cheat=False
+2026-05-01 22:32:39,849 | WARNING | Stream status: input overflow
+2026-05-01 22:32:39,899 | INFO | Event#87 | Cheating 🚨 | conf=0.597 | dur=0.93s | cheat=False
+2026-05-01 22:32:43,938 | WARNING | Stream status: input overflow
+2026-05-01 22:32:43,976 | INFO | Event#88 | Cheating 🚨 | conf=0.750 | dur=1.14s | cheat=False
+2026-05-01 22:33:01,650 | WARNING | Stream status: input overflow
+2026-05-01 22:33:01,682 | INFO | Event#90 | Cheating 🚨 | conf=0.876 | dur=0.90s | cheat=False
+2026-05-01 22:33:11,718 | WARNING | Stream status: input overflow
+2026-05-01 22:33:11,759 | INFO | Event#91 | Cheating 🚨 | conf=0.756 | dur=1.32s | cheat=False
+2026-05-01 22:33:15,216 | WARNING | Stream status: input overflow
+2026-05-01 22:33:15,258 | INFO | Event#92 | Cheating 🚨 | conf=0.773 | dur=0.66s | cheat=False
+2026-05-01 22:33:18,651 | WARNING | Stream status: input overflow
+2026-05-01 22:33:18,682 | INFO | Event#93 | Cheating 🚨 | conf=0.796 | dur=0.54s | cheat=False
+2026-05-01 22:33:21,629 | WARNING | Stream status: input overflow
+2026-05-01 22:33:21,665 | INFO | Event#94 | Cheating 🚨 | conf=0.599 | dur=0.57s | cheat=False
+2026-05-01 22:33:24,931 | WARNING | Stream status: input overflow
+2026-05-01 22:33:24,975 | INFO | Event#95 | Cheating 🚨 | conf=0.594 | dur=0.63s | cheat=False
+2026-05-01 22:33:27,989 | WARNING | Stream status: input overflow
+2026-05-01 22:33:28,027 | INFO | Event#96 | Cheating 🚨 | conf=0.618 | dur=0.63s | cheat=False
+2026-05-01 22:33:31,231 | WARNING | Stream status: input overflow
+2026-05-01 22:33:31,274 | INFO | Event#97 | Cheating 🚨 | conf=0.578 | dur=0.75s | cheat=False
+2026-05-01 22:33:34,953 | WARNING | Stream status: input overflow
+2026-05-01 22:33:34,995 | INFO | Event#98 | Cheating 🚨 | conf=0.693 | dur=0.57s | cheat=False
+2026-05-01 22:34:09,868 | WARNING | Stream status: input overflow
+2026-05-01 22:34:09,908 | INFO | Event#100 | Cheating 🚨 | conf=0.859 | dur=1.38s | cheat=True
+2026-05-01 22:34:09,914 | WARNING | 🚨 CHEAT #11 | Cheating 🚨 | conf=0.859 | dur=1.38s | file=detections\cheat_0011_22-34-09.wav

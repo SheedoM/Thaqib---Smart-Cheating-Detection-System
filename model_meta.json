@@ -1,0 +1,11 @@
+{
+  "model_name": "RandomForest",
+  "f1_score": 1.0,
+  "feature_count": 39,
+  "n_mfcc": 13,
+  "trained_at": "2026-05-01T22:41:53.424198",
+  "samples": {
+    "cheating": 70,
+    "non_cheating": 21
+  }
+}
