@@ -1,5 +1,5 @@
+import { useState, useEffect } from 'react';
 import { apiUrl, authFetch } from '../config/api';
-
 function formatUptime(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const m = Math.floor(seconds / 60);
@@ -74,7 +74,7 @@ export default function CameraModal({ mode, alert, camera, stats, pttStatusText,
         </button>
 
         {mode === 'camera' ? (
-          <CameraView camera={camera} stats={stats} />
+          <CameraView camera={camera} stats={stats} onClose={onClose} />
         ) : (
           <AlertView alert={alert} pttStatusText={pttStatusText} onPttStart={onPttStart} onPttStop={onPttStop} />
         )}
@@ -89,12 +89,47 @@ export default function CameraModal({ mode, alert, camera, stats, pttStatusText,
 function CameraView({
   camera,
   stats,
+  onClose,
 }: {
   camera: CameraModalProps['camera'];
   stats: CameraStats | null;
+  onClose: () => void;
 }) {
+  const [showControlPanel, setShowControlPanel] = useState(true);
+
+  useEffect(() => {
+    if (!camera) return;
+
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      const key = e.key.toUpperCase();
+      const validKeys = ["S", "M", "C", "T", "R", "D", "F", "L", "V", "G", "W", "P", "Q"];
+      
+      if (validKeys.includes(key)) {
+        if (key === "P") {
+          setShowControlPanel(prev => !prev);
+        } else if (key === "Q") {
+          onClose();
+        } else {
+          // Send command to backend
+          try {
+            await authFetch(`/api/stream/camera/${camera.id}/command`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ command: key })
+            });
+          } catch (err) {
+            console.error("Failed to send command", err);
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [camera, onClose]);
+
   return (
-    <div className="modal-content" dir="rtl">
+    <div className="modal-content" dir="rtl" style={{ position: 'relative' }}>
       {/* Header */}
       <div className="modal-header">
         <h2>{camera?.name || 'الكاميرا'}</h2>
@@ -105,7 +140,7 @@ function CameraView({
       </div>
 
       {/* Video feed */}
-      <div className="modal-video-wrapper">
+      <div className="modal-video-wrapper" style={{ position: 'relative' }}>
         {/* Location tooltip */}
         <div className="modal-location-tooltip">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -128,6 +163,26 @@ function CameraView({
               <circle cx="12" cy="13" r="4"/>
             </svg>
             <p>الكاميرا غير متصلة</p>
+          </div>
+        )}
+
+        {/* Control Panel Overlay */}
+        {showControlPanel && (
+          <div className="modal-control-panel">
+            <h4>اختصارات لوحة المفاتيح</h4>
+            <div className="shortcut-row"><kbd>S</kbd> <span>مراقبة جميع الطلاب</span></div>
+            <div className="shortcut-row"><kbd>M</kbd> <span>إلغاء المراقبة (عند النقر)</span></div>
+            <div className="shortcut-row"><kbd>C</kbd> <span>مسح جميع الاختيارات</span></div>
+            <div className="shortcut-row"><kbd>T</kbd> <span>الشبكة المجاورة</span></div>
+            <div className="shortcut-row"><kbd>R</kbd> <span>وضع التسجيل (RAW/ANN)</span></div>
+            <div className="shortcut-row"><kbd>D</kbd> <span>مربعات الورق</span></div>
+            <div className="shortcut-row"><kbd>F</kbd> <span>مربعات الهاتف</span></div>
+            <div className="shortcut-row"><kbd>L</kbd> <span>خطوط الربط</span></div>
+            <div className="shortcut-row"><kbd>V</kbd> <span>دورة جودة الفيديو</span></div>
+            <div className="shortcut-row"><kbd>G</kbd> <span>دورة دقة المعالجة</span></div>
+            <div className="shortcut-row"><kbd>W</kbd> <span>إظهار/إخفاء الوقت</span></div>
+            <div className="shortcut-row"><kbd>P</kbd> <span>إخفاء اللوحة</span></div>
+            <div className="shortcut-row"><kbd>Q</kbd> <span>إغلاق</span></div>
           </div>
         )}
       </div>
