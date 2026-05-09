@@ -1300,16 +1300,13 @@ class VideoPipeline:
             
             prefix = "phone_alert" if cheat_type == "phone" else "gaze_alert"
             
-<<<<<<< HEAD
             # Codec fallback chain — prefer browser-friendly formats first:
-            #   1. mp4v + .mp4  (most likely to play in browser <video>)
-            #   2. XVID + .avi  (universally available, no external DLLs)
-            #   3. MJPG + .avi  (always works, larger files)
-            codec_options = [
-=======
+            #   1. avc1 + .mp4  (H.264, best browser compatibility if supported)
+            #   2. mp4v + .mp4  (fallback mp4 format)
+            #   3. XVID + .avi  (universally available, no external DLLs)
+            #   4. MJPG + .avi  (always works, larger files)
             codec_options = [
                 ('avc1', '.mp4'),
->>>>>>> origin/feature/video-detection
                 ('mp4v', '.mp4'),
                 ('XVID', '.avi'),
                 ('MJPG', '.avi'),
