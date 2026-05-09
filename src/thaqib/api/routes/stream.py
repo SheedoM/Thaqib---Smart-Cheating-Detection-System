@@ -81,6 +81,14 @@ class CameraRuntime:
     frame_lock: threading.Lock = field(default_factory=threading.Lock)
     latest_frame: bytes | None = None
     stats: dict[str, Any] = field(default_factory=dict)
+    pipeline: Any = None
+
+    # Visualizer display flags
+    show_neighbors: bool = True
+    show_paper: bool = True
+    show_phone: bool = True
+    show_links: bool = True
+    show_timestamp: bool = True
 
     def __post_init__(self) -> None:
         self.stats = {
@@ -274,7 +282,7 @@ def _load_active_camera_rows(db: Session) -> list[tuple[Hall, Device]]:
     return active_pairs
 
 
-def _draw_annotations(frame: np.ndarray, pipeline_frame: Any, scale: float = 1.0) -> np.ndarray:
+def _draw_annotations(frame: np.ndarray, pipeline_frame: Any, camera: CameraRuntime, scale: float = 1.0) -> np.ndarray:
     annotated = frame.copy()
 
     def s(val: Any) -> int:
@@ -342,8 +350,7 @@ def _draw_annotations(frame: np.ndarray, pipeline_frame: Any, scale: float = 1.0
                     1,
                 )
 
-        spatial_context = getattr(state, "spatial_context", None)
-        if spatial_context is not None:
+        if camera.show_neighbors and spatial_context is not None:
             for risk in getattr(spatial_context, "risk_angles", []) or []:
                 cx, cy = state.center
                 angle_rad = np.radians(risk.center_angle)
@@ -352,12 +359,31 @@ def _draw_annotations(frame: np.ndarray, pipeline_frame: Any, scale: float = 1.0
                 end_y = int(s(cy) + radius * np.sin(angle_rad))
                 cv2.line(annotated, (s(cx), s(cy)), (end_x, end_y), (0, 165, 255), 1)
 
+    if pipeline_frame.tools_result is not None:
+        if camera.show_paper:
+            for paper in pipeline_frame.tools_result.paper_detections:
+                x1, y1, x2, y2 = paper.bbox
+                cv2.rectangle(annotated, (s(x1), s(y1)), (s(x2), s(y2)), (255, 255, 0), 1)
+        if camera.show_phone:
+            for phone in pipeline_frame.tools_result.phone_detections:
+                x1, y1, x2, y2 = phone.bbox
+                cv2.rectangle(annotated, (s(x1), s(y1)), (s(x2), s(y2)), (0, 0, 255), 2)
+                cv2.putText(annotated, "PHONE", (s(x1), s(y1)-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+    if camera.show_links:
+        for state in pipeline_frame.student_states:
+            for paper_pt in getattr(state, "surrounding_papers", []):
+                cv2.line(annotated, (s(state.center[0]), s(state.center[1])), (s(paper_pt[0]), s(paper_pt[1])), (255, 255, 0), 1)
+
     info_lines = [
         f"FPS: {1000 / max(pipeline_frame.processing_time_ms, 1):.1f}",
         f"Tracked: {pipeline_frame.tracked_count}",
         f"Selected: {pipeline_frame.selected_count}",
         f"Frame: {pipeline_frame.frame_index}",
     ]
+    if camera.show_timestamp:
+        info_lines.append(f"Time: {datetime.now().strftime('%H:%M:%S')}")
+        
     for i, line in enumerate(info_lines):
         cv2.putText(
             annotated,
@@ -454,6 +480,7 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             logger.error("Camera %s failed to open source: %s", camera.identifier, camera.source)
             return
 
+        camera.pipeline = pipeline
         camera.stats["is_running"] = True
         camera.stats["last_error"] = None
         camera.stats["last_error_at"] = None
@@ -492,7 +519,7 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             else:
                 display_frame = original_frame
 
-            annotated = _draw_annotations(display_frame, frame_data, scale=scale)
+            annotated = _draw_annotations(display_frame, frame_data, camera, scale=scale)
             now = time.time()
             if now - last_emit < min_interval:
                 camera.stats["frame_drops"] = camera.stats.get("frame_drops", 0) + 1
@@ -612,6 +639,52 @@ def _force_restart_all_cameras() -> None:
         _stop_camera_runtime(runtime)
     _refresh_camera_states()
 
+
+from pydantic import BaseModel
+
+class StreamCommand(BaseModel):
+    command: str
+    track_id: int | None = None
+
+@router.post("/camera/{device_id}/command")
+def post_camera_command(device_id: str, cmd: StreamCommand, db: Session = Depends(SessionLocal)):
+    camera = _camera_states.get(device_id)
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not running")
+        
+    key = cmd.command.upper()
+    pipeline = camera.pipeline
+    
+    # Display toggles (handled by CameraRuntime flags)
+    if key == "T":
+        camera.show_neighbors = not camera.show_neighbors
+    elif key == "D":
+        camera.show_paper = not camera.show_paper
+    elif key == "F":
+        camera.show_phone = not camera.show_phone
+    elif key == "L":
+        camera.show_links = not camera.show_links
+    elif key == "W":
+        camera.show_timestamp = not camera.show_timestamp
+        
+    # Pipeline actions
+    elif pipeline:
+        if key == "S":
+            all_ids = [t.track_id for t in pipeline.get_all_tracks()]
+            if all_ids:
+                pipeline.select_students(all_ids)
+        elif key == "M" and cmd.track_id is not None:
+            pipeline.remove_student(cmd.track_id)
+        elif key == "C":
+            pipeline.clear_selection()
+        elif key == "V":
+            pipeline.toggle_video_quality()
+        elif key == "G":
+            pipeline.toggle_processing_resolution()
+        elif key == "R":
+            pipeline.toggle_archive_mode()
+            
+    return {"status": "ok", "command": key}
 
 @router.post("/reload")
 async def reload_monitoring(_=Depends(require_stream_user)) -> JSONResponse:
