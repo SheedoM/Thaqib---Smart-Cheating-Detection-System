@@ -36,3 +36,8 @@ class UserResponse(UserBase):
     ptt_id: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+class SessionResponse(BaseModel):
+    token_type: str = "cookie"
+    csrf_token: str
+    user: UserResponse

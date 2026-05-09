@@ -1,4 +1,4 @@
-import { apiUrl } from '../config/api';
+import { apiUrl, authFetch } from '../config/api';
 
 function formatUptime(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -164,20 +164,6 @@ function CameraView({
         </div>
       </div>
 
-      {/* Controls cheat sheet (from demo_video.py) */}
-      <div className="modal-controls">
-        <div className="modal-controls-header">اختصارات التحكم</div>
-        <div className="modal-controls-grid">
-          <div className="modal-control-item"><span className="keycap">q</span><span>إنهاء</span></div>
-          <div className="modal-control-item"><span className="keycap">s</span><span>تحديد كل الطلاب الظاهرين للمراقبة</span></div>
-          <div className="modal-control-item"><span className="keycap">c</span><span>مسح التحديد</span></div>
-          <div className="modal-control-item"><span className="keycap">t</span><span>إظهار/إخفاء خطوط الجيران</span></div>
-          <div className="modal-control-item"><span className="keycap">p</span><span>إظهار/إخفاء لوحة التحكم</span></div>
-        </div>
-        <div style={{ marginTop: '10px', color: '#6b7280', fontSize: '12px', fontWeight: 600 }}>
-          ملاحظة: هذه الاختصارات تعمل في وضع العرض التجريبي (OpenCV). في لوحة التحكم الحالية سيتم إضافة أزرار تحكم مكافئة لاحقًا.
-        </div>
-      </div>
     </div>
   );
 }
@@ -202,7 +188,7 @@ function AlertView({
 
   const downloadReport = async () => {
     try {
-      const res = await fetch(apiUrl(`/api/stream/alerts/report/${alert.id}.pdf`));
+      const res = await authFetch(`/api/stream/alerts/report/${alert.id}.pdf`);
       if (!res.ok) return;
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);

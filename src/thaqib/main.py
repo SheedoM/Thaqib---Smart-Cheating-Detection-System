@@ -2,21 +2,27 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from src.thaqib.core.limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from src.thaqib.api.routes import ptt, auth, institutions, halls, setup, devices, users, exams, events, stream
+from src.thaqib.config.settings import get_settings
+
+settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    stream.startup_stream_manager()
+    if settings.stream_manager_enabled:
+        stream.startup_stream_manager()
     try:
         yield
     finally:
-        stream.shutdown_stream_manager()
+        if settings.stream_manager_enabled:
+            stream.shutdown_stream_manager()
 
 
 # Initialize FastAPI App
@@ -42,17 +48,34 @@ async def add_security_headers(request, call_next):
     response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'; object-src 'none';"
     return response
 
-# Apply CORS Middleware for Frontend Access
-# In production, this list should be strictly controlled via environment variables
-allowed_origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-]
+
+@app.middleware("http")
+async def enforce_csrf_for_cookie_sessions(request, call_next):
+    unsafe_method = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+    csrf_exempt = (
+        request.url.path in {"/api/auth/login", "/api/setup/install"}
+        or request.url.path.startswith("/api/events")
+    )
+
+    if unsafe_method and not csrf_exempt:
+        has_session_cookie = (
+            settings.access_cookie_name in request.cookies
+            or settings.refresh_cookie_name in request.cookies
+        )
+        if has_session_cookie:
+            csrf_cookie = request.cookies.get(settings.csrf_cookie_name)
+            csrf_header = request.headers.get("X-CSRF-Token")
+            if not csrf_cookie or csrf_header != csrf_cookie:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "CSRF token missing or invalid"},
+                )
+
+    return await call_next(request)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],

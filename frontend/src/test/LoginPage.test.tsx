@@ -39,14 +39,14 @@ describe('LoginPage Component', () => {
     });
   });
 
-  it('shows success alert on valid login', async () => {
-    const alertMock = vi.spyOn(window, 'alert').mockImplementation(() => {});
+  it('calls success callback on valid cookie session login', async () => {
+    const onLoginSuccess = vi.fn();
     (fetch as any).mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ access_token: 'fake-token' }),
+      json: async () => ({ token_type: 'cookie', csrf_token: 'csrf-token' }),
     });
 
-    render(<LoginPage />);
+    render(<LoginPage onLoginSuccess={onLoginSuccess} />);
     
     fireEvent.change(screen.getByPlaceholderText(/بريد الكتروني أو اسم المستخدم/i), {
       target: { value: 'admin' },
@@ -58,7 +58,11 @@ describe('LoginPage Component', () => {
     fireEvent.click(screen.getByRole('button', { name: /تسجيل الدخول/i }));
 
     await waitFor(() => {
-      expect(alertMock).toHaveBeenCalledWith(expect.stringContaining('تم تسجيل الدخول بنجاح'));
+      expect(onLoginSuccess).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/auth/login'),
+        expect.objectContaining({ credentials: 'include' }),
+      );
     });
   });
 });

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Loader2 } from 'lucide-react';
-import { apiUrl } from './config/api';
+import { authFetch } from './config/api';
 import SetupWizard from './components/SetupWizard';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
@@ -13,15 +13,18 @@ export default function App() {
 
   useEffect(() => {
     const checkStatus = async () => {
-      // If we already have a token, go straight to dashboard
-      const token = localStorage.getItem('thaqib_access_token');
-      if (token) {
+      try {
+        const sessionResponse = await authFetch('/api/auth/me');
+        if (sessionResponse.ok) {
         setView('dashboard');
         return;
       }
+      } catch (err) {
+        console.debug('No active session found during startup.', err);
+      }
 
       try {
-        const response = await fetch(apiUrl('/api/setup/status'));
+        const response = await authFetch('/api/setup/status');
         if (response.ok) {
           const data = await response.json();
           setView(data.is_installed ? 'login' : 'setup');
@@ -43,9 +46,12 @@ export default function App() {
     setView('dashboard');
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('thaqib_access_token');
-    localStorage.removeItem('thaqib_refresh_token');
+  const handleLogout = async () => {
+    try {
+      await authFetch('/api/auth/logout', { method: 'POST' });
+    } catch (err) {
+      console.error('Logout failed:', err);
+    }
     setView('login');
   };
 

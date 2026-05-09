@@ -8,6 +8,29 @@ export function apiUrl(path: string): string {
   return `${API_ORIGIN}${p}`;
 }
 
+function readCookie(name: string): string | null {
+  const value = document.cookie
+    .split('; ')
+    .find((entry) => entry.startsWith(`${name}=`));
+  return value ? decodeURIComponent(value.split('=').slice(1).join('=')) : null;
+}
+
+export async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const method = (init.method ?? 'GET').toUpperCase();
+  const headers = new Headers(init.headers);
+
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && !headers.has('X-CSRF-Token')) {
+    const csrfToken = readCookie('thaqib_csrf_token');
+    if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
+  }
+
+  return fetch(apiUrl(path), {
+    ...init,
+    credentials: 'include',
+    headers,
+  });
+}
+
 /** WebSocket origin for PTT (FastAPI on :8000 in dev). */
 export function wsOrigin(): string {
   const o = import.meta.env.VITE_WS_ORIGIN;

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from typing import List, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
@@ -30,8 +31,9 @@ def create_hall(
         raise HTTPException(status_code=404, detail="Institution not found")
         
     db_obj = db.query(Hall).filter(
-        Hall.name == hall.name, 
-        Hall.institution_id == hall.institution_id
+        Hall.name == hall.name,
+        Hall.institution_id == hall.institution_id,
+        Hall.deleted_at.is_(None)
     ).first()
     
     if db_obj:
@@ -47,6 +49,7 @@ def create_hall(
         floor=hall.floor,
         capacity=hall.capacity,
         layout_map=hall.layout_map,
+        image=hall.image,
         status=hall.status
     )
     db.add(new_hall)
@@ -65,10 +68,10 @@ def read_halls(
     """
     Retrieve halls. Can be filtered by institution. Admin only.
     """
-    query = db.query(Hall)
+    query = db.query(Hall).filter(Hall.deleted_at.is_(None))
     if institution_id:
         query = query.filter(Hall.institution_id == institution_id)
-        
+
     halls = query.offset(skip).limit(limit).all()
     return halls
 
@@ -81,7 +84,7 @@ def read_hall(
     """
     Get hall by ID. Admin only.
     """
-    hall = db.query(Hall).filter(Hall.id == hall_id).first()
+    hall = db.query(Hall).filter(Hall.id == hall_id, Hall.deleted_at.is_(None)).first()
     if not hall:
         raise HTTPException(status_code=404, detail="Hall not found")
     return hall
@@ -98,14 +101,29 @@ def update_hall(
     """
     Update a hall. Admin only.
     """
-    hall = db.query(Hall).filter(Hall.id == hall_id).first()
+    hall = db.query(Hall).filter(Hall.id == hall_id, Hall.deleted_at.is_(None)).first()
     if not hall:
         raise HTTPException(status_code=404, detail="Hall not found")
-        
+
     update_data = hall_in.model_dump(exclude_unset=True)
+
+    # Guard duplicate name within same institution
+    if "name" in update_data:
+        dup = db.query(Hall).filter(
+            Hall.name == update_data["name"],
+            Hall.institution_id == hall.institution_id,
+            Hall.id != hall_id,
+            Hall.deleted_at.is_(None)
+        ).first()
+        if dup:
+            raise HTTPException(
+                status_code=400,
+                detail="A hall with this name already exists in the institution.",
+            )
+
     for field, value in update_data.items():
         setattr(hall, field, value)
-        
+
     db.add(hall)
     db.commit()
     db.refresh(hall)
@@ -122,10 +140,17 @@ def delete_hall(
     """
     Delete a hall. Admin only.
     """
-    hall = db.query(Hall).filter(Hall.id == hall_id).first()
+    hall = db.query(Hall).filter(Hall.id == hall_id, Hall.deleted_at.is_(None)).first()
     if not hall:
         raise HTTPException(status_code=404, detail="Hall not found")
-        
-    db.delete(hall)
+
+    # Soft delete the hall and cascade to its devices
+    now = datetime.now(timezone.utc)
+    hall.deleted_at = now
+    for device in hall.devices:
+        device.deleted_at = now
+
+    db.add(hall)
     db.commit()
+    db.refresh(hall)
     return hall

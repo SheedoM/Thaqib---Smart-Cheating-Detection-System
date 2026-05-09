@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
-import { apiUrl } from '../config/api';
+import { authFetch } from '../config/api';
 
 interface DeviceItem {
   name: string;
   type: string;
   status: string;
+  id?: string;
+  tempId?: string;
+  identifier?: string;
   ip_address?: string;
-  rtsp_url?: string;
+  stream_url?: string;
   active?: boolean;
 }
 
@@ -16,13 +19,13 @@ interface HallItem {
   capacity?: number;
   image?: string;
   status: string;
+  building?: string;
+  floor?: string;
   cameras: DeviceItem[];
   mics: DeviceItem[];
 }
 
-interface HallsTabProps {
-  // We can pass token or rely on localStorage inside requests
-}
+interface HallsTabProps {}
 
 export default function HallsTab({}: HallsTabProps) {
   const [halls, setHalls] = useState<HallItem[]>([]);
@@ -31,13 +34,7 @@ export default function HallsTab({}: HallsTabProps) {
 
   const fetchHalls = async () => {
     try {
-      const token = localStorage.getItem('thaqib_access_token');
-      // We will use the monitoring endpoint to get halls with cameras and mics
-      const res = await fetch(apiUrl('/api/stream/monitoring'), {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      const res = await authFetch('/api/stream/monitoring');
       if (res.ok) {
         const data = await res.json();
         setHalls(data.halls || []);
@@ -50,14 +47,17 @@ export default function HallsTab({}: HallsTabProps) {
   const handleDeleteHall = async (id: string) => {
     if (confirm("هل أنت متأكد من حذف هذه القاعة؟")) {
       try {
-        const token = localStorage.getItem('thaqib_access_token');
-        await fetch(apiUrl(`/api/halls/${id}`), {
+        const res = await authFetch(`/api/halls/${id}`, {
           method: 'DELETE',
-          headers: { 'Authorization': `Bearer ${token}` }
         });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || 'Failed to delete hall');
+        }
         fetchHalls();
-      } catch (err) {
+      } catch (err: any) {
         console.error('Failed to delete hall', err);
+        alert(err.message || 'حدث خطأ أثناء حذف القاعة');
       }
     }
   };
@@ -174,18 +174,27 @@ export default function HallsTab({}: HallsTabProps) {
 function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSuccess: () => void, hall?: HallItem }) {
   const [name, setName] = useState(hall?.name || '');
   const [capacity, setCapacity] = useState(hall?.capacity?.toString() || '30');
-  const [image, setImage] = useState<string>(hall ? (hall.image || '/c4b54a3086bba70544daebd23a684e9ed5ddbe56.jpg') : '');
-  const [cameras, setCameras] = useState<any[]>(hall?.cameras || []);
-  const [mics, setMics] = useState<any[]>(hall?.mics || []);
+  const [image, setImage] = useState<string>(hall?.image || '');
+  const [building, setBuilding] = useState(hall?.building || '');
+  const [floor, setFloor] = useState(hall?.floor || '');
+  const [cameras, setCameras] = useState<DeviceItem[]>(hall?.cameras || []);
+  const [mics, setMics] = useState<DeviceItem[]>(hall?.mics || []);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const makeTempId = () => {
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+      return crypto.randomUUID();
+    }
+    return Date.now().toString(36) + Math.random().toString(36).slice(2);
+  };
+
   const handleAddCamera = () => {
-    setCameras([...cameras, { name: '', identifier: '', ip_address: '', stream_url: '', type: 'camera' }]);
+    setCameras(prev => [...prev, { name: '', identifier: '', ip_address: '', stream_url: '', type: 'camera', status: 'offline', tempId: makeTempId() }]);
   };
 
   const handleAddMic = () => {
-    setMics([...mics, { name: '', identifier: '', ip_address: '', type: 'microphone' }]);
+    setMics(prev => [...prev, { name: '', identifier: '', ip_address: '', type: 'microphone', status: 'offline', tempId: makeTempId() }]);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -194,14 +203,23 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
     setErrorMsg(null);
 
     try {
-      const token = localStorage.getItem('thaqib_access_token');
+      // Pre-validate new devices before touching the DB
+      const allDevices = [...cameras, ...mics];
+      const newDevices = allDevices.filter(d => !d.id);
+      for (const dev of newDevices) {
+        if (!dev.name.trim()) {
+          throw new Error('يجب إدخال اسم لكل جهاز جديد');
+        }
+        if (dev.type === 'camera' && !dev.stream_url?.trim()) {
+          throw new Error('يجب إضافة رابط بث لكل كاميرا');
+        }
+      }
+
       const headers = {
-        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
       };
 
-      // 1. Get User/Institution (use debug endpoint to avoid server-side serialization issues)
-      const userRes = await fetch(apiUrl('/api/auth/me-debug'), { headers });
+      const userRes = await authFetch('/api/auth/me');
       if (!userRes.ok) throw new Error('Failed to get user context');
       const user = await userRes.json();
       const institution_id = user.institution_id;
@@ -212,17 +230,19 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
 
       let targetHallId = hall?.id;
 
-      // 2. Create or Update Hall
+      // Create or Update Hall
       if (!targetHallId) {
-        const hallRes = await fetch(apiUrl('/api/halls/'), {
+        const hallRes = await authFetch('/api/halls/', {
           method: 'POST',
           headers,
           body: JSON.stringify({
             institution_id,
             name,
             capacity: parseInt(capacity),
-            image,
-            status: 'active'
+            building: building || null,
+            floor: floor || null,
+            image: image || null,
+            status: 'not_ready'
           })
         });
 
@@ -233,42 +253,39 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
         const createdHall = await hallRes.json();
         targetHallId = createdHall.id;
       } else {
-        // Update hall (assuming PUT /api/halls/{id})
-        const hallRes = await fetch(apiUrl(`/api/halls/${targetHallId}`), {
+        const hallRes = await authFetch(`/api/halls/${targetHallId}`, {
           method: 'PUT',
           headers,
           body: JSON.stringify({
             name,
             capacity: parseInt(capacity),
-            image
+            building: building || null,
+            floor: floor || null,
+            image: image || null
           })
         });
         if (!hallRes.ok) throw new Error('Failed to update hall');
       }
 
-      // 3. For editing, we might need to delete existing devices or just add new ones.
-      // For simplicity in this iteration, if we are creating, we POST new devices.
-      // If editing, we create devices that don't have an ID yet.
-      // In a real app we'd sync devices, but here we'll just add the new ones.
-      
-      const allDevices = [...cameras, ...mics];
-      const newDevices = allDevices.filter(d => !d.id);
-
+      // Create new devices
       for (const dev of newDevices) {
-        if (!dev.name) continue;
-        await fetch(apiUrl('/api/devices/'), {
+        const res = await authFetch('/api/devices/', {
           method: 'POST',
           headers,
           body: JSON.stringify({
             hall_id: targetHallId,
-            name: dev.name,
-            identifier: dev.identifier || dev.name.replace(/\s+/g, '-').toLowerCase(),
+            identifier: dev.identifier?.trim() || dev.name.trim().replace(/\s+/g, '-').toLowerCase(),
             type: dev.type,
-            ip_address: dev.ip_address || null,
-            stream_url: dev.stream_url || null,
-            status: 'active'
+            ip_address: dev.ip_address?.trim() || null,
+            stream_url: dev.type === 'camera' ? (dev.stream_url?.trim() || null) : null,
+            position: { label: dev.name.trim() },
+            status: 'offline'
           })
         });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || `Failed to create device: ${dev.name}`);
+        }
       }
 
       onSuccess();
@@ -279,16 +296,14 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
     }
   };
 
-  const updateArray = (arr: any[], setArr: any, index: number, field: string, value: string) => {
-    const newArr = [...arr];
-    newArr[index][field] = value;
-    setArr(newArr);
+  type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
+
+  const updateDeviceAt = <T extends DeviceItem>(setter: StateSetter<T[]>, index: number, updates: Partial<T>) => {
+    setter(prev => prev.map((item, i) => i === index ? { ...item, ...updates } : item));
   };
 
-  const removeArray = (arr: any[], setArr: any, index: number) => {
-    const newArr = [...arr];
-    newArr.splice(index, 1);
-    setArr(newArr);
+  const removeDeviceAt = <T extends DeviceItem>(setter: StateSetter<T[]>, index: number) => {
+    setter(prev => prev.filter((_, i) => i !== index));
   };
 
   return (
@@ -380,6 +395,26 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
                     placeholder="عدد الطلاب"
                   />
                 </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">المبنى</label>
+                  <input 
+                    type="text" 
+                    value={building} 
+                    onChange={e => setBuilding(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#8e52cb] focus:border-transparent outline-none transition-all"
+                    placeholder="مثال: المبنى الرئيسي"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">الطابق</label>
+                  <input 
+                    type="text" 
+                    value={floor} 
+                    onChange={e => setFloor(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#8e52cb] focus:border-transparent outline-none transition-all"
+                    placeholder="مثال: الطابق الأول"
+                  />
+                </div>
               </div>
             </div>
 
@@ -395,23 +430,23 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
               
               <div className="space-y-4">
                 {cameras.map((cam, idx) => (
-                  <div key={idx} className="bg-gray-50 p-4 rounded-xl border border-gray-100 relative group">
-                    <button type="button" onClick={() => removeArray(cameras, setCameras, idx)} className="absolute top-4 left-4 cursor-pointer text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div key={cam.id || cam.tempId || idx} className="bg-gray-50 p-4 rounded-xl border border-gray-100 relative group">
+                    <button type="button" onClick={() => removeDeviceAt(setCameras, idx)} className="absolute top-4 left-4 cursor-pointer text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                     </button>
                     
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1">
                         <label className="text-xs text-gray-500">اسم الكاميرا</label>
-                        <input type="text" value={cam.name} disabled={!!cam.id} onChange={e => updateArray(cameras, setCameras, idx, 'name', e.target.value)} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="مثال: كاميرا المدخل" required />
+                        <input type="text" value={cam.name} disabled={!!cam.id} onChange={e => updateDeviceAt(setCameras, idx, { name: e.target.value })} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="مثال: كاميرا المدخل" required />
                       </div>
                       <div className="space-y-1">
                         <label className="text-xs text-gray-500">رقم التعريف (Identifier)</label>
-                        <input type="text" value={cam.identifier} disabled={!!cam.id} onChange={e => updateArray(cameras, setCameras, idx, 'identifier', e.target.value)} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="cam-main-1" />
+                        <input type="text" value={cam.identifier} disabled={!!cam.id} onChange={e => updateDeviceAt(setCameras, idx, { identifier: e.target.value })} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="cam-main-1" />
                       </div>
                       <div className="col-span-2 space-y-1">
                         <label className="text-xs text-gray-500">رابط البث (Stream URL)</label>
-                        <input type="text" value={cam.stream_url || ''} disabled={!!cam.id} onChange={e => updateArray(cameras, setCameras, idx, 'stream_url', e.target.value)} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="rtsp://admin:admin@192.168.1.100/stream" />
+                        <input type="text" value={cam.stream_url || ''} disabled={!!cam.id} onChange={e => updateDeviceAt(setCameras, idx, { stream_url: e.target.value })} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="rtsp://admin:admin@192.168.1.100/stream" />
                       </div>
                     </div>
                   </div>
@@ -432,19 +467,19 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
               
               <div className="space-y-4">
                 {mics.map((mic, idx) => (
-                  <div key={idx} className="bg-gray-50 p-4 rounded-xl border border-gray-100 relative group">
-                    <button type="button" onClick={() => removeArray(mics, setMics, idx)} className="absolute top-4 cursor-pointer left-4 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div key={mic.id || mic.tempId || idx} className="bg-gray-50 p-4 rounded-xl border border-gray-100 relative group">
+                    <button type="button" onClick={() => removeDeviceAt(setMics, idx)} className="absolute top-4 cursor-pointer left-4 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                     </button>
                     
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1">
                         <label className="text-xs text-gray-500">اسم المايكروفون</label>
-                        <input type="text" value={mic.name} disabled={!!mic.id} onChange={e => updateArray(mics, setMics, idx, 'name', e.target.value)} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="مايك المنصة" required />
+                        <input type="text" value={mic.name} disabled={!!mic.id} onChange={e => updateDeviceAt(setMics, idx, { name: e.target.value })} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="مايك المنصة" required />
                       </div>
                       <div className="space-y-1">
                         <label className="text-xs text-gray-500">رقم التعريف (Identifier)</label>
-                        <input type="text" value={mic.identifier} disabled={!!mic.id} onChange={e => updateArray(mics, setMics, idx, 'identifier', e.target.value)} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="mic-main-1" />
+                        <input type="text" value={mic.identifier} disabled={!!mic.id} onChange={e => updateDeviceAt(setMics, idx, { identifier: e.target.value })} className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#8e52cb] disabled:bg-gray-100" placeholder="mic-main-1" />
                       </div>
                     </div>
                   </div>
