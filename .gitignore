@@ -115,6 +115,7 @@ temp/
 *.mov
 *.wav
 *.mp3
+*.json
 !tests/fixtures/*
 
 # Thaqib System Outputs

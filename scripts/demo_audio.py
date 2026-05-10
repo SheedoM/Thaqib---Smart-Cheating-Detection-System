@@ -124,7 +124,7 @@ class AudioDashboard:
                     self._playback_queue.put(chunk.mic_data[self._listen_mic_id].copy())
 
         # Terminal Log (Continuous, no clearing)
-        active = f"(Mics: {[m+1 for m in self._active_mics]})" if self._active_mics else ""
+        active = f"(Mics: {[m for m in self._active_mics]})" if self._active_mics else ""
         energies = ", ".join(f"{e:.3f}" for e in self._energy_profile)
         print(f"[Chunk {self._chunks_processed:04d}] {self._last_classification:7s} {active:12s} | Energies: [{energies}]")
 
@@ -142,7 +142,7 @@ class AudioDashboard:
             
         # Terminal Log
         print(f"\n{'='*60}")
-        print(f"🚨 AUDIO ALERT [{time_str}] - Mic {alert.mic_id + 1}")
+        print(f"🚨 AUDIO ALERT [{time_str}] - Mic {alert.mic_id}")
         print(f"🚨 Keywords: {alert.matched_keywords}")
         print(f"🚨 Transcript: {alert.transcript}")
         print(f"{'='*60}\n")
@@ -201,7 +201,7 @@ class AudioDashboard:
                 self._button_rects.append((i, btn_x, btn_y, btn_w, btn_h))
                 
                 # Text
-                cv2.putText(frame, f"Mic {i+1}", (20, bar_y + 22), 
+                cv2.putText(frame, f"Mic {i}", (20, bar_y + 22), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                 cv2.putText(frame, f"{energy:.3f}", (160, bar_y + 22), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0) if fill_w > 40 else (255, 255, 255), 2)
@@ -218,7 +218,7 @@ class AudioDashboard:
             elif self._last_classification == "GLOBAL":
                 cls_color = (255, 200, 0) # Cyan-ish
                 
-            active_str = f"(Mics: {[m+1 for m in self._active_mics]})" if self._active_mics else ""
+            active_str = f"(Mics: {[m for m in self._active_mics]})" if self._active_mics else ""
             cv2.putText(frame, f"{self._last_classification} {active_str}", (150, status_y), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, cls_color, 2)
 
@@ -230,7 +230,7 @@ class AudioDashboard:
             
             ay = alerts_y + 30
             for alert in self._alerts[-4:]: # Show last 4 alerts
-                txt = f"[{alert['time']}] Mic {alert['mic']+1}: {alert['keywords']}"
+                txt = f"[{alert['time']}] Mic {alert['mic']}: {alert['keywords']}"
                 cv2.putText(frame, txt, (20, ay), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 ay += 30
                 trans_txt = f"\"{alert['transcript'][:80]}\""
@@ -259,8 +259,14 @@ def list_audio_devices():
 
 
 def main():
+    # Load settings FIRST so argparse defaults reflect the .env configuration.
+    # CLI flags still override everything — settings are just the defaults.
+    from thaqib.config import get_settings
+    s = get_settings()
+
     parser = argparse.ArgumentParser(
-        description="Thaqib Audio Cheating Detection Demo"
+        description="Thaqib Audio Cheating Detection Demo",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--files",
@@ -283,7 +289,7 @@ def main():
         "--channels",
         type=int,
         default=2,
-        help="Number of channels for multi-channel device (default: 2)",
+        help="Number of channels for multi-channel device",
     )
     parser.add_argument(
         "--list-devices",
@@ -293,33 +299,33 @@ def main():
     parser.add_argument(
         "--sample-rate",
         type=int,
-        default=16000,
-        help="Sample rate in Hz (default: 16000)",
+        default=s.audio_sample_rate,
+        help="Sample rate in Hz [env: AUDIO_SAMPLE_RATE]",
     )
     parser.add_argument(
         "--chunk-ms",
         type=int,
-        default=500,
-        help="Analysis window in milliseconds (default: 500)",
+        default=s.audio_chunk_ms,
+        help="Analysis window in milliseconds [env: AUDIO_CHUNK_MS]",
     )
     parser.add_argument(
         "--whisper-model",
         type=str,
-        default="tiny",
+        default=s.audio_whisper_model,
         choices=["tiny", "base", "small", "medium"],
-        help="Whisper model size (default: tiny)",
+        help="Whisper model size [env: AUDIO_WHISPER_MODEL]",
     )
     parser.add_argument(
         "--language",
         type=str,
-        default="ar",
-        help="Expected language code (default: ar)",
+        default=s.audio_language,
+        help="Expected language code [env: AUDIO_LANGUAGE]",
     )
     parser.add_argument(
         "--keywords",
         type=str,
-        default="keywords.json",
-        help="Path to keywords JSON file (default: keywords.json)",
+        default=s.audio_keywords_file,
+        help="Path to keywords JSON file [env: AUDIO_KEYWORDS_FILE]",
     )
     parser.add_argument(
         "--real-time",
@@ -329,7 +335,15 @@ def main():
     parser.add_argument(
         "--cross-correlation",
         action="store_true",
-        help="Enable cross-correlation validation (slower, more accurate)",
+        default=s.audio_cross_correlation,
+        help="Enable cross-correlation validation [env: AUDIO_CROSS_CORRELATION]",
+    )
+    parser.add_argument(
+        "--no-strict",
+        action="store_true",
+        default=False,
+        help="Disable strict mode: only keyword matches trigger alerts "
+             "[env: AUDIO_STRICT_MODE=false]",
     )
 
     args = parser.parse_args()
@@ -337,6 +351,9 @@ def main():
     if args.list_devices:
         list_audio_devices()
         return
+
+    # Resolve strict mode: --no-strict CLI flag overrides the .env setting
+    strict_mode = s.audio_strict_mode and not args.no_strict
 
     # Create audio source
     if args.files:
@@ -377,11 +394,36 @@ def main():
         parser.error("Specify --files, --devices, --multi-channel, or --list-devices")
         return
 
-    # Create dashboard
-    dashboard = AudioDashboard(num_mics=source.num_mics)
+    # ── Step 1: Print session info ────────────────────────────────────────────
+    print("\n" + "=" * 80)
+    print("  THAQIB AUDIO — SESSION STARTING")
+    print("=" * 80)
+    print("  [ ACTIVE CONFIGURATION ]")
+    
+    # Dump all audio-related settings from .env
+    settings_dict = s.model_dump()
+    audio_settings = {k: v for k, v in settings_dict.items() if k.startswith("audio_")}
+    
+    # Apply CLI overrides
+    audio_settings["audio_whisper_model"] = args.whisper_model
+    audio_settings["audio_language"] = args.language
+    audio_settings["audio_keywords_file"] = args.keywords
+    audio_settings["audio_chunk_ms"] = args.chunk_ms
+    audio_settings["audio_sample_rate"] = args.sample_rate
+    audio_settings["audio_cross_correlation"] = args.cross_correlation
+    audio_settings["audio_strict_mode"] = strict_mode
+    
+    # Print formatted settings
+    max_key_len = max(len(k) for k in audio_settings.keys())
+    for k, v in sorted(audio_settings.items()):
+        print(f"  {k:<{max_key_len}} : {v}")
+    
+    print("=" * 80)
 
-    # Create pipeline
+    # ── Step 2: Create dashboard and pipeline (no models loaded yet) ─────────
     from thaqib.audio.pipeline import AudioPipeline
+
+    dashboard = AudioDashboard(num_mics=source.num_mics)
 
     pipeline = AudioPipeline(
         source=source,
@@ -389,18 +431,29 @@ def main():
         language=args.language,
         keywords_file=args.keywords,
         use_cross_correlation=args.cross_correlation,
+        strict_mode=strict_mode,
         on_chunk=dashboard.update,
         on_alert=dashboard.on_alert,
     )
 
-    print(f"\nWhisper model: {args.whisper_model}")
-    print(f"Language: {args.language}")
-    print(f"Keywords: {args.keywords}")
-    print(f"Chunk size: {args.chunk_ms}ms")
-    print(f"\nStarting pipeline... (May take a few seconds to load files)")
-    
-    # Run pipeline in a background thread so the GUI remains responsive
+    # ── Step 3: Eagerly load all AI models BEFORE starting the pipeline ───────
+    print("\n  [1/3] Loading Silero VAD model...", end="", flush=True)
+    t_start = time.time()
+    pipeline._keyword_detector._ensure_vad_loaded()
+    print(f" done ({time.time()-t_start:.1f}s)")
+
+    print(f"  [2/3] Loading Whisper '{args.whisper_model}' model...", end="", flush=True)
+    t_w = time.time()
+    pipeline._keyword_detector._ensure_whisper_loaded()
+    print(f" done ({time.time()-t_w:.1f}s)")
+
+    print(f"  [3/3] Starting audio pipeline...", end="", flush=True)
+
+    # ── Step 4: Start pipeline (models already in memory — zero cold start) ───
+    # load_models() inside start() returns instantly since both models are
+    # already loaded — _ensure_*_loaded() is a no-op when model != None.
     pipeline.start()
+    print(" ready!\n")
 
     window_name = "Thaqib Audio Monitor"
     cv2.namedWindow(window_name)
@@ -441,6 +494,7 @@ def main():
     print(f"  Silent chunks:     {stats['silent_chunks']}")
     print(f"  Global chunks:     {stats['global_chunks']}")
     print(f"  Local chunks:      {stats['local_chunks']}")
+    print(f"  Dropped chunks:    {stats.get('dropped_chunks', 0)}")
     print(f"  Speech detected:   {stats['speech_detected']}")
     print(f"  Alerts triggered:  {stats['alerts_triggered']}")
     print("-" * 60)
@@ -449,7 +503,7 @@ def main():
         print(f"\n  CHEATING ALERTS ({len(alerts)}):")
         for i, alert in enumerate(alerts, 1):
             print(f"\n  Alert #{i}:")
-            print(f"    Mic:       {alert.mic_id + 1}")
+            print(f"    Mic:       {alert.mic_id}")
             print(f"    Keywords:  {alert.matched_keywords}")
             print(f"    Transcript: \"{alert.transcript[:80]}\"")
             print(f"    Confidence: {alert.confidence:.3f}")
