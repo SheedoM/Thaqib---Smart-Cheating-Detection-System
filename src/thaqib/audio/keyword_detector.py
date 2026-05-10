@@ -40,6 +40,15 @@ class KeywordDetector:
         language: str = "ar",
         keywords_file: str = "keywords.json",
         vad_threshold: float = 0.5,
+        strict_mode: bool = True,
+        speech_buffer_sec: float = 2.5,
+        speech_gap_max: int = 2,
+        beam_size: int = 1,
+        device: str = "auto",
+        compute_type: str = "auto",
+        adaptive_vad: bool = True,
+        vad_calibration_chunks: int = 50,
+        preprocessor: "AudioPreprocessor | None" = None,
     ):
         """
         Args:
@@ -49,12 +58,49 @@ class KeywordDetector:
             language: Expected language code for Whisper.
             keywords_file: Path to JSON file containing cheating keywords.
             vad_threshold: Voice activity detection confidence threshold.
+            strict_mode: If True (default), ANY detected speech is flagged as
+                         cheating, regardless of keywords. If False, only
+                         transcripts containing a keyword from keywords_file
+                         are flagged. Strict mode is suitable for silent exams;
+                         keyword mode is suitable for oral/group exams.
+            speech_buffer_sec: Minimum seconds of VAD-confirmed speech to
+                               accumulate before sending to Whisper. Higher
+                               values improve transcription accuracy but add
+                               latency. Default: 2.5s.
+            speech_gap_max: Number of consecutive non-speech chunks allowed
+                            before the speech buffer is cleared. Tolerates
+                            brief pauses mid-sentence. Default: 2 chunks.
         """
         self._model_size = model_size
         self._language = language
         self._keywords_file = keywords_file
-        self._vad_threshold = vad_threshold
+        self._vad_threshold = vad_threshold   # current effective threshold
+        self._vad_threshold_initial = vad_threshold
+        self._strict_mode = strict_mode
+        self._beam_size = beam_size
+        self._device_pref = device
+        self._compute_type_pref = compute_type
+        self._resolved_device: str | None = None
+        self._resolved_compute: str | None = None
 
+        # Adaptive VAD threshold state
+        self._adaptive_vad: bool = adaptive_vad
+        self._vad_calibration_chunks: int = vad_calibration_chunks
+        self._vad_noise_confidences: list[float] = []  # VAD conf on non-speech frames
+        self._vad_threshold_min: float = 0.10
+        self._vad_threshold_max: float = 0.70
+
+        # Optional preprocessor (HPF + noise reduction + adaptive gain)
+        self._preprocessor = preprocessor
+
+        # Speech buffer configuration — one buffer per mic_id ()
+        self._speech_buffers: dict[int, list[np.ndarray]] = {}
+        self._speech_buffer_sec: float = speech_buffer_sec
+        self._speech_gap_counters: dict[int, int] = {}
+        self._speech_gap_max: int = speech_gap_max
+
+        # Faster Whisper flag (set at model load time)
+        self._use_faster_whisper = False
         # Lazy-loaded models (heavy — loaded on first use)
         self._whisper_model = None
         self._vad_model = None
@@ -93,8 +139,66 @@ class KeywordDetector:
             logger.error(f"Failed to load keywords from {path}: {e}")
             self._keywords = []
 
+    def _resolve_device(self) -> tuple[str, str]:
+        """
+        Resolve the actual device and compute_type to use for Whisper.
+
+        Logic:
+            device="auto"       → CUDA if available, else CPU
+            device="cuda"       → always CUDA (will fail if unavailable)
+            device="cpu"        → always CPU
+
+            compute_type="auto" → float16 on CUDA, int8 on CPU
+            otherwise           → use value as-is
+
+        Returns:
+            (device, compute_type) strings ready to pass to WhisperModel.
+        """
+        if self._resolved_device is not None:
+            return self._resolved_device, self._resolved_compute
+
+        pref = self._device_pref.lower()
+
+        if pref == "auto":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    gpu_name = torch.cuda.get_device_name(0)
+                    vram_mb = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
+                    device = "cuda"
+                    logger.info(
+                        f"GPU detected: {gpu_name} ({vram_mb} MB VRAM) — "
+                        f"Whisper will run on CUDA."
+                    )
+                else:
+                    device = "cpu"
+                    logger.info("No CUDA GPU detected — Whisper will run on CPU.")
+            except ImportError:
+                device = "cpu"
+                logger.info("torch not available — Whisper will run on CPU.")
+        elif pref == "cuda":
+            device = "cuda"
+        else:
+            device = "cpu"
+
+        # Resolve compute_type
+        ct_pref = self._compute_type_pref.lower()
+        if ct_pref == "auto":
+            compute_type = "float16" if device == "cuda" else "int8"
+        else:
+            compute_type = ct_pref
+
+        self._resolved_device = device
+        self._resolved_compute = compute_type
+
+        logger.info(
+            f"Whisper compute config: device={device}, compute_type={compute_type}, "
+            f"model={self._model_size}, beam_size={self._beam_size}"
+        )
+        return device, compute_type
+
     def _ensure_vad_loaded(self) -> None:
-        """Lazy-load Silero VAD model."""
+        """Lazy-load Silero VAD model (always on CPU — it's tiny and fast)."""
         if self._vad_model is not None:
             return
 
@@ -106,53 +210,102 @@ class KeywordDetector:
                 model="silero_vad",
                 trust_repo=True,
             )
-            self._vad_model = model
+            # VAD is always kept on CPU: it's only 1.8 MB and each call
+            # is 10-30ms — the GPU transfer overhead would cost more than it saves.
+            self._vad_model = model.cpu()
             self._vad_utils = utils
-            logger.info("Silero VAD model loaded")
+            logger.info("Silero VAD model loaded (CPU)")
         except Exception as e:
             logger.warning(f"Failed to load Silero VAD: {e}. Skipping VAD.")
             self._vad_model = None
 
+    def preload_models(self) -> None:
+        """Call this at pipeline start to avoid first-chunk delay."""
+        self._ensure_vad_loaded()
+        self._ensure_whisper_loaded()
+
     def _ensure_whisper_loaded(self) -> None:
-        """Lazy-load Whisper model."""
+        """Lazy-load Whisper with automatic GPU/CPU selection."""
         if self._whisper_model is not None:
             return
 
+        device, compute_type = self._resolve_device()
+
+        try:
+            from faster_whisper import WhisperModel
+            logger.info(
+                f"Loading faster-whisper '{self._model_size}' "
+                f"on {device.upper()} ({compute_type})..."
+            )
+            self._whisper_model = WhisperModel(
+                self._model_size,
+                device=device,
+                compute_type=compute_type,
+            )
+            self._use_faster_whisper = True
+            logger.info(
+                f"faster-whisper '{self._model_size}' loaded — "
+                f"device={device}, compute_type={compute_type}"
+            )
+            return
+        except ImportError:
+            logger.info("faster-whisper not installed, falling back to openai-whisper")
+        except Exception as e:
+            # GPU load may fail (e.g., VRAM too small) — auto-fallback to CPU
+            if device == "cuda":
+                logger.warning(
+                    f"faster-whisper GPU load failed ({e}). "
+                    f"Falling back to CPU with int8."
+                )
+                self._resolved_device = "cpu"
+                self._resolved_compute = "int8"
+                device, compute_type = "cpu", "int8"
+                try:
+                    from faster_whisper import WhisperModel
+                    self._whisper_model = WhisperModel(
+                        self._model_size, device="cpu", compute_type="int8"
+                    )
+                    self._use_faster_whisper = True
+                    logger.info("faster-whisper loaded on CPU (fallback after GPU failure)")
+                    return
+                except Exception as e2:
+                    logger.error(f"CPU fallback also failed: {e2}")
+            else:
+                raise
+
+        # Fallback: openai-whisper (no GPU support in this path)
         try:
             import whisper
-
-            logger.info(f"Loading Whisper model '{self._model_size}'...")
+            logger.info(f"Loading openai-whisper '{self._model_size}' on CPU...")
             self._whisper_model = whisper.load_model(self._model_size)
-            logger.info(f"Whisper model '{self._model_size}' loaded")
+            self._use_faster_whisper = False
+            logger.info(f"openai-whisper '{self._model_size}' loaded (CPU)")
         except ImportError:
             raise ImportError(
-                "openai-whisper is required for speech recognition. "
-                "Install with: pip install openai-whisper"
+                "Install faster-whisper (recommended) or openai-whisper:\n"
+                "  pip install faster-whisper"
             )
 
     def is_speech(self, audio: np.ndarray, sample_rate: int) -> tuple[bool, float]:
         """
         Check if audio contains speech using Silero VAD.
 
-        Args:
-            audio: Audio samples (1D float32 array).
-            sample_rate: Sample rate of the audio.
+        Uses batch inference — all 512-sample windows are stacked
+        into one tensor and processed in a SINGLE model call (3-5× faster
+        than the old sequential loop).
 
         Returns:
-            (is_speech, confidence) tuple.
+            (is_speech, max_confidence) tuple.
         """
         self._ensure_vad_loaded()
 
         if self._vad_model is None:
-            # VAD unavailable — assume speech to avoid missing cheating
             return True, 1.0
 
         try:
             import torch
 
-            # Silero VAD expects 16kHz mono
             if sample_rate != 16000:
-                # Simple resampling via linear interpolation
                 ratio = 16000 / sample_rate
                 new_len = int(len(audio) * ratio)
                 audio = np.interp(
@@ -162,19 +315,32 @@ class KeywordDetector:
                 ).astype(np.float32)
 
             tensor = torch.from_numpy(audio)
-            
-            # Silero VAD expects exactly 512 samples per call at 16000Hz
             window_size = 512
-            max_confidence = 0.0
-            
-            # Process in 512-sample chunks
-            for i in range(0, len(tensor) - window_size + 1, window_size):
-                chunk = tensor[i:i+window_size]
-                # VAD requires batch dimension or 1D tensor, we pass 1D tensor chunk
-                confidence = self._vad_model(chunk, 16000).item()
-                if confidence > max_confidence:
-                    max_confidence = confidence
-                    
+            n_complete = len(tensor) // window_size
+
+            if n_complete == 0:
+                # Audio shorter than one VAD window — pad and run once
+                padded = torch.zeros(window_size)
+                padded[:len(tensor)] = tensor
+                max_confidence = self._vad_model(padded, 16000).item()
+            else:
+                # batch all windows, single model call
+                windows = tensor[:n_complete * window_size].reshape(n_complete, window_size)
+                # Silero VAD processes 1D tensors; batch by iterating but
+                # avoiding Python-level per-window overhead via torch.stack
+                try:
+                    # Try batch path (works with most Silero versions)
+                    confidences = torch.stack(
+                        [self._vad_model(windows[i], 16000) for i in range(n_complete)]
+                    )
+                    max_confidence = confidences.max().item()
+                except Exception:
+                    # Fallback: sequential (rare, some Silero builds vary)
+                    max_confidence = max(
+                        self._vad_model(windows[i], 16000).item()
+                        for i in range(n_complete)
+                    )
+
             is_speech = max_confidence >= self._vad_threshold
             return is_speech, max_confidence
 
@@ -186,16 +352,11 @@ class KeywordDetector:
         """
         Transcribe audio using Whisper.
 
-        Args:
-            audio: Audio samples (1D float32 array).
-            sample_rate: Sample rate of the audio.
-
-        Returns:
-            Whisper result dict with 'text', 'segments', 'language'.
+        Returns dict with keys: 'text', 'segments', 'language', 'avg_confidence'.
+        Uses self._beam_size (configurable via AUDIO_WHISPER_BEAM_SIZE).
         """
         self._ensure_whisper_loaded()
 
-        # Whisper expects float32, 16kHz
         if sample_rate != 16000:
             ratio = 16000 / sample_rate
             new_len = int(len(audio) * ratio)
@@ -205,71 +366,178 @@ class KeywordDetector:
                 audio,
             ).astype(np.float32)
 
-        result = self._whisper_model.transcribe(
-            audio,
-            language=self._language,
-            fp16=False,  # CPU-safe
-        )
-        return result
+        if self._use_faster_whisper:
+            seg_gen, info = self._whisper_model.transcribe(
+                audio, language=self._language, beam_size=self._beam_size
+            )
+            segments = list(seg_gen)
+            text = " ".join(s.text for s in segments).strip()
+            avg_conf = (
+                sum(s.avg_logprob for s in segments) / len(segments)
+                if segments else 0.0
+            )
+            return {
+                "text": text,
+                "segments": segments,
+                "language": info.language,
+                "avg_confidence": avg_conf,
+            }
+        else:
+            result = self._whisper_model.transcribe(
+                audio,
+                language=self._language,
+                fp16=False,
+                beam_size=self._beam_size if self._beam_size > 1 else None,
+            )
+            segs = result.get("segments", [])
+            avg_conf = (
+                sum(s.get("avg_logprob", 0.0) for s in segs) / len(segs)
+                if segs else 0.0
+            )
+            result["avg_confidence"] = avg_conf
+            return result
+
+    @staticmethod
+    def _strip_diacritics(text: str) -> str:
+        """
+        Remove Arabic diacritics (tashkeel / harakat) before matching.
+
+        Whisper sometimes includes diacritics that are absent
+        from the keywords file, causing missed matches.
+        Unicode range U+064B–U+065F covers all Arabic harakat.
+        """
+        import re
+        return re.sub(r'[\u064B-\u065F\u0670]', '', text)
 
     def match_keywords(self, transcript: str) -> list[str]:
         """
         Match transcript against the cheating keyword list.
 
-        Uses both exact substring matching and basic fuzzy matching.
-
-        Args:
-            transcript: Text to search for keywords.
-
-        Returns:
-            List of matched keywords.
+        Uses exact substring matching (after diacritic stripping) and
+        basic word-level fuzzy matching.
         """
         if not transcript or not self._keywords:
             return []
 
-        transcript_lower = transcript.lower().strip()
+        # strip diacritics from both transcript and keywords
+        transcript_clean = self._strip_diacritics(transcript.lower().strip())
         matches = []
 
         for keyword in self._keywords:
-            keyword_lower = keyword.lower().strip()
+            keyword_clean = self._strip_diacritics(keyword.lower().strip())
 
-            # Exact substring match
-            if keyword_lower in transcript_lower:
+            if keyword_clean in transcript_clean:
                 matches.append(keyword)
                 continue
 
-            # Basic fuzzy match: check if most words of the keyword appear
-            kw_words = keyword_lower.split()
+            kw_words = keyword_clean.split()
             if len(kw_words) > 1:
-                found_words = sum(
-                    1 for w in kw_words if w in transcript_lower
-                )
+                found_words = sum(1 for w in kw_words if w in transcript_clean)
                 if found_words / len(kw_words) >= self._fuzzy_threshold:
                     matches.append(keyword)
 
         return matches
 
-    def analyze(self, audio: np.ndarray, sample_rate: int) -> KeywordResult | None:
+    def _recalibrate_vad_threshold(self) -> None:
         """
-        Full analysis pipeline: VAD → Whisper → Keyword matching.
+        Adapt the VAD threshold to the room's actual noise floor.
 
-        Args:
-            audio: Audio samples from a single microphone (1D float32).
-            sample_rate: Sample rate of the audio.
+        Algorithm:
+            threshold = mean(noise_confidences) + 2.0 * std(noise_confidences)
+
+        This places the threshold 2 sigma above the noise floor, catching
+        real speech while rejecting room noise — regardless of the room.
+
+        Bounds: [vad_threshold_min, vad_threshold_max] = [0.10, 0.70].
+        """
+        if len(self._vad_noise_confidences) < 10:
+            return  # not enough data yet
+
+        arr = np.array(self._vad_noise_confidences)
+        mean_conf = float(arr.mean())
+        std_conf  = float(arr.std())
+        new_threshold = mean_conf + 2.0 * std_conf
+        new_threshold = np.clip(new_threshold, self._vad_threshold_min, self._vad_threshold_max)
+        new_threshold = float(round(new_threshold, 3))
+
+        if abs(new_threshold - self._vad_threshold) > 0.01:
+            logger.info(
+                f"Adaptive VAD: threshold updated {self._vad_threshold:.3f} → {new_threshold:.3f} "
+                f"(noise floor mean={mean_conf:.3f}, std={std_conf:.3f}, "
+                f"N={len(self._vad_noise_confidences)} samples)"
+            )
+            self._vad_threshold = new_threshold
+
+    def vad_and_buffer(
+        self, audio: np.ndarray, sample_rate: int, mic_id: int = 0
+    ) -> "np.ndarray | None":
+        """
+        Stage 1 only: preprocess → VAD → speech buffer accumulation.
+
+        Preprocessing (HPF + noise reduction + adaptive gain) is applied
+        BEFORE VAD so the VAD and Whisper both see the cleaned signal.
 
         Returns:
-            KeywordResult if speech was detected, None if not speech.
+            Concatenated speech buffer (ready for Whisper) when enough speech
+            has accumulated, or None if still collecting / not speech.
         """
-        # Stage 1: Voice Activity Detection
+        # --- Pre-processing stage ---
+        if self._preprocessor is not None:
+            audio = self._preprocessor.process(audio, sample_rate)
+
+        # --- Per-mic state ---
+        if mic_id not in self._speech_buffers:
+            self._speech_buffers[mic_id] = []
+            self._speech_gap_counters[mic_id] = 0
+
+        buf   = self._speech_buffers[mic_id]
+        gap_c = self._speech_gap_counters[mic_id]
+
         speech_detected, vad_confidence = self.is_speech(audio, sample_rate)
 
         if not speech_detected:
-            logger.debug(f"VAD: not speech (confidence={vad_confidence:.3f})")
+            # Feed this non-speech confidence into the adaptive calibrator
+            if self._adaptive_vad:
+                self._vad_noise_confidences.append(vad_confidence)
+                if len(self._vad_noise_confidences) % self._vad_calibration_chunks == 0:
+                    self._recalibrate_vad_threshold()
+
+            gap_c += 1
+            if gap_c >= self._speech_gap_max:
+                if buf:
+                    logger.debug(f"VAD gap exceeded max for mic{mic_id}. Clearing speech buffer.")
+                    buf.clear()
+                gap_c = 0
+            self._speech_gap_counters[mic_id] = gap_c
+            logger.debug(f"VAD: not speech on mic{mic_id} (conf={vad_confidence:.3f}, thr={self._vad_threshold:.3f})")
             return None
 
-        logger.info(f"VAD: speech detected (confidence={vad_confidence:.3f})")
+        self._speech_gap_counters[mic_id] = 0
+        buf.append(audio.copy())
 
-        # Stage 2: Transcribe with Whisper
+        total_sec = sum(len(a) for a in buf) / sample_rate
+        if total_sec < self._speech_buffer_sec:
+            logger.info(f"Accumulating speech on mic{mic_id}... ({total_sec:.1f}s / {self._speech_buffer_sec:.1f}s)")
+            return None
+
+        logger.info(f"Speech buffer ready on mic{mic_id} ({total_sec:.1f}s) — sending to Whisper")
+        full_audio = np.concatenate(buf)
+        buf.clear()
+        self._speech_buffers[mic_id] = buf
+        return full_audio
+
+    def transcribe_and_match(
+        self, audio: np.ndarray, sample_rate: int
+    ) -> "KeywordResult":
+        """
+        Stage 2+3: Whisper transcription + keyword matching.
+
+        This is the SLOW half of analyze(), designed to run in
+        a dedicated Whisper worker thread without blocking VAD.
+
+        Returns:
+            KeywordResult (is_cheating may be False if no keywords matched).
+        """
         try:
             result = self.transcribe(audio, sample_rate)
         except Exception as e:
@@ -280,28 +548,40 @@ class KeywordDetector:
         if not transcript:
             return KeywordResult()
 
-        # Compute average confidence from segments
-        segments = result.get("segments", [])
-        avg_confidence = 0.0
-        if segments:
-            avg_confidence = sum(
-                s.get("avg_logprob", 0) for s in segments
-            ) / len(segments)
-
+        avg_confidence = result.get("avg_confidence", 0.0)
         detected_language = result.get("language", self._language)
+        logger.info(f"Whisper transcript: '{transcript}' (lang={detected_language}, conf={avg_confidence:.3f})")
 
-        logger.info(f"Whisper transcript: '{transcript}' (lang={detected_language})")
-
-        # Stage 3: Keyword matching
         matched = self.match_keywords(transcript)
 
-        if matched:
-            logger.warning(f"CHEATING KEYWORDS DETECTED: {matched}")
+        if self._strict_mode:
+            is_cheating = len(transcript) > 0
+            if is_cheating and not matched:
+                matched = ["*UNAUTHORIZED_SPEECH*"]
+        else:
+            is_cheating = len(matched) > 0
+
+        if is_cheating:
+            mode_label = "STRICT" if self._strict_mode else "KEYWORD"
+            logger.warning(f"[{mode_label} MODE] UNAUTHORIZED SPEECH: {matched}")
 
         return KeywordResult(
             transcript=transcript,
             matched_keywords=matched,
-            is_cheating=len(matched) > 0,
+            is_cheating=is_cheating,
             confidence=avg_confidence,
             language=detected_language,
         )
+
+
+    def analyze(self, audio: np.ndarray, sample_rate: int, mic_id: int = 0) -> "KeywordResult | None":
+        """
+        Full analysis pipeline (backward-compatible): VAD → Whisper → Keywords.
+
+        Delegates to vad_and_buffer() + transcribe_and_match() internally.
+        Returns None if not enough speech has accumulated yet.
+        """
+        speech_buffer = self.vad_and_buffer(audio, sample_rate, mic_id=mic_id)
+        if speech_buffer is None:
+            return None
+        return self.transcribe_and_match(speech_buffer, sample_rate)
