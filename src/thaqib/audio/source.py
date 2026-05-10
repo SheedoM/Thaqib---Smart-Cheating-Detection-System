@@ -128,6 +128,7 @@ class FileAudioSource(AudioSource):
         self._position = 0
         self._chunk_index = 0
         self._is_running = True
+        self._start_time = time.time()
 
     @staticmethod
     def _load_audio_file(path, sample_rate: int = 16000) -> "np.ndarray":
@@ -213,9 +214,12 @@ class FileAudioSource(AudioSource):
         self._position = end
         self._chunk_index += 1
 
-        # Simulate real-time playback speed
+        # Simulate real-time playback speed without cumulative drift
         if self._real_time:
-            time.sleep(self._chunk_ms / 1000.0)
+            expected_time = self._start_time + (self._chunk_index * self._chunk_ms / 1000.0)
+            now = time.time()
+            if expected_time > now:
+                time.sleep(expected_time - now)
 
         return audio_chunk
 
@@ -306,45 +310,54 @@ class LiveAudioSource(AudioSource):
         self._chunk_index = 0
         self._is_running = False
 
-        # Per-mic ring buffers and capture threads
-        self._buffers: list[np.ndarray] = []
-        self._buffer_locks: list[threading.Lock] = []
-        self._write_positions: list[int] = []
+        # Per-mic chunk queue: audio callback fills, get_chunk() drains.
+        # Max 8 queued chunks per mic (~4 seconds at 500ms chunks).
+        # Oldest chunk is dropped with a warning if the queue fills.
+        self._chunk_queues: list["queue.Queue"] = []
         self._streams = []
 
     def start(self) -> None:
         """Start audio capture from all microphones."""
+        import queue as _queue
         import sounddevice as sd
 
         self._is_running = True
-        buffer_size = self._chunk_samples * 4  # 4x chunk for safety
+        n_mics = len(self._device_ids) if self._device_ids else self._channels
+        # One Queue per mic; 8 slots = ~4 seconds of buffer at 500ms chunks
+        self._chunk_queues = [_queue.Queue(maxsize=8) for _ in range(n_mics)]
+        self._streams = []
+
+        def _push_samples(mic_idx: int, samples: np.ndarray, local_accum: list) -> None:
+            """Accumulate samples; push complete chunks to the queue."""
+            local_accum.extend(samples.tolist())
+            while len(local_accum) >= self._chunk_samples:
+                chunk_arr = np.array(
+                    local_accum[:self._chunk_samples], dtype=np.float32
+                )
+                del local_accum[:self._chunk_samples]
+                q = self._chunk_queues[mic_idx]
+                if q.full():
+                    # Drop the oldest chunk to make room (log once per drop)
+                    try:
+                        q.get_nowait()
+                        logger.warning(
+                            f"Mic {mic_idx}: chunk queue full — oldest chunk dropped. "
+                            f"Pipeline is too slow to keep up with audio."
+                        )
+                    except _queue.Empty:
+                        pass
+                q.put_nowait(chunk_arr)
 
         if self._device_ids:
             # Mode: Multiple separate USB mics
-            n_mics = len(self._device_ids)
-            self._buffers = [np.zeros(buffer_size, dtype=np.float32) for _ in range(n_mics)]
-            self._buffer_locks = [threading.Lock() for _ in range(n_mics)]
-            self._write_positions = [0] * n_mics
-
             for i, dev_id in enumerate(self._device_ids):
-                def make_callback(mic_idx):
+                accum: list[float] = []  # per-mic accumulator (closure)
+
+                def make_callback(mic_idx: int, buf: list):
                     def callback(indata, frames, time_info, status):
                         if status:
                             logger.warning(f"Mic {mic_idx} capture status: {status}")
-                        with self._buffer_locks[mic_idx]:
-                            buf = self._buffers[mic_idx]
-                            pos = self._write_positions[mic_idx]
-                            samples = indata[:, 0]  # Mono
-                            end = pos + len(samples)
-                            if end <= len(buf):
-                                buf[pos:end] = samples
-                            else:
-                                # Wrap around
-                                first = len(buf) - pos
-                                buf[pos:] = samples[:first]
-                                buf[:len(samples) - first] = samples[first:]
-                                end = len(samples) - first
-                            self._write_positions[mic_idx] = end % len(buf)
+                        _push_samples(mic_idx, indata[:, 0], buf)
                     return callback
 
                 stream = sd.InputStream(
@@ -352,7 +365,7 @@ class LiveAudioSource(AudioSource):
                     channels=1,
                     samplerate=self._sample_rate,
                     blocksize=self._chunk_samples // 4,
-                    callback=make_callback(i),
+                    callback=make_callback(i, accum),
                 )
                 stream.start()
                 self._streams.append(stream)
@@ -360,28 +373,14 @@ class LiveAudioSource(AudioSource):
 
         elif self._multi_channel_device is not None:
             # Mode: Multi-channel audio interface
-            n_mics = self._channels
-            self._buffers = [np.zeros(buffer_size, dtype=np.float32) for _ in range(n_mics)]
-            self._buffer_locks = [threading.Lock() for _ in range(n_mics)]
-            self._write_positions = [0] * n_mics
+            # Each channel gets its own accumulator
+            accums: list[list[float]] = [[] for _ in range(self._channels)]
 
             def multi_callback(indata, frames, time_info, status):
                 if status:
                     logger.warning(f"Multi-channel capture status: {status}")
-                for ch in range(min(indata.shape[1], n_mics)):
-                    with self._buffer_locks[ch]:
-                        buf = self._buffers[ch]
-                        pos = self._write_positions[ch]
-                        samples = indata[:, ch]
-                        end = pos + len(samples)
-                        if end <= len(buf):
-                            buf[pos:end] = samples
-                        else:
-                            first = len(buf) - pos
-                            buf[pos:] = samples[:first]
-                            buf[:len(samples) - first] = samples[first:]
-                            end = len(samples) - first
-                        self._write_positions[ch] = end % len(buf)
+                for ch in range(min(indata.shape[1], self._channels)):
+                    _push_samples(ch, indata[:, ch], accums[ch])
 
             stream = sd.InputStream(
                 device=self._multi_channel_device,
@@ -401,37 +400,48 @@ class LiveAudioSource(AudioSource):
 
     def get_chunk(self) -> AudioChunk | None:
         """
-        Block until a full chunk is available from all mics.
+        Block until a synchronized chunk is available from ALL mics.
 
-        Returns synchronized audio from all microphones.
+        Uses Queue.get() with timeout instead of time.sleep() to ensure
+        no chunks are missed ().
+
+        Tracks consecutive timeouts per mic and logs a CRITICAL
+        warning if a mic appears dead (5+ consecutive 1-second timeouts).
         """
+        import queue as _queue
+
         if not self._is_running:
             return None
 
-        # Wait for enough samples to accumulate
-        time.sleep(self._chunk_ms / 1000.0)
+        # Track consecutive timeouts per mic for dead-mic detection
+        if not hasattr(self, '_timeout_counts'):
+            self._timeout_counts = [0] * len(self._chunk_queues)
 
         mic_chunks = []
-        for i in range(self.num_mics):
-            with self._buffer_locks[i]:
-                pos = self._write_positions[i]
-                buf = self._buffers[i]
-                # Read the last chunk_samples worth of data
-                start = (pos - self._chunk_samples) % len(buf)
-                if start < pos:
-                    chunk = buf[start:pos].copy()
-                else:
-                    chunk = np.concatenate([buf[start:], buf[:pos]]).copy()
+        for i, q in enumerate(self._chunk_queues):
+            while True:
+                if not self._is_running:
+                    return None
+                try:
+                    chunk = q.get(timeout=1.0)
+                    self._timeout_counts[i] = 0  # reset on success
+                    mic_chunks.append(chunk)
+                    break
+                except _queue.Empty:
+                    self._timeout_counts[i] += 1
+                    if self._timeout_counts[i] >= 5:
+                        # 5+ consecutive seconds with no audio
+                        logger.critical(
+                            f"HARDWARE WARNING: Mic {i} has produced no audio for "
+                            f"{self._timeout_counts[i]}s. Device may be unplugged, "
+                            f"muted, or failed. Check hardware immediately."
+                        )
+                    else:
+                        logger.debug(f"Mic {i}: waiting for audio (queue empty, "
+                                     f"timeout #{self._timeout_counts[i]})...")
+                    continue
 
-                # Ensure correct length
-                if len(chunk) < self._chunk_samples:
-                    padded = np.zeros(self._chunk_samples, dtype=np.float32)
-                    padded[:len(chunk)] = chunk
-                    chunk = padded
-
-            mic_chunks.append(chunk)
-
-        mic_data = np.stack(mic_chunks, axis=0)
+        mic_data = np.stack(mic_chunks, axis=0)  # (n_mics, chunk_samples)
 
         audio_chunk = AudioChunk(
             timestamp=time.time(),
@@ -442,6 +452,7 @@ class LiveAudioSource(AudioSource):
         )
         self._chunk_index += 1
         return audio_chunk
+
 
     def stop(self) -> None:
         """Stop all capture streams."""
