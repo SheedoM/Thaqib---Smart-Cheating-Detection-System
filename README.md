@@ -19,6 +19,7 @@
 | **Continuous Archive**            | The full camera feed is continuously recorded to `archive/` for post-exam review.                                                                                                                             |
 | **Interactive Controls**          | Real-time keyboard shortcuts for student selection, display toggles, quality presets, and archive mode switching.                                                                                             |
 | **Re-Identification**             | Face-based ReID ensures students retain their identity across temporary occlusions using OSNet appearance embeddings.                                                                                         |
+| **Audio Cheating Detection**      | Multi-microphone audio analysis detects localized speech (whispers) vs. global sounds using energy-ratio discrimination, Silero VAD, and Whisper STT with keyword matching. Saves forensic evidence (WAV + JSON). See [Audio README](src/thaqib/audio/README.md) for details. |
 
 ---
 
@@ -195,6 +196,16 @@ Thaqib---Smart-Cheating-Detection-System/
 ├── src/thaqib/
 │   ├── config/
 │   │   └── settings.py             # Pydantic settings (loaded from .env)
+│   ├── audio/
+│   │   ├── pipeline.py             # Audio orchestrator (3-thread architecture)
+│   │   ├── source.py               # Audio sources (file / live / multi-channel)
+│   │   ├── discriminator.py        # Global/Local energy classifier
+│   │   ├── keyword_detector.py     # VAD → Whisper STT → keyword matching
+│   │   ├── preprocessor.py         # HPF + noise reduction + adaptive gain
+│   │   ├── evidence.py             # WAV + JSON forensic evidence recorder
+│   │   ├── session_recorder.py     # Full-session WAV streaming
+│   │   ├── models.py               # Data classes (AudioChunk, AudioAlert, etc.)
+│   │   └── README.md               # Audio system documentation
 │   └── video/
 │       ├── pipeline.py             # Main orchestrator (threading, state machines)
 │       ├── camera.py               # Threaded camera capture (USB/RTSP/file)
@@ -211,13 +222,16 @@ Thaqib---Smart-Cheating-Detection-System/
 │       ├── timestamps.py           # Timestamp overlay (shared by pipeline + display)
 │       └── visualizer.py           # HUD, control panel, bbox rendering
 ├── scripts/
-│   └── demo_video.py               # Entry point — runs the full pipeline
+│   ├── demo_video.py               # Entry point — runs the full video pipeline
+│   └── demo_audio.py               # Entry point — runs the audio pipeline with GUI
 ├── models/
 │   ├── yolo11m.pt                  # Person detection model
 │   ├── best.pt                     # Paper/phone detection model
 │   └── face_landmarker.task        # MediaPipe face landmark model
 ├── alerts/                          # Auto-generated cheating evidence clips
-├── archive/                         # Auto-generated continuous recordings
+├── audio alerts/                    # Auto-generated audio evidence (WAV + JSON)
+├── sessions/                        # Full-session audio recordings
+├── archive/                         # Auto-generated continuous video recordings
 ├── pyproject.toml                   # Dependencies and build config
 └── .env                             # Runtime configuration
 ```
@@ -241,6 +255,17 @@ Thaqib---Smart-Cheating-Detection-System/
 | `VIDEO_QUALITY`                 | `75`    | Video output quality (0–100)                  |
 | `ALERT_MAX_HEIGHT`              | `720`   | Max height for alert videos (0 = no limit)    |
 | `ARCHIVE_MODE`                  | `raw`   | Archive recording mode (`raw` or `annotated`) |
+
+**Audio settings** are documented in [Audio README](src/thaqib/audio/README.md). Key variables:
+
+| Variable                        | Default | Description                                   |
+| ------------------------------- | ------- | --------------------------------------------- |
+| `AUDIO_WHISPER_MODEL`           | `tiny`  | Whisper model size                            |
+| `AUDIO_LANGUAGE`                | `ar`    | Language code for Whisper                     |
+| `AUDIO_STRICT_MODE`             | `true`  | Any speech = cheating (silent exam mode)      |
+| `AUDIO_MIC_NAMES`               | `""`    | Mic labels (IPs, names, comma/JSON format)    |
+| `AUDIO_SESSION_RECORDING`       | `true`  | Record full exam audio                        |
+| `AUDIO_EPISODE_RECORDING`       | `true`  | Track sustained cheating episodes             |
 
 ---
 
@@ -276,6 +301,12 @@ Continuous recording of the full camera feed, saved as `archive_YYYYMMDD_HHMMSS.
 | `boxmot`                         | BoT-SORT multi-object tracker   |
 | `pydantic` / `pydantic-settings` | Configuration validation        |
 | `python-dotenv`                  | `.env` file loading             |
+| `torch`                          | Silero VAD runtime              |
+| `faster-whisper`                 | Speech-to-text (Whisper STT)    |
+| `sounddevice`                    | Live microphone capture         |
+| `pydub`                          | Audio file loading (MP3, M4A)   |
+| `scipy` *(optional)*             | Audio high-pass filter          |
+| `noisereduce` *(optional)*       | Spectral noise reduction        |
 
 ---
 
