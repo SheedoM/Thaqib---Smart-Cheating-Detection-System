@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict
 # Assignment Schemas (Invigilators)
 class AssignmentBase(BaseModel):
     invigilator_id: uuid.UUID
+    hall_id: uuid.UUID
     role: Optional[str] = "primary" # 'primary' or 'secondary'
 
 class AssignmentCreate(AssignmentBase):
@@ -14,8 +15,16 @@ class AssignmentCreate(AssignmentBase):
 class AssignmentResponse(AssignmentBase):
     id: uuid.UUID
     exam_session_id: uuid.UUID
+    monitoring_started_at: Optional[datetime] = None
+    monitoring_ended_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+    
+class AssignmentDetailedResponse(AssignmentResponse):
+    exam_name: str
+    hall_name: str
+    scheduled_start: datetime
+    scheduled_end: datetime
 
 # ExamSession Schemas
 class ExamSessionBase(BaseModel):

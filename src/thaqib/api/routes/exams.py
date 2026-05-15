@@ -7,12 +7,125 @@ from src.thaqib.db.database import get_db
 from src.thaqib.db.models.exams import ExamSession, Assignment
 from src.thaqib.db.models.infrastructure import Hall
 from src.thaqib.db.models.users import User
-from src.thaqib.schemas.exams import ExamSessionCreate, ExamSessionResponse, ExamSessionUpdate, AssignmentCreate, AssignmentResponse
-from src.thaqib.api.dependencies import RequireRole
+from src.thaqib.schemas.exams import (
+    ExamSessionCreate, ExamSessionResponse, ExamSessionUpdate, 
+    AssignmentCreate, AssignmentResponse, AssignmentDetailedResponse
+)
+from src.thaqib.api.dependencies import RequireRole, get_current_user
 from src.thaqib.core.limiter import limiter
+from src.thaqib.api.routes import stream
 
 router = APIRouter()
 require_admin = RequireRole(["admin"])
+require_invigilator = RequireRole(["invigilator", "referee", "admin"])
+
+@router.get("/my", response_model=List[AssignmentDetailedResponse])
+def get_my_assignments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """
+    Get assignments for the currently logged-in invigilator.
+    """
+    assignments = db.query(Assignment).filter(Assignment.invigilator_id == current_user.id).all()
+    
+    # Enrich with names
+    results = []
+    for a in assignments:
+        results.append({
+            "id": a.id,
+            "invigilator_id": a.invigilator_id,
+            "hall_id": a.hall_id,
+            "role": a.role,
+            "exam_session_id": a.exam_session_id,
+            "monitoring_started_at": a.monitoring_started_at,
+            "monitoring_ended_at": a.monitoring_ended_at,
+            "exam_name": a.exam_session.exam_name,
+            "hall_name": a.hall.name,
+            "scheduled_start": a.exam_session.scheduled_start,
+            "scheduled_end": a.exam_session.scheduled_end
+        })
+    return results
+
+@router.post("/{session_id}/halls/{hall_id}/monitoring/start")
+def start_monitoring(
+    session_id: uuid.UUID,
+    hall_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_invigilator)
+) -> Any:
+    """
+    Start monitoring for a specific hall in an exam session.
+    Only the assigned invigilator or an admin can start monitoring.
+    """
+    # Verify assignment
+    assignment = db.query(Assignment).filter(
+        Assignment.exam_session_id == session_id,
+        Assignment.hall_id == hall_id
+    ).first()
+    
+    if not assignment:
+        raise HTTPException(status_code=404, detail="No assignment found for this hall and session")
+        
+    # Check permission
+    if current_user.role != "admin" and assignment.invigilator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You are not assigned to monitor this hall")
+        
+    stream.start_hall_monitoring(hall_id, session_id, db)
+    return {"status": "monitoring started"}
+
+@router.post("/{session_id}/halls/{hall_id}/monitoring/stop")
+def stop_monitoring(
+    session_id: uuid.UUID,
+    hall_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_invigilator)
+) -> Any:
+    """
+    Stop monitoring for a specific hall in an exam session.
+    """
+    # Verify assignment
+    assignment = db.query(Assignment).filter(
+        Assignment.exam_session_id == session_id,
+        Assignment.hall_id == hall_id
+    ).first()
+    
+    if not assignment:
+        raise HTTPException(status_code=404, detail="No assignment found for this hall and session")
+        
+    # Check permission
+    if current_user.role != "admin" and assignment.invigilator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You are not assigned to this hall")
+        
+    stream.stop_hall_monitoring(hall_id, session_id, db)
+    return {"status": "monitoring stopped"}
+
+@router.get("/{session_id}/halls/{hall_id}/status")
+def get_hall_monitoring_status(
+    session_id: uuid.UUID,
+    hall_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _ = Depends(require_invigilator)
+) -> Any:
+    """
+    Get the current monitoring status of a specific hall in a session.
+    """
+    assignment = db.query(Assignment).filter(
+        Assignment.exam_session_id == session_id,
+        Assignment.hall_id == hall_id
+    ).first()
+    
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+        
+    is_active = assignment.monitoring_started_at is not None and assignment.monitoring_ended_at is None
+    
+    return {
+        "hall_id": hall_id,
+        "is_active": is_active,
+        "started_at": assignment.monitoring_started_at,
+        "ended_at": assignment.monitoring_ended_at
+    }
 
 @router.post("/", response_model=ExamSessionResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
@@ -138,6 +251,11 @@ def assign_invigilator(
     if not session:
         raise HTTPException(status_code=404, detail="Exam session not found")
         
+    # Verify hall is linked to this session
+    hall_linked = any(h.id == assignment.hall_id for h in session.halls)
+    if not hall_linked:
+        raise HTTPException(status_code=400, detail="Hall is not linked to this exam session")
+
     # Verify user
     user = db.query(User).filter(User.id == assignment.invigilator_id).first()
     if not user:
@@ -146,9 +264,20 @@ def assign_invigilator(
     if user.role not in ["invigilator", "referee"]:
         raise HTTPException(status_code=400, detail="User must be an invigilator or referee")
         
+    # Verify no duplicate primary assignment for this hall
+    if assignment.role == "primary":
+        existing_primary = db.query(Assignment).filter(
+            Assignment.exam_session_id == session_id,
+            Assignment.hall_id == assignment.hall_id,
+            Assignment.role == "primary"
+        ).first()
+        if existing_primary:
+            raise HTTPException(status_code=400, detail="A primary invigilator is already assigned to this hall")
+
     new_assignment = Assignment(
         exam_session_id=session_id,
         invigilator_id=assignment.invigilator_id,
+        hall_id=assignment.hall_id,
         role=assignment.role
     )
     
