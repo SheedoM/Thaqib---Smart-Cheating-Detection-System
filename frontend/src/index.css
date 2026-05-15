@@ -598,6 +598,45 @@
   gap: 16px;
 }
 
+.hall-monitoring-badge {
+  padding: 4px 12px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.hall-monitoring-badge.active {
+  background: rgba(0, 201, 80, 0.1);
+  color: #00c950;
+  border: 1px solid rgba(0, 201, 80, 0.2);
+}
+
+.hall-monitoring-badge.active::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #00c950;
+  animation: pulse-dot 1.5s infinite;
+}
+
+.hall-monitoring-badge.inactive {
+  background: rgba(113, 113, 123, 0.1);
+  color: #71717b;
+  border: 1px solid rgba(113, 113, 123, 0.2);
+}
+
+@keyframes pulse-dot {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.5); opacity: 0.5; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
 @media (max-width: 1200px) {
   .cameras-grid {
     grid-template-columns: repeat(2, 1fr);

@@ -121,10 +121,17 @@ def get_hall_monitoring_status(
     is_active = assignment.monitoring_started_at is not None and assignment.monitoring_ended_at is None
     
     return {
-        "hall_id": hall_id,
+        "hall_id": str(hall_id),
+        "hall_name": assignment.hall.name,
+        "exam_name": assignment.exam_session.exam_name,
         "is_active": is_active,
         "started_at": assignment.monitoring_started_at,
-        "ended_at": assignment.monitoring_ended_at
+        "ended_at": assignment.monitoring_ended_at,
+        "stats": {
+            "student_count": assignment.exam_session.student_count or 0,
+            "active_alerts": 0,
+        },
+        "alerts": [],
     }
 
 @router.post("/", response_model=ExamSessionResponse, status_code=status.HTTP_201_CREATED)

@@ -218,7 +218,7 @@ def _serialize_camera(device: Device, hall: Hall, runtime: CameraRuntime | None)
     }
 
 
-def _hall_to_payload(hall: Hall) -> dict[str, Any]:
+def _hall_to_payload(hall: Hall, db: Session | None = None) -> dict[str, Any]:
     active_devices = [d for d in hall.devices if d.deleted_at is None]
     camera_devices = [device for device in active_devices if device.type == "camera"]
     mic_devices = [device for device in active_devices if device.type == "microphone"]
@@ -226,10 +226,23 @@ def _hall_to_payload(hall: Hall) -> dict[str, Any]:
         _serialize_camera(device, hall, _camera_states.get(str(device.id)))
         for device in camera_devices
     ]
+    
+    monitoring_status = "inactive"
+    if db:
+        # Check if this hall is currently being monitored
+        active_assignment = db.query(Assignment).filter(
+            Assignment.hall_id == hall.id,
+            Assignment.monitoring_started_at.isnot(None),
+            Assignment.monitoring_ended_at.is_(None)
+        ).first()
+        if active_assignment:
+            monitoring_status = "active"
+
     return {
         "id": str(hall.id),
         "name": hall.name,
         "status": hall.status,
+        "monitoring_status": monitoring_status,
         "building": hall.building,
         "floor": hall.floor,
         "capacity": hall.capacity,
@@ -258,11 +271,24 @@ def _load_halls_with_devices(db: Session) -> list[Hall]:
 
 
 def _load_active_camera_rows(db: Session) -> list[tuple[Hall, Device]]:
-    halls = _load_halls_with_devices(db)
+    """Load cameras for halls that are currently in an active monitoring session."""
+    # Only include halls that have an active assignment (started and not ended)
+    active_assignments = (
+        db.query(Assignment)
+        .filter(
+            Assignment.monitoring_started_at.isnot(None),
+            Assignment.monitoring_ended_at.is_(None)
+        )
+        .options(selectinload(Assignment.hall).selectinload(Hall.devices))
+        .all()
+    )
+    
     active_pairs: list[tuple[Hall, Device]] = []
-    for hall in halls:
-        if hall.status != "ready":
+    for assignment in active_assignments:
+        hall = assignment.hall
+        if not hall or hall.deleted_at is not None:
             continue
+            
         for device in hall.devices:
             if device.deleted_at is not None:
                 continue
@@ -710,8 +736,9 @@ async def resume_active_sessions() -> None:
 
 
 def startup_stream_manager() -> None:
-    logger.info("Starting monitoring stream manager")
-    _refresh_camera_states()
+    """Initialize the stream manager. Does not auto-start cameras anymore; 
+    resuming is handled by resume_active_sessions during lifespan."""
+    logger.info("Initializing monitoring stream manager (idle)")
 
 
 def shutdown_stream_manager() -> None:
@@ -760,7 +787,7 @@ async def monitoring_layout(_=Depends(require_stream_user)) -> JSONResponse:
     db = SessionLocal()
     try:
         halls = _load_halls_with_devices(db)
-        payload = {"halls": [_hall_to_payload(hall) for hall in halls]}
+        payload = {"halls": [_hall_to_payload(hall, db=db) for hall in halls]}
     finally:
         db.close()
     return JSONResponse(payload)

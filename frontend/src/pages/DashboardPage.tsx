@@ -64,6 +64,7 @@ interface HallItem {
   id: string;
   name: string;
   status: string;
+  monitoring_status: 'active' | 'inactive';
   cameras: CameraItem[];
   mics: MicItem[];
 }
@@ -735,7 +736,14 @@ function CamerasTab({
       {halls.map((hall) => (
         <div key={hall.id} className="camera-hall-group">
           <div className="camera-hall-header">
-            <h2 className="hall-title">{hall.name}</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <h2 className="hall-title">{hall.name}</h2>
+              {hall.monitoring_status === 'active' ? (
+                <span className="hall-monitoring-badge active">جاري المراقبة</span>
+              ) : (
+                <span className="hall-monitoring-badge inactive">في انتظار البدء</span>
+              )}
+            </div>
             <button
               className="alert-btn-green"
               style={{ marginRight: 'auto', marginLeft: 0 }}

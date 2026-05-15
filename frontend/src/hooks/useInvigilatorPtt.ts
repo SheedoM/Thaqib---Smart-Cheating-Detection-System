@@ -23,6 +23,7 @@ export function useInvigilatorPtt(options: Options = {}) {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const scriptNodeRef = useRef<ScriptProcessorNode | null>(null);
   const pttActiveRef = useRef(false);
+  const [isTransmitting, setIsTransmitting] = useState(false);
 
   const cleanupAudioGraph = useCallback(() => {
     try {
@@ -37,6 +38,7 @@ export function useInvigilatorPtt(options: Options = {}) {
 
   const disconnect = useCallback(() => {
     pttActiveRef.current = false;
+    setIsTransmitting(false);
     cleanupAudioGraph();
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.close();
@@ -92,6 +94,7 @@ export function useInvigilatorPtt(options: Options = {}) {
 
     ws.addEventListener('close', () => {
       cleanupAudioGraph();
+      setIsTransmitting(false);
       void audioContextRef.current?.close().catch(() => undefined);
       audioContextRef.current = null;
       if (wsRef.current === ws) wsRef.current = null;
@@ -155,11 +158,12 @@ export function useInvigilatorPtt(options: Options = {}) {
     }
   }, [clientId, cleanupAudioGraph]);
 
-  const startSpeak = useCallback(
+  const startTransmission = useCallback(
     (targetId?: string) => {
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       pttActiveRef.current = true;
+      setIsTransmitting(true);
       const tid = targetId ?? defaultTargetId;
       ws.send(JSON.stringify({ type: 'start_speak', target_id: tid }));
       void audioContextRef.current?.resume();
@@ -167,11 +171,12 @@ export function useInvigilatorPtt(options: Options = {}) {
     [defaultTargetId]
   );
 
-  const stopSpeak = useCallback(
+  const stopTransmission = useCallback(
     (targetId?: string) => {
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       pttActiveRef.current = false;
+      setIsTransmitting(false);
       const tid = targetId ?? defaultTargetId;
       ws.send(JSON.stringify({ type: 'stop_speak', target_id: tid }));
     },
@@ -181,11 +186,15 @@ export function useInvigilatorPtt(options: Options = {}) {
   return {
     state,
     statusText,
+    isConnected: state === 'connected',
+    isTransmitting,
     defaultTargetId,
     connect,
     disconnect,
-    startSpeak,
-    stopSpeak,
+    startTransmission,
+    stopTransmission,
+    startSpeak: startTransmission, // Alias
+    stopSpeak: stopTransmission,   // Alias
   };
 }
 
