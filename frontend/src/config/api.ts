@@ -19,9 +19,14 @@ export async function authFetch(path: string, init: RequestInit = {}): Promise<R
   const method = (init.method ?? 'GET').toUpperCase();
   const headers = new Headers(init.headers);
 
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && !headers.has('X-CSRF-Token')) {
-    const csrfToken = readCookie('thaqib_csrf_token');
-    if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    if (!headers.has('X-CSRF-Token')) {
+      const csrfToken = readCookie('thaqib_csrf_token');
+      if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
+    }
+    if (init.body && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
   }
 
   return fetch(apiUrl(path), {

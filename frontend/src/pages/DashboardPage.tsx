@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import CameraModal from '../components/CameraModal';
 import HallsTab from '../components/HallsTab';
+import ExamsTab from '../components/ExamsTab';
+import SupervisorsTab from '../components/SupervisorsTab';
+import ReportsTab from '../components/ReportsTab';
 import { apiUrl, authFetch, STREAM_BASE } from '../config/api';
 import { useInvigilatorPtt } from '../hooks/useInvigilatorPtt';
 
@@ -85,7 +88,6 @@ const NAV_ITEMS = [
   { label: 'القاعات', key: 'halls', active: false },
   { label: 'الإمتحانات', key: 'exams', active: false },
   { label: 'المشرفين', key: 'supervisors', active: false },
-  { label: 'التقارير', key: 'reports', active: false },
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -495,6 +497,10 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
           )
         ) : activeNav === 'halls' ? (
           <HallsTab />
+        ) : activeNav === 'exams' ? (
+          <ExamsTab />
+        ) : activeNav === 'supervisors' ? (
+          <SupervisorsTab />
         ) : (
           <div className="dashboard-empty-state">
             <h3>قريباً</h3>

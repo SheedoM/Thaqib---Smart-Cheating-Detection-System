@@ -73,6 +73,7 @@ async def enforce_csrf_for_cookie_sessions(request, call_next):
 
     return await call_next(request)
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
