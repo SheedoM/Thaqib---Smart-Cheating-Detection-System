@@ -26,6 +26,10 @@ sys.path.insert(0, str(ROOT))
 from src.thaqib.db.database import SessionLocal, engine
 from src.thaqib.db.models import Base
 from src.thaqib.db.models.infrastructure import Device, Hall, Institution
+from src.thaqib.db.models.users import User
+from src.thaqib.db.models.exams import ExamSession, Assignment
+from src.thaqib.core.security import get_password_hash
+from datetime import datetime, timedelta
 
 OUT = ROOT / "demo_db.json"
 
@@ -221,6 +225,77 @@ def upsert_device(
     db.commit()
 
 
+def upsert_user(
+    db,
+    institution: Institution,
+    *,
+    username: str,
+    full_name: str,
+    role: str,
+    ptt_id: str | None = None,
+) -> User:
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        user = User(
+            institution_id=institution.id,
+            username=username,
+            password_hash=get_password_hash("password123"),
+            full_name=full_name,
+            email=f"{username}@example.com",
+            role=role,
+            ptt_id=ptt_id,
+            status="active",
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        user.ptt_id = ptt_id
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    return user
+
+
+def upsert_exam_session(db, exam_name: str) -> ExamSession:
+    session = db.query(ExamSession).filter(ExamSession.exam_name == exam_name).first()
+    if session is None:
+        now = datetime.now()
+        session = ExamSession(
+            exam_name=exam_name,
+            exam_type="Final",
+            scheduled_start=now - timedelta(minutes=30),
+            scheduled_end=now + timedelta(hours=2),
+            status="scheduled",
+            student_count=100,
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+    return session
+
+
+def upsert_assignment(db, session: ExamSession, user: User, hall: Hall) -> None:
+    assignment = (
+        db.query(Assignment)
+        .filter(
+            Assignment.exam_session_id == session.id,
+            Assignment.invigilator_id == user.id,
+            Assignment.hall_id == hall.id,
+        )
+        .first()
+    )
+    if assignment is None:
+        assignment = Assignment(
+            exam_session_id=session.id,
+            invigilator_id=user.id,
+            hall_id=hall.id,
+            role="primary",
+        )
+        db.add(assignment)
+        db.commit()
+
+
 def sync_to_db(protocol: str = "http", host: str = "localhost", port: int = 8000) -> None:
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
@@ -255,6 +330,33 @@ def sync_to_db(protocol: str = "http", host: str = "localhost", port: int = 8000
                     slot=hall_index * 10 + mic_index,
                     status="offline",
                 )
+        
+        # --- Seed Users and Workflow ---
+        invigilator = upsert_user(
+            db, 
+            institution, 
+            username="invigilator", 
+            full_name="Invigilator User", 
+            role="invigilator",
+            ptt_id="invigilator_demo_1"
+        )
+        # Ensure 'shady' admin has a ptt_id for the control room to recognize it if needed
+        upsert_user(
+            db,
+            institution,
+            username="shady",
+            full_name="Shady Admin",
+            role="admin",
+            ptt_id="control_room_1"
+        )
+        
+        exam_session = upsert_exam_session(db, "Midterm Exam 2024")
+        
+        # Link invigilator to Hall 101 for this session
+        hall_101 = db.query(Hall).filter(Hall.name == "قاعة 101").first()
+        if hall_101:
+            upsert_assignment(db, exam_session, invigilator, hall_101)
+            
     finally:
         db.close()
 
