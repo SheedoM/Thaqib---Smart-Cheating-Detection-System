@@ -1,0 +1,566 @@
+{
+  "generated_at": "2026-05-11T20:54:28.517247",
+  "total_events": 62,
+  "cheat_events": 31,
+  "sensitivity": 5,
+  "events": [
+    {
+      "event_id": 1,
+      "timestamp": "20:38:06",
+      "label": "Cheating 🚨",
+      "confidence": 0.5839351851851853,
+      "duration": 0.6000000000000003,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 2,
+      "timestamp": "20:38:07",
+      "label": "Cheating 🚨",
+      "confidence": 0.7226622971285893,
+      "duration": 0.5100000000000002,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 3,
+      "timestamp": "20:38:12",
+      "label": "Cheating 🚨",
+      "confidence": 0.8331481481481482,
+      "duration": 1.1700000000000008,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0001_20-38-12.wav"
+    },
+    {
+      "event_id": 5,
+      "timestamp": "20:38:18",
+      "label": "Cheating 🚨",
+      "confidence": 0.7559956304619226,
+      "duration": 1.2300000000000009,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0002_20-38-18.wav"
+    },
+    {
+      "event_id": 7,
+      "timestamp": "20:38:25",
+      "label": "Cheating 🚨",
+      "confidence": 0.7447227424053268,
+      "duration": 1.260000000000001,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0003_20-38-25.wav"
+    },
+    {
+      "event_id": 10,
+      "timestamp": "20:38:33",
+      "label": "Cheating 🚨",
+      "confidence": 0.699328963795256,
+      "duration": 1.2300000000000009,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0004_20-38-33.wav"
+    },
+    {
+      "event_id": 12,
+      "timestamp": "20:38:39",
+      "label": "Cheating 🚨",
+      "confidence": 0.509328963795256,
+      "duration": 1.380000000000001,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 13,
+      "timestamp": "20:38:50",
+      "label": "Cheating 🚨",
+      "confidence": 0.5618752600915523,
+      "duration": 1.0500000000000007,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 14,
+      "timestamp": "20:38:54",
+      "label": "Cheating 🚨",
+      "confidence": 0.6231486683312527,
+      "duration": 0.9300000000000006,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 15,
+      "timestamp": "20:38:58",
+      "label": "Cheating 🚨",
+      "confidence": 0.5259956304619227,
+      "duration": 1.1100000000000008,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 16,
+      "timestamp": "20:39:02",
+      "label": "Cheating 🚨",
+      "confidence": 0.5052085934248857,
+      "duration": 1.0800000000000007,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 17,
+      "timestamp": "20:39:07",
+      "label": "Cheating 🚨",
+      "confidence": 0.8034493341656264,
+      "duration": 0.5400000000000003,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 18,
+      "timestamp": "20:39:11",
+      "label": "Cheating 🚨",
+      "confidence": 0.7793289637952561,
+      "duration": 0.7500000000000004,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0005_20-39-11.wav"
+    },
+    {
+      "event_id": 19,
+      "timestamp": "20:39:22",
+      "label": "Cheating 🚨",
+      "confidence": 0.7726622971285894,
+      "duration": 1.1400000000000008,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0006_20-39-22.wav"
+    },
+    {
+      "event_id": 20,
+      "timestamp": "20:39:29",
+      "label": "Cheating 🚨",
+      "confidence": 0.8880560757386601,
+      "duration": 0.6000000000000003,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 23,
+      "timestamp": "20:39:39",
+      "label": "Cheating 🚨",
+      "confidence": 0.8126622971285894,
+      "duration": 0.9600000000000006,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0007_20-39-39.wav"
+    },
+    {
+      "event_id": 26,
+      "timestamp": "20:39:45",
+      "label": "Cheating 🚨",
+      "confidence": 0.8526622971285893,
+      "duration": 0.9600000000000006,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0008_20-39-45.wav"
+    },
+    {
+      "event_id": 27,
+      "timestamp": "20:39:54",
+      "label": "Cheating 🚨",
+      "confidence": 0.8718752600915523,
+      "duration": 3.029999999999995,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0009_20-39-54.wav"
+    },
+    {
+      "event_id": 29,
+      "timestamp": "20:40:01",
+      "label": "Cheating 🚨",
+      "confidence": 0.8767826674989597,
+      "duration": 3.029999999999995,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0010_20-40-01.wav"
+    },
+    {
+      "event_id": 32,
+      "timestamp": "20:40:17",
+      "label": "Cheating 🚨",
+      "confidence": 0.5590277777777778,
+      "duration": 1.2000000000000008,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 33,
+      "timestamp": "20:40:20",
+      "label": "Non-Cheating ✅",
+      "confidence": 0.5496988139825217,
+      "duration": 0.9000000000000006,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 34,
+      "timestamp": "20:40:27",
+      "label": "Non-Cheating ✅",
+      "confidence": 0.5350925925925926,
+      "duration": 2.4899999999999984,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 37,
+      "timestamp": "20:41:48",
+      "label": "Cheating 🚨",
+      "confidence": 0.9034493341656264,
+      "duration": 0.8400000000000005,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0011_20-41-48.wav"
+    },
+    {
+      "event_id": 39,
+      "timestamp": "20:41:54",
+      "label": "Cheating 🚨",
+      "confidence": 0.9159956304619228,
+      "duration": 0.9600000000000006,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0012_20-41-54.wav"
+    },
+    {
+      "event_id": 40,
+      "timestamp": "20:41:59",
+      "label": "Cheating 🚨",
+      "confidence": 0.9067826674989597,
+      "duration": 0.7200000000000004,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0013_20-41-59.wav"
+    },
+    {
+      "event_id": 41,
+      "timestamp": "20:42:09",
+      "label": "Cheating 🚨",
+      "confidence": 0.9234493341656264,
+      "duration": 0.7500000000000004,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0014_20-42-09.wav"
+    },
+    {
+      "event_id": 42,
+      "timestamp": "20:42:14",
+      "label": "Cheating 🚨",
+      "confidence": 0.8498148148148149,
+      "duration": 0.9300000000000006,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0015_20-42-14.wav"
+    },
+    {
+      "event_id": 44,
+      "timestamp": "20:42:19",
+      "label": "Cheating 🚨",
+      "confidence": 0.7693289637952561,
+      "duration": 0.5400000000000003,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 45,
+      "timestamp": "20:42:26",
+      "label": "Cheating 🚨",
+      "confidence": 0.6801160008322931,
+      "duration": 0.9600000000000006,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0016_20-42-26.wav"
+    },
+    {
+      "event_id": 47,
+      "timestamp": "20:42:30",
+      "label": "Cheating 🚨",
+      "confidence": 0.8859956304619228,
+      "duration": 0.4800000000000002,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 48,
+      "timestamp": "20:42:34",
+      "label": "Cheating 🚨",
+      "confidence": 0.9059956304619228,
+      "duration": 0.5400000000000003,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 49,
+      "timestamp": "20:42:40",
+      "label": "Cheating 🚨",
+      "confidence": 0.9126622971285895,
+      "duration": 0.5400000000000003,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 51,
+      "timestamp": "20:42:45",
+      "label": "Cheating 🚨",
+      "confidence": 0.87090303786933,
+      "duration": 0.9000000000000006,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0017_20-42-45.wav"
+    },
+    {
+      "event_id": 52,
+      "timestamp": "20:42:50",
+      "label": "Cheating 🚨",
+      "confidence": 0.6742363712026633,
+      "duration": 1.8300000000000014,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0018_20-42-50.wav"
+    },
+    {
+      "event_id": 53,
+      "timestamp": "20:42:56",
+      "label": "Cheating 🚨",
+      "confidence": 0.6380555555555556,
+      "duration": 0.30000000000000004,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 54,
+      "timestamp": "20:43:00",
+      "label": "Non-Cheating ✅",
+      "confidence": 0.584305035372451,
+      "duration": 1.0800000000000007,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 55,
+      "timestamp": "20:43:06",
+      "label": "Non-Cheating ✅",
+      "confidence": 0.501458073241781,
+      "duration": 0.9600000000000006,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 56,
+      "timestamp": "20:43:16",
+      "label": "Cheating 🚨",
+      "confidence": 0.7764814814814816,
+      "duration": 0.9300000000000006,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0019_20-43-16.wav"
+    },
+    {
+      "event_id": 60,
+      "timestamp": "20:43:30",
+      "label": "Cheating 🚨",
+      "confidence": 0.9034493341656264,
+      "duration": 0.6900000000000004,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 61,
+      "timestamp": "20:43:34",
+      "label": "Cheating 🚨",
+      "confidence": 0.8775697045359967,
+      "duration": 0.9000000000000006,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0020_20-43-34.wav"
+    },
+    {
+      "event_id": 63,
+      "timestamp": "20:43:45",
+      "label": "Cheating 🚨",
+      "confidence": 0.6856944444444445,
+      "duration": 0.8700000000000006,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0021_20-43-45.wav"
+    },
+    {
+      "event_id": 64,
+      "timestamp": "20:43:52",
+      "label": "Cheating 🚨",
+      "confidence": 0.6321759259259259,
+      "duration": 0.8100000000000005,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 74,
+      "timestamp": "20:46:11",
+      "label": "Cheating 🚨",
+      "confidence": 0.841388888888889,
+      "duration": 0.5400000000000003,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 77,
+      "timestamp": "20:46:37",
+      "label": "Cheating 🚨",
+      "confidence": 0.5955092592592592,
+      "duration": 2.1900000000000004,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 83,
+      "timestamp": "20:47:35",
+      "label": "Cheating 🚨",
+      "confidence": 0.6855092592592592,
+      "duration": 6.810000000000012,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0022_20-47-35.wav"
+    },
+    {
+      "event_id": 84,
+      "timestamp": "20:47:50",
+      "label": "Cheating 🚨",
+      "confidence": 0.7064814814814815,
+      "duration": 6.420000000000009,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0023_20-47-50.wav"
+    },
+    {
+      "event_id": 85,
+      "timestamp": "20:47:53",
+      "label": "Cheating 🚨",
+      "confidence": 0.7693289637952561,
+      "duration": 0.6600000000000004,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 86,
+      "timestamp": "20:48:08",
+      "label": "Cheating 🚨",
+      "confidence": 0.8585419267582189,
+      "duration": 2.729999999999997,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0024_20-48-08.wav"
+    },
+    {
+      "event_id": 88,
+      "timestamp": "20:48:15",
+      "label": "Cheating 🚨",
+      "confidence": 0.658541926758219,
+      "duration": 1.5900000000000012,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 89,
+      "timestamp": "20:48:21",
+      "label": "Cheating 🚨",
+      "confidence": 0.8780555555555556,
+      "duration": 2.1900000000000004,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0025_20-48-21.wav"
+    },
+    {
+      "event_id": 90,
+      "timestamp": "20:48:24",
+      "label": "Cheating 🚨",
+      "confidence": 0.8510882230545153,
+      "duration": 0.6600000000000004,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 93,
+      "timestamp": "20:48:34",
+      "label": "Cheating 🚨",
+      "confidence": 0.840787037037037,
+      "duration": 0.6300000000000003,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 97,
+      "timestamp": "20:51:32",
+      "label": "Cheating 🚨",
+      "confidence": 0.9477548897211818,
+      "duration": 1.0200000000000007,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0026_20-51-32.wav"
+    },
+    {
+      "event_id": 99,
+      "timestamp": "20:51:37",
+      "label": "Cheating 🚨",
+      "confidence": 0.761388888888889,
+      "duration": 0.3600000000000001,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 100,
+      "timestamp": "20:51:43",
+      "label": "Cheating 🚨",
+      "confidence": 0.7144215563878485,
+      "duration": 0.7200000000000004,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0027_20-51-43.wav"
+    },
+    {
+      "event_id": 103,
+      "timestamp": "20:52:34",
+      "label": "Cheating 🚨",
+      "confidence": 0.7198148148148149,
+      "duration": 4.079999999999989,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0028_20-52-34.wav"
+    },
+    {
+      "event_id": 104,
+      "timestamp": "20:52:48",
+      "label": "Cheating 🚨",
+      "confidence": 0.5918752600915523,
+      "duration": 7.8300000000000205,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 105,
+      "timestamp": "20:52:52",
+      "label": "Cheating 🚨",
+      "confidence": 0.6652085934248856,
+      "duration": 1.6800000000000013,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0029_20-52-52.wav"
+    },
+    {
+      "event_id": 106,
+      "timestamp": "20:52:55",
+      "label": "Cheating 🚨",
+      "confidence": 0.9013894090719934,
+      "duration": 0.6000000000000003,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 107,
+      "timestamp": "20:53:03",
+      "label": "Cheating 🚨",
+      "confidence": 0.6744215563878486,
+      "duration": 0.5100000000000002,
+      "is_cheat": false,
+      "audio_file": null
+    },
+    {
+      "event_id": 120,
+      "timestamp": "20:54:08",
+      "label": "Cheating 🚨",
+      "confidence": 0.6606023720349564,
+      "duration": 1.8300000000000014,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0030_20-54-08.wav"
+    },
+    {
+      "event_id": 122,
+      "timestamp": "20:54:28",
+      "label": "Cheating 🚨",
+      "confidence": 0.6844215563878486,
+      "duration": 3.329999999999993,
+      "is_cheat": true,
+      "audio_file": "detections\\cheat_0031_20-54-28.wav"
+    }
+  ]
+}
