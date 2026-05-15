@@ -94,6 +94,15 @@ class Assignment(Base, UUIDMixin, TimestampMixin):
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
     role: Mapped[str] = mapped_column(String(20), default="primary")
+    hall_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("halls.id", ondelete="CASCADE"), nullable=False
+    )
+    monitoring_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    monitoring_ended_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # 'primary' or 'secondary'
 
     # Relationships
@@ -101,3 +110,4 @@ class Assignment(Base, UUIDMixin, TimestampMixin):
         "ExamSession", back_populates="assignments"
     )
     invigilator: Mapped["User"] = relationship("User", back_populates="assignments")
+    hall: Mapped["Hall"] = relationship("Hall")

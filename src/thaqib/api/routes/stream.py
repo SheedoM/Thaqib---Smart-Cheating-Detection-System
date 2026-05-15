@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from src.thaqib.db.database import SessionLocal
 from src.thaqib.db.models.infrastructure import Device, Hall
+from src.thaqib.db.models.exams import Assignment
 from src.thaqib.api.dependencies import RequireRole
 
 logger = logging.getLogger(__name__)
@@ -81,14 +82,6 @@ class CameraRuntime:
     frame_lock: threading.Lock = field(default_factory=threading.Lock)
     latest_frame: bytes | None = None
     stats: dict[str, Any] = field(default_factory=dict)
-    pipeline: Any = None
-
-    # Visualizer display flags
-    show_neighbors: bool = True
-    show_paper: bool = True
-    show_phone: bool = True
-    show_links: bool = True
-    show_timestamp: bool = True
 
     def __post_init__(self) -> None:
         self.stats = {
@@ -282,7 +275,7 @@ def _load_active_camera_rows(db: Session) -> list[tuple[Hall, Device]]:
     return active_pairs
 
 
-def _draw_annotations(frame: np.ndarray, pipeline_frame: Any, camera: CameraRuntime, scale: float = 1.0) -> np.ndarray:
+def _draw_annotations(frame: np.ndarray, pipeline_frame: Any, scale: float = 1.0) -> np.ndarray:
     annotated = frame.copy()
 
     def s(val: Any) -> int:
@@ -350,7 +343,8 @@ def _draw_annotations(frame: np.ndarray, pipeline_frame: Any, camera: CameraRunt
                     1,
                 )
 
-        if camera.show_neighbors and spatial_context is not None:
+        spatial_context = getattr(state, "spatial_context", None)
+        if spatial_context is not None:
             for risk in getattr(spatial_context, "risk_angles", []) or []:
                 cx, cy = state.center
                 angle_rad = np.radians(risk.center_angle)
@@ -359,31 +353,12 @@ def _draw_annotations(frame: np.ndarray, pipeline_frame: Any, camera: CameraRunt
                 end_y = int(s(cy) + radius * np.sin(angle_rad))
                 cv2.line(annotated, (s(cx), s(cy)), (end_x, end_y), (0, 165, 255), 1)
 
-    if pipeline_frame.tools_result is not None:
-        if camera.show_paper:
-            for paper in pipeline_frame.tools_result.paper_detections:
-                x1, y1, x2, y2 = paper.bbox
-                cv2.rectangle(annotated, (s(x1), s(y1)), (s(x2), s(y2)), (255, 255, 0), 1)
-        if camera.show_phone:
-            for phone in pipeline_frame.tools_result.phone_detections:
-                x1, y1, x2, y2 = phone.bbox
-                cv2.rectangle(annotated, (s(x1), s(y1)), (s(x2), s(y2)), (0, 0, 255), 2)
-                cv2.putText(annotated, "PHONE", (s(x1), s(y1)-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-
-    if camera.show_links:
-        for state in pipeline_frame.student_states:
-            for paper_pt in getattr(state, "surrounding_papers", []):
-                cv2.line(annotated, (s(state.center[0]), s(state.center[1])), (s(paper_pt[0]), s(paper_pt[1])), (255, 255, 0), 1)
-
     info_lines = [
         f"FPS: {1000 / max(pipeline_frame.processing_time_ms, 1):.1f}",
         f"Tracked: {pipeline_frame.tracked_count}",
         f"Selected: {pipeline_frame.selected_count}",
         f"Frame: {pipeline_frame.frame_index}",
     ]
-    if camera.show_timestamp:
-        info_lines.append(f"Time: {datetime.now().strftime('%H:%M:%S')}")
-        
     for i, line in enumerate(info_lines):
         cv2.putText(
             annotated,
@@ -480,7 +455,6 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             logger.error("Camera %s failed to open source: %s", camera.identifier, camera.source)
             return
 
-        camera.pipeline = pipeline
         camera.stats["is_running"] = True
         camera.stats["last_error"] = None
         camera.stats["last_error_at"] = None
@@ -519,7 +493,7 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             else:
                 display_frame = original_frame
 
-            annotated = _draw_annotations(display_frame, frame_data, camera, scale=scale)
+            annotated = _draw_annotations(display_frame, frame_data, scale=scale)
             now = time.time()
             if now - last_emit < min_interval:
                 camera.stats["frame_drops"] = camera.stats.get("frame_drops", 0) + 1
@@ -616,6 +590,125 @@ def _refresh_camera_states() -> None:
             runtime.thread.start()
 
 
+def start_hall_monitoring(hall_id: uuid.UUID, session_id: uuid.UUID, db: Session) -> None:
+    """Start monitoring all cameras in a specific hall for a session."""
+    # 1. Update database
+    assignment = db.query(Assignment).filter(
+        Assignment.exam_session_id == session_id,
+        Assignment.hall_id == hall_id
+    ).first()
+    if assignment:
+        assignment.monitoring_started_at = datetime.now()
+        
+        # Auto-update session status to 'active' if it was 'scheduled'
+        session = assignment.exam_session
+        if session.status == "scheduled":
+            session.status = "active"
+            if not session.actual_start:
+                session.actual_start = assignment.monitoring_started_at
+                
+        db.commit()
+
+    # 2. Start cameras
+    hall = db.query(Hall).filter(Hall.id == hall_id).options(selectinload(Hall.devices)).first()
+    if not hall:
+        return
+
+    with _manager_lock:
+        for device in hall.devices:
+            if device.deleted_at or device.type != "camera":
+                continue
+            source = (device.stream_url or "").strip()
+            if not source:
+                continue
+                
+            device_id = str(device.id)
+            if device_id in _camera_states:
+                runtime = _camera_states[device_id]
+                if runtime.thread and runtime.thread.is_alive():
+                    continue
+                _stop_camera_runtime(runtime)
+
+            runtime = CameraRuntime(
+                device_id=device_id,
+                identifier=device.identifier,
+                camera_name=_camera_display_name(device),
+                hall_id=str(hall.id),
+                hall_name=hall.name,
+                source=source,
+            )
+            runtime.thread = threading.Thread(
+                target=_run_pipeline,
+                args=(runtime,),
+                daemon=True,
+                name=f"Stream-{device.identifier}",
+            )
+            _camera_states[device_id] = runtime
+            runtime.thread.start()
+
+
+def stop_hall_monitoring(hall_id: uuid.UUID, session_id: uuid.UUID, db: Session) -> None:
+    """Stop monitoring all cameras in a specific hall."""
+    # 1. Update database
+    assignment = db.query(Assignment).filter(
+        Assignment.exam_session_id == session_id,
+        Assignment.hall_id == hall_id
+    ).first()
+    if assignment:
+        assignment.monitoring_ended_at = datetime.now()
+        
+        # Check if all halls in this session have finished monitoring
+        session = assignment.exam_session
+        # Get all hall IDs for this session
+        session_hall_ids = [h.id for h in session.halls]
+        
+        # Check if every hall in the session has at least one assignment that has ended monitoring
+        # (and no assignments currently monitoring)
+        monitoring_halls_count = db.query(Assignment).filter(
+            Assignment.exam_session_id == session_id,
+            Assignment.monitoring_started_at.isnot(None),
+            Assignment.monitoring_ended_at.is_(None)
+        ).count()
+        
+        if monitoring_halls_count == 0:
+            # If nothing is currently monitoring, check if all halls have at least been touched or if we want to force completion
+            # For now, if the last active hall stops, we mark the session as completed
+            session.status = "completed"
+            if not session.actual_end:
+                session.actual_end = assignment.monitoring_ended_at
+                
+        db.commit()
+
+    # 2. Stop cameras
+    hall = db.query(Hall).filter(Hall.id == hall_id).options(selectinload(Hall.devices)).first()
+    if not hall:
+        return
+
+    with _manager_lock:
+        for device in hall.devices:
+            device_id = str(device.id)
+            if device_id in _camera_states:
+                _stop_camera_runtime(_camera_states[device_id])
+                del _camera_states[device_id]
+
+
+async def resume_active_sessions() -> None:
+    """Resume monitoring for all assignments that were active before server restart."""
+    db = SessionLocal()
+    try:
+        # Find assignments where monitoring_started_at is set but monitoring_ended_at is NOT
+        active_assignments = db.query(Assignment).filter(
+            Assignment.monitoring_started_at.isnot(None),
+            Assignment.monitoring_ended_at.is_(None)
+        ).all()
+        
+        for assignment in active_assignments:
+            logger.info("Resuming monitoring for Hall %s in Session %s", assignment.hall_id, assignment.exam_session_id)
+            start_hall_monitoring(assignment.hall_id, assignment.exam_session_id, db)
+    finally:
+        db.close()
+
+
 def startup_stream_manager() -> None:
     logger.info("Starting monitoring stream manager")
     _refresh_camera_states()
@@ -639,52 +732,6 @@ def _force_restart_all_cameras() -> None:
         _stop_camera_runtime(runtime)
     _refresh_camera_states()
 
-
-from pydantic import BaseModel
-
-class StreamCommand(BaseModel):
-    command: str
-    track_id: int | None = None
-
-@router.post("/camera/{device_id}/command")
-def post_camera_command(device_id: str, cmd: StreamCommand, db: Session = Depends(SessionLocal)):
-    camera = _camera_states.get(device_id)
-    if not camera:
-        raise HTTPException(status_code=404, detail="Camera not running")
-        
-    key = cmd.command.upper()
-    pipeline = camera.pipeline
-    
-    # Display toggles (handled by CameraRuntime flags)
-    if key == "T":
-        camera.show_neighbors = not camera.show_neighbors
-    elif key == "D":
-        camera.show_paper = not camera.show_paper
-    elif key == "F":
-        camera.show_phone = not camera.show_phone
-    elif key == "L":
-        camera.show_links = not camera.show_links
-    elif key == "W":
-        camera.show_timestamp = not camera.show_timestamp
-        
-    # Pipeline actions
-    elif pipeline:
-        if key == "S":
-            all_ids = [t.track_id for t in pipeline.get_all_tracks()]
-            if all_ids:
-                pipeline.select_students(all_ids)
-        elif key == "M" and cmd.track_id is not None:
-            pipeline.remove_student(cmd.track_id)
-        elif key == "C":
-            pipeline.clear_selection()
-        elif key == "V":
-            pipeline.toggle_video_quality()
-        elif key == "G":
-            pipeline.toggle_processing_resolution()
-        elif key == "R":
-            pipeline.toggle_archive_mode()
-            
-    return {"status": "ok", "command": key}
 
 @router.post("/reload")
 async def reload_monitoring(_=Depends(require_stream_user)) -> JSONResponse:

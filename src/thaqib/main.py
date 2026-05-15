@@ -18,6 +18,7 @@ settings = get_settings()
 async def lifespan(_: FastAPI):
     if settings.stream_manager_enabled:
         stream.startup_stream_manager()
+        await stream.resume_active_sessions()
     try:
         yield
     finally:
