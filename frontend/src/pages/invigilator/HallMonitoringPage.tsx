@@ -1,18 +1,27 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { 
-  Loader2, 
-  Camera, 
-  AlertTriangle, 
-  Play, 
-  Square, 
-  Mic, 
+import {
+  Loader2,
+  Camera,
+  AlertTriangle,
+  Play,
+  Square,
+  Mic,
   ChevronRight,
-  Info
+  Info,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { authFetch, apiUrl } from '../../config/api';
 import type { HallMonitoringStatus, HallReadiness } from '../../types/exams';
 import { useInvigilatorPtt } from '../../hooks/useInvigilatorPtt';
+
+interface FeedItem {
+  device_id: string;
+  name: string;
+  feed_path: string;
+  source_configured: boolean;
+}
 
 export default function HallMonitoringPage() {
   const { sessionId, hallId } = useParams<{ sessionId: string; hallId: string }>();
@@ -22,12 +31,13 @@ export default function HallMonitoringPage() {
   const [readiness, setReadiness] = useState<HallReadiness | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
+  const [feeds, setFeeds] = useState<FeedItem[]>([]);
   const navigate = useNavigate();
 
-  // PTT Hook
-  const { isTransmitting, startTransmission, stopTransmission } = useInvigilatorPtt();
+  // PTT Hook — auto-connect so mic is ready in hall (invigilator talks to control_room_1)
+  const ptt = useInvigilatorPtt({ autoConnect: true });
 
-  const fetchStatus = async () => {
+  const fetchStatus = useCallback(async () => {
     try {
       const response = await authFetch(`/api/sessions/${sessionId}/halls/${hallId}/status`);
       if (response.ok) {
@@ -39,13 +49,26 @@ export default function HallMonitoringPage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [sessionId, hallId]);
+
+  const fetchFeeds = useCallback(async () => {
+    try {
+      const response = await authFetch(`/api/sessions/${sessionId}/halls/${hallId}/feeds`);
+      if (response.ok) {
+        const data = await response.json();
+        setFeeds(data.feeds || []);
+      }
+    } catch (err) {
+      console.error('Error fetching hall feeds:', err);
+    }
+  }, [sessionId, hallId]);
 
   useEffect(() => {
     fetchStatus();
+    fetchFeeds();
     const interval = setInterval(fetchStatus, 5000); // Poll every 5s
     return () => clearInterval(interval);
-  }, [sessionId, hallId]);
+  }, [fetchStatus, fetchFeeds]);
 
   const runReadinessCheck = async () => {
     setIsChecking(true);
@@ -81,7 +104,9 @@ export default function HallMonitoringPage() {
       });
       if (response.ok) {
         setReadiness(null);
+        // Immediately refetch status and feeds after starting (1B fix)
         await fetchStatus();
+        await fetchFeeds();
       } else {
         setError('فشل في بدء المراقبة.');
       }
@@ -94,7 +119,7 @@ export default function HallMonitoringPage() {
 
   const handleStopMonitoring = async () => {
     if (!window.confirm('هل أنت متأكد من إنهاء جلسة المراقبة؟')) return;
-    
+
     try {
       const response = await authFetch(`/api/sessions/${sessionId}/halls/${hallId}/monitoring/stop`, {
         method: 'POST'
@@ -117,6 +142,8 @@ export default function HallMonitoringPage() {
   }
 
   const isMonitoring = status?.is_active;
+  // Use the first configured feed for the main view
+  const primaryFeed = feeds.find((f) => f.source_configured) ?? feeds[0] ?? null;
 
   return (
     <div className="flex flex-col min-h-full">
@@ -133,7 +160,22 @@ export default function HallMonitoringPage() {
             قاعة {status?.hall_name}
           </span>
         </div>
-        <div className="mr-auto">
+        <div className="mr-auto flex items-center gap-2">
+          {/* PTT connection badge */}
+          <div className={`flex items-center gap-1 px-2 py-1 rounded-lg ${
+            ptt.state === 'connected' ? 'bg-green-50' : 'bg-gray-50'
+          }`}>
+            {ptt.state === 'connected' ? (
+              <Wifi size={12} className="text-green-500" />
+            ) : (
+              <WifiOff size={12} className="text-gray-400" />
+            )}
+            <span className={`text-[9px] font-bold uppercase ${
+              ptt.state === 'connected' ? 'text-green-600' : 'text-gray-400'
+            }`}>
+              {ptt.isTransmitting ? 'يتحدث' : ptt.state === 'connected' ? 'PTT' : 'غير متصل'}
+            </span>
+          </div>
           {isMonitoring ? (
             <div className="flex items-center gap-1.5 px-2 py-1 bg-green-50 rounded-lg">
               <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
@@ -150,17 +192,26 @@ export default function HallMonitoringPage() {
 
       {/* Main Video Section */}
       <div className="relative aspect-video bg-black w-full overflow-hidden">
-        {isMonitoring ? (
-          <img 
-            src={apiUrl(`/api/stream/hall/${hallId}/video`)} 
+        {isMonitoring && primaryFeed ? (
+          <img
+            src={apiUrl(primaryFeed.feed_path)}
             alt="Live Stream"
             className="w-full h-full object-contain"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.opacity = '0.3';
+            }}
           />
+        ) : isMonitoring ? (
+          /* Monitoring is active but no feed configured */
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-white p-8 text-center">
+            <Camera size={48} className="text-gray-600 mb-4 opacity-50" />
+            <p className="text-gray-400 font-medium">لا توجد كاميرا مرتبطة بهذه القاعة</p>
+          </div>
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-white p-8 text-center">
             <Camera size={48} className="text-gray-600 mb-4 opacity-50" />
             <p className="text-gray-400 font-medium mb-6">المراقبة لم تبدأ بعد لهذه القاعة</p>
-            <button 
+            <button
               onClick={() => handleStartMonitoring(false)}
               disabled={isStarting || isChecking}
               className="bg-thaqib-primary hover:bg-thaqib-primary-dark disabled:opacity-50 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all active:scale-95 shadow-lg shadow-purple-900/20"
@@ -174,15 +225,17 @@ export default function HallMonitoringPage() {
         {/* Floating PTT Button for Monitoring Mode */}
         {isMonitoring && (
           <div className="absolute bottom-4 left-4 right-4 flex justify-center pointer-events-none">
-            <button 
-              onMouseDown={() => startTransmission()}
-              onMouseUp={() => stopTransmission()}
-              onTouchStart={() => startTransmission()}
-              onTouchEnd={() => stopTransmission()}
+            <button
+              onMouseDown={() => ptt.startTransmission()}
+              onMouseUp={() => ptt.stopTransmission()}
+              onTouchStart={(e) => { e.preventDefault(); ptt.startTransmission(); }}
+              onTouchEnd={(e) => { e.preventDefault(); ptt.stopTransmission(); }}
               className={`pointer-events-auto h-16 w-16 rounded-full flex items-center justify-center transition-all shadow-xl ${
-                isTransmitting 
-                  ? 'bg-red-500 scale-110 shadow-red-500/40' 
-                  : 'bg-thaqib-primary shadow-purple-500/40 active:scale-90'
+                ptt.isTransmitting
+                  ? 'bg-red-500 scale-110 shadow-red-500/40'
+                  : ptt.state === 'connected'
+                  ? 'bg-thaqib-primary shadow-purple-500/40 active:scale-90'
+                  : 'bg-gray-500 shadow-gray-500/20 active:scale-90'
               }`}
             >
               <Mic size={28} className="text-white" />
@@ -267,7 +320,7 @@ export default function HallMonitoringPage() {
               <span className="text-[10px] font-bold text-thaqib-primary px-2 py-0.5 bg-purple-50 rounded-full">عرض الكل</span>
             )}
           </div>
-          
+
           <div className="space-y-3">
             {status?.alerts && status.alerts.length > 0 ? (
               status.alerts.slice(0, 3).map((alert, idx) => (
@@ -292,7 +345,7 @@ export default function HallMonitoringPage() {
         </section>
 
         {isMonitoring && (
-          <button 
+          <button
             onClick={handleStopMonitoring}
             className="w-full py-4 text-red-500 font-bold text-sm border-2 border-red-50 rounded-2xl hover:bg-red-50 transition-colors flex items-center justify-center gap-2"
           >

@@ -91,13 +91,16 @@ export default function ExamsTab() {
   useEffect(() => {
     fetchExams();
     fetchUsers();
+    // Poll every 10 s so running-state cards update automatically (Phase 2)
+    const interval = setInterval(fetchExams, 10_000);
+    return () => clearInterval(interval);
   }, []);
 
   const userById = users.reduce<Record<string, UserSimple>>((acc, user) => {
     acc[user.id] = user;
     return acc;
   }, {});
-  
+
   if (viewingReport) {
     return <ReportsTab initialReport={viewingReport as any} onBack={() => setViewingReport(null)} />;
   }
@@ -140,6 +143,10 @@ export default function ExamsTab() {
               onDelete={() => setDeletingExam(exam)}
               onViewReport={() => setViewingReport(exam)}
               onStart={() => setStartingExam(exam)}
+              onStop={async (hallId) => {
+                await authFetch(`/api/sessions/${exam.id}/halls/${hallId}/monitoring/stop`, { method: 'POST' });
+                fetchExams();
+              }}
             />
           ))}
         </div>
@@ -185,6 +192,7 @@ function ExamCard({
   onDelete,
   onViewReport,
   onStart,
+  onStop,
 }: {
   exam: ExamItem,
   userById: Record<string, UserSimple>,
@@ -192,7 +200,22 @@ function ExamCard({
   onDelete: () => void,
   onViewReport: () => void,
   onStart: () => void,
+  onStop: (hallId: string) => Promise<void>,
 }) {
+  const [stoppingHallId, setStoppingHallId] = useState<string | null>(null);
+
+  // Derive running state: is any hall currently being monitored?
+  const activeAssignments = (exam.assignments || []).filter(
+    (a: any) => a.monitoring_started_at && !a.monitoring_ended_at
+  );
+  const isRunning = exam.status === 'active' || activeAssignments.length > 0;
+  const isCompleted = exam.status === 'completed';
+
+  const handleStop = async (hallId: string) => {
+    if (!window.confirm('هل تريد إيقاف مراقبة هذه القاعة؟')) return;
+    setStoppingHallId(hallId);
+    try { await onStop(hallId); } finally { setStoppingHallId(null); }
+  };
   const badgeStyle: Record<string, string> = {
     midterm: 'bg-[#F2EEFF] text-[#6C5CE7]',
     practical: 'bg-[#E1F7FF] text-[#0984E3]',
@@ -234,6 +257,43 @@ function ExamCard({
           <span className="text-gray-500">المراقبين: </span>
           {invigilatorNames.length > 0 ? invigilatorNames.join('، ') : 'لم يتم تعيين مراقبين'}
         </div>
+
+        {/* Status chip */}
+        <div className="mt-3">
+          {isRunning ? (
+            <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-black bg-green-100 text-green-700">
+              <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse inline-block"></span>
+              جاري الآن
+            </span>
+          ) : isCompleted ? (
+            <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-black bg-gray-100 text-gray-400">منتهي</span>
+          ) : (
+            <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-black bg-blue-50 text-blue-500">مجدول</span>
+          )}
+        </div>
+
+        {/* Per-hall stop controls when running */}
+        {isRunning && exam.halls && exam.halls.length > 0 && (
+          <div className="mt-3 space-y-1.5">
+            {exam.halls.map((hall) => {
+              const hallActive = (exam.assignments || []).some(
+                (a: any) => a.hall_id === hall.id && a.monitoring_started_at && !a.monitoring_ended_at
+              );
+              return hallActive ? (
+                <div key={hall.id} className="flex items-center justify-between bg-red-50 border border-red-100 rounded-xl px-3 py-2">
+                  <span className="text-[11px] font-black text-red-700">{hall.name}</span>
+                  <button
+                    onClick={() => handleStop(hall.id)}
+                    disabled={stoppingHallId === hall.id}
+                    className="text-[10px] font-black text-red-500 hover:text-red-700 underline disabled:opacity-50"
+                  >
+                    {stoppingHallId === hall.id ? 'جاري الإيقاف...' : 'إيقاف'}
+                  </button>
+                </div>
+              ) : null;
+            })}
+          </div>
+        )}
       </div>
 
       <div className="pt-4 mt-4 border-t border-gray-50 flex justify-between items-center">

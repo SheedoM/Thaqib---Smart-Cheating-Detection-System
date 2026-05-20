@@ -2,20 +2,43 @@ import uuid
 from pathlib import Path
 from typing import List, Any, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.users import User
 from src.thaqib.db.models.infrastructure import Institution
 from src.thaqib.schemas.users import UserCreate, UserResponse, UserUpdate
-from src.thaqib.api.dependencies import RequireRole
-from src.thaqib.core.security import get_password_hash
+from src.thaqib.api.dependencies import RequireRole, get_current_user
+from src.thaqib.core.security import get_password_hash, verify_password
 from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
 # Admin only restriction
 require_admin = RequireRole(["admin"])
+
+class PasswordChangePayload(BaseModel):
+    current_password: str
+    new_password: str
+
+@router.put("/me/password", status_code=200)
+@limiter.limit("5/minute")
+def change_my_password(
+    request: Request,
+    payload: PasswordChangePayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Allow any authenticated user to change their own password."""
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="كلمة المرور الحالية غير صحيحة")
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=400, detail="كلمة المرور الجديدة يجب أن تكون 8 أحرف على الأقل")
+    current_user.password_hash = get_password_hash(payload.new_password)
+    db.add(current_user)
+    db.commit()
+    return {"message": "تم تغيير كلمة المرور بنجاح"}
 
 UPLOADS_DIR = Path("uploads/users")
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)

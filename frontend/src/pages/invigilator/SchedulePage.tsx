@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, MapPin, Clock, ArrowLeft } from 'lucide-react';
+import { Loader2, MapPin, Clock, ArrowLeft, RefreshCw } from 'lucide-react';
 import { authFetch } from '../../config/api';
 import type { Assignment } from '../../types/exams';
 
@@ -10,26 +10,44 @@ export default function SchedulePage() {
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
 
+  const fetchSchedule = useCallback(async (silent = false) => {
+    if (!silent) setIsLoading(true);
+    try {
+      const response = await authFetch('/api/sessions/my');
+      if (response.ok) {
+        const data = await response.json();
+        setAssignments(data);
+        setError(null);
+      } else {
+        setError('فشل في تحميل الجدول الزمني.');
+      }
+    } catch (err) {
+      console.error('Error fetching schedule:', err);
+      setError('تعذر الاتصال بالخادم.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    const fetchSchedule = async () => {
-      try {
-        const response = await authFetch('/api/sessions/my');
-        if (response.ok) {
-          const data = await response.json();
-          setAssignments(data);
-        } else {
-          setError('فشل في تحميل الجدول الزمني.');
-        }
-      } catch (err) {
-        console.error('Error fetching schedule:', err);
-        setError('تعذر الاتصال بالخادم.');
-      } finally {
-        setIsLoading(false);
+    fetchSchedule();
+
+    // Refetch every 30 seconds so status updates (scheduled → active) are visible
+    const interval = setInterval(() => fetchSchedule(true), 30_000);
+
+    // Refetch when the tab becomes visible again (e.g. user navigated back from hall)
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        fetchSchedule(true);
       }
     };
+    document.addEventListener('visibilitychange', onVisibility);
 
-    fetchSchedule();
-  }, []);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [fetchSchedule]);
 
   if (isLoading) {
     return (
@@ -43,7 +61,16 @@ export default function SchedulePage() {
   return (
     <div className="px-6 py-8">
       <header className="mb-8">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">مرحباً بك 👋</h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-2xl font-bold text-gray-900">مرحباً بك 👋</h2>
+          <button
+            onClick={() => fetchSchedule(false)}
+            className="p-2 text-gray-400 hover:text-thaqib-primary hover:bg-purple-50 rounded-full transition-colors"
+            title="تحديث الجدول"
+          >
+            <RefreshCw size={18} />
+          </button>
+        </div>
         <p className="text-gray-500 font-medium">لديك {assignments.length} جلسات مراقبة مجدولة.</p>
       </header>
 
@@ -59,7 +86,7 @@ export default function SchedulePage() {
           <div className="space-y-4">
             {assignments.length > 0 ? (
               assignments.map((assignment) => (
-                <div 
+                <div
                   key={assignment.id}
                   onClick={() => navigate(`/invigilator/session/${assignment.exam_session_id}/${assignment.hall_id}`)}
                   className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 active:scale-[0.98] transition-transform cursor-pointer"
@@ -74,6 +101,8 @@ export default function SchedulePage() {
                     </div>
                     {assignment.monitoring_started_at && !assignment.monitoring_ended_at ? (
                       <span className="bg-green-100 text-green-600 text-[10px] font-bold px-2 py-1 rounded-full uppercase">نشط الآن</span>
+                    ) : assignment.monitoring_ended_at ? (
+                      <span className="bg-gray-100 text-gray-400 text-[10px] font-bold px-2 py-1 rounded-full uppercase">منتهي</span>
                     ) : (
                       <span className="bg-gray-100 text-gray-500 text-[10px] font-bold px-2 py-1 rounded-full uppercase">مجدول</span>
                     )}
