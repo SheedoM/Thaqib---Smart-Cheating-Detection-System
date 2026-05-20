@@ -6,17 +6,24 @@ export type PttConnectionState = 'idle' | 'connecting' | 'connected' | 'error';
 type Options = {
   clientId?: string;
   defaultTargetId?: string;
+  /** If true, call connect() automatically on mount */
+  autoConnect?: boolean;
 };
 
 /**
- * Push-to-talk to an invigilator (same protocol as src/tests/ptt_client.html).
+ * Push-to-talk hook (same protocol as src/tests/ptt_client.html).
+ *
+ * Role-aware defaults (resolved at runtime from /api/auth/me):
+ *   - invigilator  → connects as ptt_id, targets 'control_room_1'
+ *   - admin/referee → connects as ptt_id, targets currently selected invigilator
+ *
+ * Pass `clientId` / `defaultTargetId` to override the resolved values.
  */
 export function useInvigilatorPtt(options: Options = {}) {
-  const clientId = options.clientId ?? 'control_room_dashboard';
-  const defaultTargetId = options.defaultTargetId ?? 'invigilator_demo_1';
-
   const [state, setState] = useState<PttConnectionState>('idle');
   const [statusText, setStatusText] = useState('غير متصل');
+  const [resolvedClientId, setResolvedClientId] = useState(options.clientId ?? 'control_room_dashboard');
+  const [resolvedTargetId, setResolvedTargetId] = useState(options.defaultTargetId ?? 'control_room_1');
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -24,6 +31,30 @@ export function useInvigilatorPtt(options: Options = {}) {
   const scriptNodeRef = useRef<ScriptProcessorNode | null>(null);
   const pttActiveRef = useRef(false);
   const [isTransmitting, setIsTransmitting] = useState(false);
+
+  // Resolve PTT identity from /api/auth/me on mount (if not overridden)
+  useEffect(() => {
+    if (options.clientId && options.defaultTargetId) return; // fully overridden by caller
+    const controller = new AbortController();
+    fetch('/api/auth/me', { credentials: 'include', signal: controller.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((user: { ptt_id?: string; username?: string; id?: string; role?: string } | null) => {
+        if (!user) return;
+        const myPttId = user.ptt_id || user.username || user.id || 'unknown';
+        if (!options.clientId) setResolvedClientId(myPttId);
+        if (!options.defaultTargetId) {
+          // Invigilator always talks back to control room; admin/referee targets invigilator
+          if (user.role === 'invigilator') {
+            setResolvedTargetId('control_room_1');
+          } else {
+            // Admin/referee default target — can be overridden via startTransmission(targetId)
+            setResolvedTargetId('invigilator_demo_1');
+          }
+        }
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [options.clientId, options.defaultTargetId]);
 
   const cleanupAudioGraph = useCallback(() => {
     try {
@@ -59,7 +90,21 @@ export function useInvigilatorPtt(options: Options = {}) {
     setState('connecting');
     setStatusText('جاري الاتصال…');
 
-    const ws = new WebSocket(pttWebSocketUrl(clientId));
+    // Append access_token query param (read from cookie) for cross-origin WS
+    let wsUrl = pttWebSocketUrl(resolvedClientId);
+    try {
+      const cookie = document.cookie
+        .split('; ')
+        .find((e) => e.startsWith('thaqib_access_token='));
+      if (cookie) {
+        const token = decodeURIComponent(cookie.split('=').slice(1).join('='));
+        wsUrl += `?access_token=${encodeURIComponent(token)}`;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
 
     try {
@@ -156,7 +201,15 @@ export function useInvigilatorPtt(options: Options = {}) {
       wsRef.current = null;
       return false;
     }
-  }, [clientId, cleanupAudioGraph]);
+  }, [resolvedClientId, cleanupAudioGraph]);
+
+  // Auto-connect on mount if requested
+  useEffect(() => {
+    if (options.autoConnect) {
+      void connect();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options.autoConnect]); // only run when autoConnect flag changes (effectively once)
 
   const startTransmission = useCallback(
     (targetId?: string) => {
@@ -164,11 +217,11 @@ export function useInvigilatorPtt(options: Options = {}) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       pttActiveRef.current = true;
       setIsTransmitting(true);
-      const tid = targetId ?? defaultTargetId;
+      const tid = targetId ?? resolvedTargetId;
       ws.send(JSON.stringify({ type: 'start_speak', target_id: tid }));
       void audioContextRef.current?.resume();
     },
-    [defaultTargetId]
+    [resolvedTargetId]
   );
 
   const stopTransmission = useCallback(
@@ -177,10 +230,10 @@ export function useInvigilatorPtt(options: Options = {}) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       pttActiveRef.current = false;
       setIsTransmitting(false);
-      const tid = targetId ?? defaultTargetId;
+      const tid = targetId ?? resolvedTargetId;
       ws.send(JSON.stringify({ type: 'stop_speak', target_id: tid }));
     },
-    [defaultTargetId]
+    [resolvedTargetId]
   );
 
   return {
@@ -188,7 +241,7 @@ export function useInvigilatorPtt(options: Options = {}) {
     statusText,
     isConnected: state === 'connected',
     isTransmitting,
-    defaultTargetId,
+    defaultTargetId: resolvedTargetId,
     connect,
     disconnect,
     startTransmission,

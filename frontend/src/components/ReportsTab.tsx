@@ -11,13 +11,31 @@ interface ExamSession {
   student_count: number;
 }
 
-interface ReportStats {
-  events: number;
-  highSeverity: number;
-}
-
-interface DetectionEvent {
-  severity: string;
+interface ReportData {
+  session_id: string;
+  exam_name: string;
+  exam_type: string;
+  status: string;
+  scheduled_start: string;
+  actual_start: string | null;
+  actual_end: string | null;
+  student_count: number;
+  kpis: { total_events: number; high_severity: number; medium_severity: number; low_severity: number };
+  halls: Array<{
+    hall_id: string;
+    hall_name: string;
+    monitoring_started_at: string | null;
+    monitoring_ended_at: string | null;
+    duration_minutes: number | null;
+    events_count: number;
+  }>;
+  timeline: Array<{
+    id: string;
+    event_type: string;
+    severity: string;
+    timestamp: string;
+    confidence_score: number | null;
+  }>;
 }
 
 export default function ReportsTab({ initialReport = null, onBack }: { initialReport?: ExamSession | null, onBack?: () => void }) {
@@ -25,6 +43,8 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
   const [statsBySession, setStatsBySession] = useState<Record<string, ReportStats>>({});
   const [loading, setLoading] = useState(true);
   const [selectedReport, setSelectedReport] = useState<ExamSession | null>(initialReport);
+  const [reportData, setReportData] = useState<ReportData | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
 
   useEffect(() => {
     const fetchReports = async () => {
@@ -43,6 +63,18 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
     fetchReports();
   }, []);
 
+  // Fetch detail report data when a session is selected
+  useEffect(() => {
+    if (!selectedReport) { setReportData(null); return; }
+    setReportLoading(true);
+    authFetch(`/api/sessions/${selectedReport.id}/report`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => setReportData(data))
+      .catch(() => setReportData(null))
+      .finally(() => setReportLoading(false));
+  }, [selectedReport]);
+
+  // Lightweight summary stats for the list view (from /api/events/)
   useEffect(() => {
     if (sessions.length === 0) return;
 
@@ -51,7 +83,7 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
         try {
           const res = await authFetch(`/api/events/?exam_session_id=${session.id}&limit=1000`);
           if (!res.ok) return [session.id, { events: 0, highSeverity: 0 }] as const;
-          const events = await res.json() as DetectionEvent[];
+          const events = await res.json() as { severity: string }[];
           return [session.id, {
             events: events.length,
             highSeverity: events.filter((event) => event.severity === 'high').length,
@@ -94,7 +126,9 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
   };
 
   if (selectedReport) {
-    const selectedStats = statsBySession[selectedReport.id] || { events: 0, highSeverity: 0 };
+    const kpis = reportData?.kpis;
+    const halls = reportData?.halls || [];
+    const timeline = reportData?.timeline || [];
 
     return (
       <div className="reports-section p-8 w-full max-w-7xl mx-auto" dir="rtl">
@@ -106,9 +140,7 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
         <div className="bg-white rounded-[24px] border-2 border-gray-100 p-8 shadow-sm">
           {/* Header */}
           <div className="flex justify-between items-start w-full">
-            {/* Right side: Icon, Title, Subtitle, Badges */}
             <div className="flex gap-6">
-              {/* Icon */}
               <div className="w-[126px] h-[120px] rounded-full bg-gradient-to-br from-indigo-50 to-purple-50 border-4 border-[#f3f3f3] shadow-inner flex items-center justify-center shrink-0">
                 <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#44006E" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
@@ -116,66 +148,101 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
                   <line x1="12" y1="17" x2="12" y2="21"></line>
                 </svg>
               </div>
-              
-              {/* Info */}
               <div className="flex flex-col pt-2">
                 <h3 className="text-[32px] font-bold text-gray-800 mb-2">{selectedReport.exam_name}</h3>
-                <p className="text-[22px] text-gray-500 mb-6">أ.د وائل عبد القادر</p>
-                
-                {/* Badges */}
-                <div className="flex gap-4 items-center">
-                  <div className="bg-[#f9f5ff] text-[#44006E] flex items-center gap-2 px-4 py-2 rounded-2xl h-[40px]">
-                    <Users size={20} />
-                    <span className="text-[20px] font-medium">{selectedReport.student_count || 520} طالب</span>
+                <p className="text-[16px] text-gray-500 mb-4">{selectedReport.exam_type} — {selectedReport.status}</p>
+                {/* KPI Badges */}
+                <div className="flex gap-3 flex-wrap">
+                  <div className="bg-[#f9f5ff] text-[#44006E] flex items-center gap-2 px-4 py-2 rounded-2xl">
+                    <Users size={18} />
+                    <span className="text-[16px] font-medium">{selectedReport.student_count} طالب</span>
                   </div>
-                  <div className="border border-[#44006E] text-[#44006E] flex items-center gap-2 px-4 py-2 rounded-2xl h-[40px]">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/></svg>
-                    <span className="text-[20px] font-medium">6 قاعات</span>
-                  </div>
-                  <div className="border border-[#ff8919] text-[#ff8919] flex items-center gap-2 px-4 py-2 rounded-2xl h-[40px]">
-                    <Users size={20} />
-                    <span className="text-[20px] font-medium">6 غياب</span>
-                  </div>
-                  <div className="border border-[#ff3636] text-[#ff3636] flex items-center gap-2 px-4 py-2 rounded-2xl h-[40px]">
-                    <ShieldAlert size={20} />
-                    <span className="text-[20px] font-medium">{selectedStats.highSeverity} تحذير</span>
-                  </div>
+                  {reportLoading ? (
+                    <div className="animate-pulse bg-gray-100 rounded-2xl w-28 h-10" />
+                  ) : (
+                    <>
+                      <div className="border border-[#44006E] text-[#44006E] flex items-center gap-2 px-4 py-2 rounded-2xl">
+                        <Clock size={18} />
+                        <span className="text-[16px] font-medium">{kpis?.total_events ?? 0} حالة</span>
+                      </div>
+                      <div className="border border-[#ff3636] text-[#ff3636] flex items-center gap-2 px-4 py-2 rounded-2xl">
+                        <ShieldAlert size={18} />
+                        <span className="text-[16px] font-medium">{kpis?.high_severity ?? 0} تحذير عالي</span>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
-
-            {/* Left side: Date, Code, Button */}
             <div className="flex flex-col items-end pt-2">
-              <p className="text-[17px] text-gray-400 mb-2">{formatDateLong(selectedReport.scheduled_start)}</p>
-              <p className="text-[17px] text-gray-400 mb-8">{selectedReport.exam_type || 'Cs-204'}</p>
-              
-              <button className="bg-[#44006E] text-white flex items-center gap-2 px-6 py-3 rounded-xl hover:bg-purple-900 transition-colors shadow-md cursor-pointer">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-                <span className="text-[16px] font-medium">تنزيل التقرير</span>
-              </button>
+              <p className="text-[15px] text-gray-400 mb-2">{formatDateLong(selectedReport.scheduled_start)}</p>
+              <a
+                href={`/api/sessions/${selectedReport.id}/report`}
+                target="_blank"
+                rel="noreferrer"
+                className="bg-[#44006E] text-white flex items-center gap-2 px-6 py-3 rounded-xl hover:bg-purple-900 transition-colors shadow-md"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                <span className="text-[15px] font-medium">تنزيل التقرير</span>
+              </a>
             </div>
           </div>
 
           <div className="w-full h-px bg-gray-200 my-8"></div>
 
-          {/* Body */}
-          <div className="px-4">
-            <h4 className="text-[28px] font-bold text-gray-800 mb-8">تقرير مقرر {selectedReport.exam_name} 2026</h4>
-            
-            <div className="text-[20px] text-gray-600 leading-[40px] space-y-6 whitespace-pre-wrap">
-              <p className="text-gray-800 font-bold">أداء النظام والاستقرار (System Performance & Uptime)</p>
-              <p>سجل خادم المنصة استقراراً عاماً بنسبة إتاحة (Uptime) بلغت 99.9% طوال مدة انعقاد الامتحان. لوحظ ارتفاع حاد ومفاجئ في استهلاك موارد الخادم (CPU و RAM) خلال الدقائق العشر الأولى بسبب عمليات تسجيل الدخول المتزامنة لجميع الطلاب، إلا أن آلية توزيع الأحمال (Load Balancing) استجابت بفعالية ونجحت في استيعاب التكدس دون حدوث أي توقف أو انهيار للنظام (System Crash). استقر معدل استهلاك الموارد عند مستوياته الطبيعية بمجرد بدء الطلاب في الإجابة، وبلغ متوسط زمن الاستجابة (Latency) للطلبات حوالي 120 مللي ثانية، وهو معدل ممتاز ومطابق للمعايير المستهدفة.</p>
-              
-              <p className="text-gray-800 font-bold mt-8">سجلات الأخطاء والمشاكل التقنية (Error Logs & Technical Issues)</p>
-              <p>تم رصد مجموعة من الأخطاء التقنية المحدودة التي لم تؤثر على سير الامتحان بشكل عام. سجل النظام 5 أخطاء من نوع (Timeout Errors) ناتجة عن انقطاع أو ضعف الاتصال بالإنترنت من طرف المستخدم النهائي (Client-side)، وقد تم التدخل تلقائياً عبر ميزة الحفظ المؤقت (Local Storage Sync) لضمان عدم فقدان أي إجابات، وتمت مزامنة البيانات فور عودة الاتصال. كما تم رصد مشكلة برمجية طفيفة (UI Glitch) واجهت طالبين عند محاولة رفع ملفات الإجابة المعقدة، حيث استغرق الخادم وقتاً أطول من المعتاد لمعالجة الطلبات البرمجية (API Requests)، وتم حلها بعمل تحديث للصفحة مع الاحتفاظ بالتقدم.</p>
-              
-              <p className="text-gray-800 font-bold mt-8">المراقبة الأمنية وسلامة الجلسات (Security & Session Integrity)</p>
-              <p>عملت طبقات الحماية بكفاءة عالية؛ حيث قام جدار الحماية (WAF) بحظر 3 محاولات اتصال من عناوين IP خارجية غير مألوفة، وتم تصنيفها كحركة مرور مشبوهة. على مستوى جلسات الامتحان (Exam Sessions)، نجحت خوارزمية منع الغش في رصد وتوثيق 10 محاولات لتبديل النوافذ (Browser Tab Switching) أو فقدان التركيز على شاشة الامتحان (Loss of Focus). كما تم اكتشاف محاولة واحدة للوصول إلى النظام باستخدام شبكة افتراضية (VPN)، مما أدى إلى وضع علامة (Flag) على جلسة المستخدم وتوثيق الـ IP الحقيقي الخاص به في السجلات الأمنية لمراجعته لاحقاً. لم يتم رصد أي محاولات لاختراق قاعدة البيانات أو التلاعب بالبيانات المرسلة.</p>
-              
-              <p className="text-gray-800 font-bold mt-8">التوصيات التقنية المرفوعة (Technical Recommendations)</p>
-              <p>بناءً على المعطيات السابقة، يُوصى بزيادة سعة الخوادم الافتراضية بنسبة 20% (Auto-scaling) قبل بدء الامتحانات المستقبلية التي يتجاوز عدد المسجلين فيها 150 مستخدماً، وذلك لتفادي أي اختناقات محتملة في الشبكة (Bottlenecks) خلال الدقائق الأولى. كما يُنصح بمراجعة وتحسين الأكواد البرمجية الخاصة بنقطة النهاية (Endpoint) المسؤولة عن معالجة ورفع الملفات، لتقليل زمن الاستجابة وتجنب أخطاء الرفع المتأخر. يُقترح أيضاً تحديث سياسات الحماية لإرسال تنبيهات فورية لمسؤولي النظام عبر لوحة التحكم بمجرد رصد استخدام برامج الـ VPN لتسريع اتخاذ الإجراءات اللازمة.</p>
+          {/* Hall Summary Table */}
+          {halls.length > 0 && (
+            <div className="mb-8">
+              <h4 className="text-lg font-bold text-gray-800 mb-4">ملخص القاعات</h4>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 text-gray-500 font-bold">
+                      <th className="text-right px-4 py-3 rounded-r-xl">القاعة</th>
+                      <th className="text-right px-4 py-3">بدء المراقبة</th>
+                      <th className="text-right px-4 py-3">نهاية المراقبة</th>
+                      <th className="text-right px-4 py-3">المدة (دقيقة)</th>
+                      <th className="text-right px-4 py-3 rounded-l-xl">الحالات</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {halls.map((hall) => (
+                      <tr key={hall.hall_id} className="border-b border-gray-50 hover:bg-gray-50">
+                        <td className="px-4 py-3 font-bold text-gray-800">{hall.hall_name}</td>
+                        <td className="px-4 py-3 text-gray-500">{hall.monitoring_started_at ? new Date(hall.monitoring_started_at).toLocaleTimeString('ar-EG') : '—'}</td>
+                        <td className="px-4 py-3 text-gray-500">{hall.monitoring_ended_at ? new Date(hall.monitoring_ended_at).toLocaleTimeString('ar-EG') : 'جاري'}</td>
+                        <td className="px-4 py-3 text-gray-700">{hall.duration_minutes ?? '—'}</td>
+                        <td className="px-4 py-3"><span className="px-2 py-0.5 bg-purple-50 text-purple-700 rounded-lg font-bold">{hall.events_count}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Event Timeline */}
+          {timeline.length > 0 && (
+            <div>
+              <h4 className="text-lg font-bold text-gray-800 mb-4">آخر الأحداث</h4>
+              <div className="space-y-2">
+                {timeline.map((ev) => (
+                  <div key={ev.id} className="flex items-center gap-4 p-3 bg-gray-50 rounded-xl">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${ev.severity === 'high' ? 'bg-red-500' : ev.severity === 'medium' ? 'bg-yellow-500' : 'bg-green-500'}`} />
+                    <span className="flex-1 text-sm font-bold text-gray-800">{ev.event_type}</span>
+                    <span className="text-xs text-gray-400">{new Date(ev.timestamp).toLocaleTimeString('ar-EG')}</span>
+                    {ev.confidence_score && <span className="text-xs text-gray-400">{Math.round(ev.confidence_score * 100)}%</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!reportLoading && !kpis && (
+            <div className="text-center py-12 text-gray-400">
+              <p>لا توجد أحداث مسجلة لهذا الامتحان بعد.</p>
+            </div>
+          )}
         </div>
       </div>
     );

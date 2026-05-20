@@ -3,6 +3,7 @@ import CameraModal from '../components/CameraModal';
 import HallsTab from '../components/HallsTab';
 import ExamsTab from '../components/ExamsTab';
 import SupervisorsTab from '../components/SupervisorsTab';
+import SettingsTab from '../components/SettingsTab';
 import { apiUrl, authFetch, STREAM_BASE } from '../config/api';
 import { useInvigilatorPtt } from '../hooks/useInvigilatorPtt';
 
@@ -87,6 +88,7 @@ const NAV_ITEMS = [
   { label: 'القاعات', key: 'halls', active: false },
   { label: 'الإمتحانات', key: 'exams', active: false },
   { label: 'المشرفين', key: 'supervisors', active: false },
+  { label: 'الإعدادات', key: 'settings', active: false },
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -399,7 +401,7 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
                 </div>
               )}
               {/* Settings */}
-              <button className="dashboard-icon-btn" title="الإعدادات" onClick={onLogout}>
+              <button className="dashboard-icon-btn" title="الإعدادات" onClick={() => setActiveNav('settings')}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="12" cy="12" r="3"/>
                   <path d="M12 1v2m0 18v2m-9-11h2m18 0h2m-2.636-7.364l-1.414 1.414M6.05 17.95l-1.414 1.414m0-14.728l1.414 1.414M17.95 17.95l1.414 1.414"/>
@@ -500,6 +502,8 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
           <ExamsTab />
         ) : activeNav === 'supervisors' ? (
           <SupervisorsTab />
+        ) : activeNav === 'settings' ? (
+          <SettingsTab />
         ) : (
           <div className="dashboard-empty-state">
             <h3>قريباً</h3>

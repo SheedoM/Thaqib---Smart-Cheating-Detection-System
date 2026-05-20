@@ -121,7 +121,15 @@ docker-compose -f simulator/docker-compose.simulator.yml up -d
 
 Verify the simulator is running: open `http://localhost:8000/info` in your browser.
 
-#### 3. Seed the Database with Demo Data
+#### 3. Apply Database Migrations
+
+The backend uses a local SQLite database (`data/thaqib.db`). Apply all schema migrations before seeding:
+
+```bash
+python -m alembic upgrade head
+```
+
+#### 4. Seed the Database with Demo Data
 
 ```bash
 # For simulator (HTTP MJPEG streams)
@@ -131,7 +139,7 @@ python scripts/seed_demo.py --protocol=http --stream-host=localhost --stream-por
 python scripts/seed_demo.py --protocol=rtsp --stream-host=192.168.1.100 --stream-port=554
 ```
 
-#### 4. Start the Backend
+#### 5. Start the Backend
 
 ```bash
 uvicorn src.thaqib.main:app --reload --host 0.0.0.0 --port 8001
@@ -139,7 +147,7 @@ uvicorn src.thaqib.main:app --reload --host 0.0.0.0 --port 8001
 
 The API will be available at `http://localhost:8001`.
 
-#### 5. Start the Frontend
+#### 6. Start the Frontend
 
 ```bash
 cd frontend

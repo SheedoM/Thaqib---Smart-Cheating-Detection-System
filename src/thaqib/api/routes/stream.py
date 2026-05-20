@@ -625,10 +625,12 @@ def start_hall_monitoring(hall_id: uuid.UUID, session_id: uuid.UUID, db: Session
     ).first()
     if assignment:
         assignment.monitoring_started_at = datetime.now()
+        # Clear ended_at so re-start after stop works correctly (1D fix)
+        assignment.monitoring_ended_at = None
         
-        # Auto-update session status to 'active' if it was 'scheduled'
+        # Auto-update session status to 'active' if it was 'scheduled' or 'completed'
         session = assignment.exam_session
-        if session.status == "scheduled":
+        if session.status in ("scheduled", "completed"):
             session.status = "active"
             if not session.actual_start:
                 session.actual_start = assignment.monitoring_started_at

@@ -9,6 +9,7 @@ from src.thaqib.db.database import get_db
 from src.thaqib.db.models.exams import ExamSession, Assignment
 from src.thaqib.db.models.infrastructure import Device, Hall
 from src.thaqib.db.models.users import User
+from src.thaqib.db.models.events import DetectionEvent
 from src.thaqib.schemas.exams import (
     ExamSessionCreate, ExamSessionResponse, ExamSessionUpdate, 
     AssignmentCreate, AssignmentResponse, AssignmentDetailedResponse
@@ -224,6 +225,32 @@ def get_hall_readiness(
         "failed_count": failed_count,
         "devices": results,
     }
+
+@router.get("/{session_id}/halls/{hall_id}/feeds")
+def get_hall_feeds(
+    session_id: uuid.UUID,
+    hall_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_invigilator)
+) -> Any:
+    """
+    Return active camera feed paths for a hall so the invigilator can view streams.
+    Invigilators can only access halls they are assigned to.
+    """
+    session, hall, assignment = _get_session_hall_and_assignment(db, session_id, hall_id, current_user)
+    
+    active_devices = [d for d in hall.devices if d.deleted_at is None and d.type == "camera"]
+    feeds = [
+        {
+            "device_id": str(d.id),
+            "name": (d.position or {}).get("label") or d.identifier,
+            "feed_path": f"/api/stream/feed/{d.id}",
+            "source_configured": bool((d.stream_url or "").strip()),
+        }
+        for d in active_devices
+    ]
+    return {"hall_id": str(hall_id), "hall_name": hall.name, "feeds": feeds}
+
 
 @router.post("/{session_id}/halls/{hall_id}/monitoring/stop")
 def stop_monitoring(
@@ -472,3 +499,101 @@ def remove_invigilator(
     db.delete(assignment)
     db.commit()
     return {"message": "Assignment successfully removed"}
+
+
+@router.get("/{session_id}/report")
+def get_session_report(
+    session_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> Any:
+    """
+    Aggregate detection events, assignment durations, and hall summaries
+    for a given exam session — used for the admin Reports tab detail view.
+    """
+    session = (
+        db.query(ExamSession)
+        .options(
+            selectinload(ExamSession.assignments),
+            selectinload(ExamSession.halls),
+        )
+        .filter(ExamSession.id == session_id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Exam session not found")
+
+    # Aggregate detection events
+    events = (
+        db.query(DetectionEvent)
+        .filter(DetectionEvent.exam_session_id == session_id)
+        .order_by(DetectionEvent.timestamp)
+        .all()
+    )
+
+    total_events = len(events)
+    high_severity = sum(1 for e in events if e.severity == "high")
+    medium_severity = sum(1 for e in events if e.severity == "medium")
+    low_severity = sum(1 for e in events if e.severity == "low")
+
+    # Hall summaries
+    hall_summaries = []
+    for hall in session.halls:
+        hall_assignments = [
+            a for a in session.assignments if a.hall_id == hall.id
+        ]
+        # Duration in minutes
+        duration_minutes = None
+        if hall_assignments:
+            a = hall_assignments[0]
+            if a.monitoring_started_at and a.monitoring_ended_at:
+                duration_minutes = int(
+                    (a.monitoring_ended_at - a.monitoring_started_at).total_seconds() / 60
+                )
+            elif a.monitoring_started_at:
+                duration_minutes = int(
+                    (datetime.now() - a.monitoring_started_at).total_seconds() / 60
+                )
+        hall_events = [e for e in events if str(e.device_id) in [
+            str(d.id) for d in hall.devices if d.deleted_at is None
+        ]] if hasattr(hall, "devices") else []
+        hall_summaries.append({
+            "hall_id": str(hall.id),
+            "hall_name": hall.name,
+            "monitoring_started_at": hall_assignments[0].monitoring_started_at.isoformat() if hall_assignments and hall_assignments[0].monitoring_started_at else None,
+            "monitoring_ended_at": hall_assignments[0].monitoring_ended_at.isoformat() if hall_assignments and hall_assignments[0].monitoring_ended_at else None,
+            "duration_minutes": duration_minutes,
+            "events_count": len(hall_events),
+        })
+
+    # Timeline: last 20 events
+    timeline = [
+        {
+            "id": str(e.id),
+            "event_type": e.event_type,
+            "severity": e.severity,
+            "timestamp": e.timestamp.isoformat(),
+            "confidence_score": float(e.confidence_score) if e.confidence_score else None,
+        }
+        for e in events[-20:]
+    ]
+
+    return {
+        "session_id": str(session.id),
+        "exam_name": session.exam_name,
+        "exam_type": session.exam_type,
+        "status": session.status,
+        "scheduled_start": session.scheduled_start.isoformat() if session.scheduled_start else None,
+        "scheduled_end": session.scheduled_end.isoformat() if session.scheduled_end else None,
+        "actual_start": session.actual_start.isoformat() if session.actual_start else None,
+        "actual_end": session.actual_end.isoformat() if session.actual_end else None,
+        "student_count": session.student_count,
+        "kpis": {
+            "total_events": total_events,
+            "high_severity": high_severity,
+            "medium_severity": medium_severity,
+            "low_severity": low_severity,
+        },
+        "halls": hall_summaries,
+        "timeline": timeline,
+    }
