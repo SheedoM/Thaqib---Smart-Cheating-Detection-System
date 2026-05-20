@@ -40,7 +40,7 @@ interface ReportData {
 
 export default function ReportsTab({ initialReport = null, onBack }: { initialReport?: ExamSession | null, onBack?: () => void }) {
   const [sessions, setSessions] = useState<ExamSession[]>([]);
-  const [statsBySession, setStatsBySession] = useState<Record<string, ReportStats>>({});
+  const [statsBySession, setStatsBySession] = useState<Record<string, { events: number; highSeverity: number }>>({});
   const [loading, setLoading] = useState(true);
   const [selectedReport, setSelectedReport] = useState<ExamSession | null>(initialReport);
   const [reportData, setReportData] = useState<ReportData | null>(null);
