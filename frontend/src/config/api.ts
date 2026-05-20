@@ -24,7 +24,7 @@ export async function authFetch(path: string, init: RequestInit = {}): Promise<R
       const csrfToken = readCookie('thaqib_csrf_token');
       if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
     }
-    if (init.body && !headers.has('Content-Type')) {
+    if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json');
     }
   }

@@ -21,11 +21,13 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str = Field(..., min_length=8, max_length=72)
     institution_id: uuid.UUID
+    image: Optional[str] = None
 
 class UserUpdate(BaseModel):
     username: Optional[str] = Field(None, min_length=3, max_length=50, pattern="^[a-zA-Z0-9_.-]+$")
     full_name: Optional[str] = None
     email: Optional[EmailStr] = None
+    image: Optional[str] = None
     role: Optional[str] = None
     status: Optional[str] = None
     ptt_id: Optional[str] = None
@@ -34,6 +36,7 @@ class UserUpdate(BaseModel):
 class UserResponse(UserBase):
     id: uuid.UUID
     institution_id: uuid.UUID
+    image: Optional[str] = None
     status: str
     ptt_id: Optional[str] = None
 

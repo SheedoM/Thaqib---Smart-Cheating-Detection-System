@@ -18,12 +18,29 @@ interface ExamItem {
 }
 
 interface HallSimple { id: string; name: string; }
-interface UserSimple { id: string; full_name: string; }
+interface UserSimple { id: string; full_name: string; image?: string | null; }
 interface AssignmentSimple {
   id: string;
   invigilator_id: string;
   hall_id: string;
   role: 'primary' | 'secondary';
+}
+
+interface DeviceReadiness {
+  id: string;
+  type: 'camera' | 'microphone' | string;
+  identifier: string;
+  name: string;
+  status: 'passed' | 'failed';
+  message: string;
+}
+
+interface HallReadiness {
+  hall_id: string;
+  hall_name: string;
+  overall_status: 'passed' | 'warning';
+  failed_count: number;
+  devices: DeviceReadiness[];
 }
 
 // ─── Main Tab ────────────────────────────────────────────────────────────────
@@ -35,6 +52,8 @@ export default function ExamsTab() {
   const [editingExam, setEditingExam] = useState<ExamItem | null>(null);
   const [deletingExam, setDeletingExam] = useState<ExamItem | null>(null);
   const [viewingReport, setViewingReport] = useState<ExamItem | null>(null);
+  const [startingExam, setStartingExam] = useState<ExamItem | null>(null);
+  const [users, setUsers] = useState<UserSimple[]>([]);
 
   const fetchExams = async () => {
     try {
@@ -60,7 +79,24 @@ export default function ExamsTab() {
     } catch (err) { console.error('Delete failed', err); }
   };
 
-  useEffect(() => { fetchExams(); }, []);
+  const fetchUsers = async () => {
+    try {
+      const res = await authFetch('/api/users/');
+      if (res.ok) setUsers(await res.json());
+    } catch (err) {
+      console.error('Failed to fetch users', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchExams();
+    fetchUsers();
+  }, []);
+
+  const userById = users.reduce<Record<string, UserSimple>>((acc, user) => {
+    acc[user.id] = user;
+    return acc;
+  }, {});
   
   if (viewingReport) {
     return <ReportsTab initialReport={viewingReport as any} onBack={() => setViewingReport(null)} />;
@@ -99,9 +135,11 @@ export default function ExamsTab() {
             <ExamCard
               key={exam.id}
               exam={exam}
+              userById={userById}
               onEdit={() => { setEditingExam(exam); setIsModalOpen(true); }}
               onDelete={() => setDeletingExam(exam)}
               onViewReport={() => setViewingReport(exam)}
+              onStart={() => setStartingExam(exam)}
             />
           ))}
         </div>
@@ -122,13 +160,39 @@ export default function ExamsTab() {
           onConfirm={() => handleDelete(deletingExam.id)}
         />
       )}
+
+      {startingExam && (
+        <StartExamModal
+          exam={startingExam}
+          userById={userById}
+          onClose={() => setStartingExam(null)}
+          onStarted={() => {
+            setStartingExam(null);
+            fetchExams();
+          }}
+        />
+      )}
     </div>
   );
 }
 
 // ─── Exam Card ───────────────────────────────────────────────────────────────
 
-function ExamCard({ exam, onEdit, onDelete, onViewReport }: { exam: ExamItem, onEdit: () => void, onDelete: () => void, onViewReport: () => void }) {
+function ExamCard({
+  exam,
+  userById,
+  onEdit,
+  onDelete,
+  onViewReport,
+  onStart,
+}: {
+  exam: ExamItem,
+  userById: Record<string, UserSimple>,
+  onEdit: () => void,
+  onDelete: () => void,
+  onViewReport: () => void,
+  onStart: () => void,
+}) {
   const badgeStyle: Record<string, string> = {
     midterm: 'bg-[#F2EEFF] text-[#6C5CE7]',
     practical: 'bg-[#E1F7FF] text-[#0984E3]',
@@ -140,6 +204,11 @@ function ExamCard({ exam, onEdit, onDelete, onViewReport }: { exam: ExamItem, on
     try { return new Date(iso).toLocaleDateString('ar-EG', { day: 'numeric', month: 'short', year: 'numeric' }); }
     catch { return iso; }
   };
+  const invigilatorNames = Array.from(new Set(
+    (exam.assignments || [])
+      .map((assignment) => userById[assignment.invigilator_id]?.full_name)
+      .filter(Boolean)
+  ));
 
   return (
     <div className="bg-white rounded-3xl p-6 border border-gray-100 shadow-sm hover:shadow-xl transition-all duration-300 group flex flex-col">
@@ -161,12 +230,19 @@ function ExamCard({ exam, onEdit, onDelete, onViewReport }: { exam: ExamItem, on
           <span>{exam.period || 'الفترة الأولي'}</span>
           <span className="text-[#44006E]">{exam.student_count} طالب</span>
         </div>
+        <div className="mt-3 text-[11px] font-bold text-gray-400 leading-5">
+          <span className="text-gray-500">المراقبين: </span>
+          {invigilatorNames.length > 0 ? invigilatorNames.join('، ') : 'لم يتم تعيين مراقبين'}
+        </div>
       </div>
 
       <div className="pt-4 mt-4 border-t border-gray-50 flex justify-between items-center">
-        <div className="flex gap-4">
+        <div className="flex flex-wrap gap-4">
           <button onClick={onEdit} className="text-[#44006E] font-black text-xs hover:underline cursor-pointer flex items-center gap-1">
             تعديل <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          </button>
+          <button onClick={onStart} className="text-[#0984E3] font-black text-xs hover:underline cursor-pointer flex items-center gap-1">
+            بدء الامتحان <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
           </button>
           <button onClick={onViewReport} className="text-[#00D261] font-black text-xs hover:underline cursor-pointer flex items-center gap-1">
             التقرير <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
@@ -175,6 +251,158 @@ function ExamCard({ exam, onEdit, onDelete, onViewReport }: { exam: ExamItem, on
         <button onClick={onDelete} className="w-8 h-8 flex items-center justify-center text-red-200 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all cursor-pointer">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         </button>
+      </div>
+    </div>
+  );
+}
+
+function StartExamModal({
+  exam,
+  userById,
+  onClose,
+  onStarted,
+}: {
+  exam: ExamItem;
+  userById: Record<string, UserSimple>;
+  onClose: () => void;
+  onStarted: () => void;
+}) {
+  const [readinessByHall, setReadinessByHall] = useState<Record<string, HallReadiness>>({});
+  const [loadingHallId, setLoadingHallId] = useState<string | null>(null);
+  const [startingHallId, setStartingHallId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const halls = exam.halls || [];
+
+  const loadReadiness = async (hallId: string) => {
+    setLoadingHallId(hallId);
+    setError(null);
+    try {
+      const res = await authFetch(`/api/sessions/${exam.id}/halls/${hallId}/readiness`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: `خطأ ${res.status}` }));
+        throw new Error(typeof err.detail === 'string' ? err.detail : 'فشل فحص الأجهزة');
+      }
+      const data = await res.json();
+      setReadinessByHall((prev) => ({ ...prev, [hallId]: data }));
+    } catch (err: any) {
+      setError(err.message || 'تعذر فحص أجهزة القاعة');
+    } finally {
+      setLoadingHallId(null);
+    }
+  };
+
+  useEffect(() => {
+    halls.forEach((hall) => { void loadReadiness(hall.id); });
+  }, [exam.id]);
+
+  const startHall = async (hallId: string) => {
+    const readiness = readinessByHall[hallId];
+    if (readiness?.overall_status === 'warning') {
+      const ok = window.confirm('توجد تحذيرات في فحص الأجهزة. هل تريد بدء المراقبة رغم ذلك؟');
+      if (!ok) return;
+    }
+
+    setStartingHallId(hallId);
+    setError(null);
+    try {
+      const res = await authFetch(`/api/sessions/${exam.id}/halls/${hallId}/monitoring/start`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: `خطأ ${res.status}` }));
+        throw new Error(typeof err.detail === 'string' ? err.detail : 'فشل بدء المراقبة');
+      }
+      onStarted();
+    } catch (err: any) {
+      setError(err.message || 'تعذر بدء المراقبة');
+    } finally {
+      setStartingHallId(null);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[120] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4" dir="rtl" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-[28px] shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+        <div className="px-7 py-5 border-b border-gray-100 flex justify-between items-center sticky top-0 bg-white z-10 rounded-t-[28px]">
+          <div>
+            <h3 className="text-xl font-black text-[#2D005F]">بدء الامتحان من لوحة الإدارة</h3>
+            <p className="text-xs text-gray-400 font-bold mt-1">{exam.exam_name}</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-600 cursor-pointer">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        <div className="p-7 space-y-4">
+          {error && (
+            <div className="bg-red-50 border border-red-200 text-red-600 rounded-2xl px-4 py-3 text-sm font-bold">
+              {error}
+            </div>
+          )}
+
+          {halls.length === 0 ? (
+            <div className="text-center py-14 text-gray-400 font-bold border-2 border-dashed border-gray-100 rounded-3xl">
+              لا توجد قاعات مرتبطة بهذا الامتحان.
+            </div>
+          ) : halls.map((hall) => {
+            const readiness = readinessByHall[hall.id];
+            const assignedNames = Array.from(new Set(
+              (exam.assignments || [])
+                .filter((assignment) => assignment.hall_id === hall.id)
+                .map((assignment) => userById[assignment.invigilator_id]?.full_name)
+                .filter(Boolean)
+            ));
+
+            return (
+              <section key={hall.id} className="border border-gray-100 rounded-3xl p-5 bg-[#FCFBFF]">
+                <div className="flex justify-between gap-4 items-start mb-4">
+                  <div>
+                    <h4 className="text-lg font-black text-[#2D005F]">{hall.name}</h4>
+                    <p className="text-xs text-gray-400 font-bold mt-1">
+                      المراقبين: {assignedNames.length ? assignedNames.join('، ') : 'لم يتم تعيين مراقبين'}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => loadReadiness(hall.id)}
+                      disabled={loadingHallId === hall.id}
+                      className="px-4 py-2 rounded-xl bg-white border border-gray-200 text-gray-500 text-xs font-black hover:bg-gray-50 disabled:opacity-60"
+                    >
+                      {loadingHallId === hall.id ? 'جاري الفحص...' : 'إعادة الفحص'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => startHall(hall.id)}
+                      disabled={startingHallId === hall.id}
+                      className="px-5 py-2 rounded-xl bg-[#44006E] text-white text-xs font-black shadow-md hover:bg-[#340055] disabled:opacity-60"
+                    >
+                      {startingHallId === hall.id ? 'جاري البدء...' : 'بدء القاعة'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className={`mb-4 px-3 py-2 rounded-xl text-xs font-black ${readiness?.overall_status === 'passed' ? 'bg-green-50 text-green-600' : 'bg-yellow-50 text-yellow-700'}`}>
+                  {readiness
+                    ? readiness.overall_status === 'passed'
+                      ? 'كل الأجهزة اجتازت الفحص'
+                      : `${readiness.failed_count} أجهزة تحتاج للمراجعة، ويمكن البدء عند الضرورة`
+                    : 'لم يتم الفحص بعد'}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {(readiness?.devices || []).map((device) => (
+                    <div key={device.id} className="bg-white border border-gray-100 rounded-2xl px-3 py-3 flex items-start gap-3">
+                      <span className={`mt-1 w-2.5 h-2.5 rounded-full shrink-0 ${device.status === 'passed' ? 'bg-green-500' : 'bg-yellow-500'}`}></span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-gray-700">{device.name}</p>
+                        <p className="text-[11px] text-gray-400 font-bold">{device.type === 'camera' ? 'كاميرا' : 'مايكروفون'} - {device.message}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

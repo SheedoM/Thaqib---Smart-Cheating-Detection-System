@@ -12,7 +12,7 @@ export default function InvigilatorLayout({ onLogout }: InvigilatorLayoutProps) 
       <header className="sticky top-0 z-50 bg-white border-b border-[#EEE] px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <img src="/Frame 76.svg" alt="Logo" className="h-8 w-auto" />
-          <h1 className="text-xl font-bold text-thaqib-primary">ثاقب</h1>
+          <h1 className="text-xl font-bold text-thaqib-primary">Thaqib</h1>
         </div>
         <div className="flex items-center gap-4">
           <button className="p-2 text-gray-500 hover:bg-gray-100 rounded-full relative">

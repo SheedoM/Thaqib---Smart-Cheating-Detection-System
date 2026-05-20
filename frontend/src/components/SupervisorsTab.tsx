@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-import { authFetch } from '../config/api';
+import { apiUrl, authFetch } from '../config/api';
 
 interface Supervisor {
   id: string; full_name: string; username: string;
@@ -88,6 +88,7 @@ export default function SupervisorsTab() {
 function SupervisorCard({ s, onEdit, onDelete }: { s: Supervisor, onEdit: () => void, onDelete: () => void }) {
   const available = s.status !== 'inactive';
   const initials = s.full_name.split(' ').map((n: string) => n[0]).slice(0, 2).join('');
+  const imageSrc = s.image ? apiUrl(s.image) : null;
 
   return (
     <div className="bg-[#F4F2FA] rounded-3xl overflow-hidden border border-gray-100 hover:shadow-lg transition-all duration-300 group">
@@ -101,8 +102,8 @@ function SupervisorCard({ s, onEdit, onDelete }: { s: Supervisor, onEdit: () => 
       {/* Avatar */}
       <div className="flex justify-center py-3">
         <div className="w-20 h-20 rounded-full overflow-hidden bg-gradient-to-br from-[#9351bb] to-[#44006E] flex items-center justify-center text-white text-2xl font-black shadow-md group-hover:scale-105 transition-transform duration-300">
-          {s.image
-            ? <img src={s.image} className="w-full h-full object-cover" alt={s.full_name} />
+          {imageSrc
+            ? <img src={imageSrc} className="w-full h-full object-cover" alt={s.full_name} />
             : initials}
         </div>
       </div>
@@ -130,10 +131,12 @@ function SupervisorCard({ s, onEdit, onDelete }: { s: Supervisor, onEdit: () => 
 function SupervisorModal({ supervisor, onClose, onSuccess }: { supervisor: Supervisor | null, onClose: () => void, onSuccess: () => void }) {
   const [form, setForm] = useState({ full_name: supervisor?.full_name || '', username: supervisor?.username || '', email: supervisor?.email || '', password: '', role: supervisor?.role || 'invigilator' });
   const [image, setImage] = useState<string | null>(supervisor?.image || null);
+  const [imageFile, setImageFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const imagePreviewSrc = image ? (image.startsWith('data:') ? image : apiUrl(image)) : null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -148,9 +151,27 @@ function SupervisorModal({ supervisor, onClose, onSuccess }: { supervisor: Super
       }
       if (!institutionId) { setError('لم يتم العثور على المؤسسة.'); setSubmitting(false); return; }
 
+      let imageUrl = supervisor?.image || null;
+      if (imageFile) {
+        const formData = new FormData();
+        formData.append('image', imageFile);
+        const uploadRes = await authFetch('/api/users/upload-image', {
+          method: 'POST',
+          body: formData,
+        });
+        if (!uploadRes.ok) {
+          const err = await uploadRes.json().catch(() => ({ detail: `خطأ ${uploadRes.status}` }));
+          setError(typeof err.detail === 'string' ? err.detail : 'فشل رفع الصورة.');
+          setSubmitting(false);
+          return;
+        }
+        const uploaded = await uploadRes.json();
+        imageUrl = uploaded.url;
+      }
+
       const payload: any = { full_name: form.full_name, username: form.username, email: form.email || `${form.username}@thaqib.local`, role: form.role, institution_id: institutionId };
       if (form.password) payload.password = form.password;
-      if (image) payload.image = image;
+      if (imageUrl) payload.image = imageUrl;
 
       const res = await authFetch(supervisor ? `/api/users/${supervisor.id}` : '/api/users/', { method: supervisor ? 'PUT' : 'POST', body: JSON.stringify(payload) });
       if (res.ok) { setSuccess(true); setTimeout(onSuccess, 1400); }
@@ -217,11 +238,11 @@ function SupervisorModal({ supervisor, onClose, onSuccess }: { supervisor: Super
 
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e => {
             const f = e.target.files?.[0];
-            if (f) { const r = new FileReader(); r.onload = ev => setImage(ev.target?.result as string); r.readAsDataURL(f); }
+            if (f) { setImageFile(f); const r = new FileReader(); r.onload = ev => setImage(ev.target?.result as string); r.readAsDataURL(f); }
           }} />
           <div onClick={() => fileRef.current?.click()} className="w-full h-24 bg-gray-50 border-2 border-dashed border-gray-200 rounded-2xl flex flex-col items-center justify-center cursor-pointer hover:border-[#44006E] hover:bg-purple-50 transition-all group relative overflow-hidden">
-            {image ? (
-              <><img src={image} className="absolute inset-0 w-full h-full object-cover" alt="preview" />
+            {imagePreviewSrc ? (
+              <><img src={imagePreviewSrc} className="absolute inset-0 w-full h-full object-cover" alt="preview" />
                 <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-white font-black text-xs">تغيير الصورة</span></div></>
             ) : (
               <><div className="w-9 h-9 bg-gray-200 group-hover:bg-purple-100 rounded-xl flex items-center justify-center mb-1.5 transition-colors">

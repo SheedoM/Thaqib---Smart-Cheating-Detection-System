@@ -11,7 +11,7 @@ import {
   Info
 } from 'lucide-react';
 import { authFetch, apiUrl } from '../../config/api';
-import type { HallMonitoringStatus } from '../../types/exams';
+import type { HallMonitoringStatus, HallReadiness } from '../../types/exams';
 import { useInvigilatorPtt } from '../../hooks/useInvigilatorPtt';
 
 export default function HallMonitoringPage() {
@@ -19,6 +19,8 @@ export default function HallMonitoringPage() {
   const [status, setStatus] = useState<HallMonitoringStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<HallReadiness | null>(null);
+  const [isChecking, setIsChecking] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const navigate = useNavigate();
 
@@ -45,13 +47,40 @@ export default function HallMonitoringPage() {
     return () => clearInterval(interval);
   }, [sessionId, hallId]);
 
-  const handleStartMonitoring = async () => {
+  const runReadinessCheck = async () => {
+    setIsChecking(true);
+    setError(null);
+    try {
+      const response = await authFetch(`/api/sessions/${sessionId}/halls/${hallId}/readiness`);
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: `خطأ ${response.status}` }));
+        throw new Error(typeof err.detail === 'string' ? err.detail : 'فشل فحص الأجهزة.');
+      }
+      const data = await response.json();
+      setReadiness(data);
+      return data as HallReadiness;
+    } catch (err: any) {
+      setError(err.message || 'تعذر فحص أجهزة القاعة.');
+      return null;
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  const handleStartMonitoring = async (force = false) => {
+    if (!force) {
+      const nextReadiness = await runReadinessCheck();
+      if (!nextReadiness) return;
+      if (nextReadiness.overall_status === 'warning') return;
+    }
+
     setIsStarting(true);
     try {
       const response = await authFetch(`/api/sessions/${sessionId}/halls/${hallId}/monitoring/start`, {
         method: 'POST'
       });
       if (response.ok) {
+        setReadiness(null);
         await fetchStatus();
       } else {
         setError('فشل في بدء المراقبة.');
@@ -132,12 +161,12 @@ export default function HallMonitoringPage() {
             <Camera size={48} className="text-gray-600 mb-4 opacity-50" />
             <p className="text-gray-400 font-medium mb-6">المراقبة لم تبدأ بعد لهذه القاعة</p>
             <button 
-              onClick={handleStartMonitoring}
-              disabled={isStarting}
+              onClick={() => handleStartMonitoring(false)}
+              disabled={isStarting || isChecking}
               className="bg-thaqib-primary hover:bg-thaqib-primary-dark disabled:opacity-50 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all active:scale-95 shadow-lg shadow-purple-900/20"
             >
-              {isStarting ? <Loader2 size={20} className="animate-spin" /> : <Play size={20} />}
-              <span>بدء المراقبة الآن</span>
+              {isStarting || isChecking ? <Loader2 size={20} className="animate-spin" /> : <Play size={20} />}
+              <span>{isChecking ? 'جاري فحص الأجهزة...' : 'بدء المراقبة الآن'}</span>
             </button>
           </div>
         )}
@@ -170,6 +199,51 @@ export default function HallMonitoringPage() {
           <div className="bg-red-50 border border-red-100 text-red-600 px-4 py-3 rounded-xl mb-6 text-xs flex items-start gap-2">
             <AlertTriangle size={16} className="shrink-0" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {!isMonitoring && readiness && (
+          <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-2xl p-4">
+            <div className="flex items-start gap-3 mb-4">
+              <AlertTriangle size={18} className="text-yellow-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-bold text-yellow-800">
+                  {readiness.overall_status === 'passed' ? 'كل الأجهزة جاهزة' : 'توجد تحذيرات قبل بدء المراقبة'}
+                </p>
+                <p className="text-xs text-yellow-700 mt-1">
+                  يمكنك إعادة الفحص أو بدء المراقبة رغم التحذيرات عند الضرورة.
+                </p>
+              </div>
+            </div>
+            <div className="space-y-2 mb-4">
+              {readiness.devices.map((device) => (
+                <div key={device.id} className="bg-white rounded-xl px-3 py-2 flex items-start gap-3 border border-yellow-100">
+                  <span className={`mt-1.5 w-2.5 h-2.5 rounded-full shrink-0 ${device.status === 'passed' ? 'bg-green-500' : 'bg-yellow-500'}`}></span>
+                  <div>
+                    <p className="text-xs font-bold text-gray-800">{device.name}</p>
+                    <p className="text-[11px] text-gray-500">{device.type === 'camera' ? 'كاميرا' : 'مايكروفون'} - {device.message}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={runReadinessCheck}
+                disabled={isChecking}
+                className="flex-1 py-3 bg-white border border-yellow-200 text-yellow-700 rounded-xl text-xs font-bold disabled:opacity-60"
+              >
+                {isChecking ? 'جاري الفحص...' : 'إعادة الفحص'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleStartMonitoring(true)}
+                disabled={isStarting}
+                className="flex-1 py-3 bg-thaqib-primary text-white rounded-xl text-xs font-bold disabled:opacity-60"
+              >
+                {isStarting ? 'جاري البدء...' : 'بدء رغم التحذيرات'}
+              </button>
+            </div>
           </div>
         )}
 
