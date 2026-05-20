@@ -137,7 +137,7 @@ function AuthBanner() {
           <div className="h-[90px] w-[130px] flex items-center justify-center mb-6">
             <img src="/Frame 76.svg" alt="Thaqib" className="max-h-full max-w-full object-contain" />
           </div>
-          <h1 className="text-[#fffefe] text-[48px] font-semibold leading-tight mb-3 text-center">مرحبا بك فى ثاقب</h1>
+          <h1 className="text-[#fffefe] text-[48px] font-semibold leading-tight mb-3 text-center">مرحبا بك فى Thaqib</h1>
           <p className="text-[rgba(255,254,254,0.9)] text-[22px] font-medium text-center">بوابتك إلى المراقبة السهلة.</p>
         </div>
         <div className="flex flex-col items-center mt-auto mb-[72px] gap-[12px] px-8">

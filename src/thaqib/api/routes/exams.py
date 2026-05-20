@@ -1,11 +1,13 @@
 import uuid
+from datetime import datetime, timezone
 from typing import List, Any, Optional
+import cv2
 from fastapi import APIRouter, Depends, HTTPException, status, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.exams import ExamSession, Assignment
-from src.thaqib.db.models.infrastructure import Hall
+from src.thaqib.db.models.infrastructure import Device, Hall
 from src.thaqib.db.models.users import User
 from src.thaqib.schemas.exams import (
     ExamSessionCreate, ExamSessionResponse, ExamSessionUpdate, 
@@ -18,6 +20,100 @@ from src.thaqib.api.routes import stream
 router = APIRouter()
 require_admin = RequireRole(["admin"])
 require_invigilator = RequireRole(["invigilator", "referee", "admin"])
+
+
+def _parse_camera_source(source: str) -> int | str:
+    try:
+        return int(source)
+    except (TypeError, ValueError):
+        return source
+
+
+def _camera_readiness(device: Device) -> dict[str, Any]:
+    source = (device.stream_url or "").strip()
+    if not source:
+        return {
+            "id": str(device.id),
+            "type": device.type,
+            "identifier": device.identifier,
+            "name": (device.position or {}).get("label") or device.identifier,
+            "status": "failed",
+            "message": "Camera stream URL is not configured.",
+        }
+
+    capture = cv2.VideoCapture(_parse_camera_source(source))
+    try:
+        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 1500)
+        capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1500)
+    except Exception:
+        pass
+
+    try:
+        ok, _ = capture.read() if capture.isOpened() else (False, None)
+    finally:
+        capture.release()
+
+    if not ok:
+        return {
+            "id": str(device.id),
+            "type": device.type,
+            "identifier": device.identifier,
+            "name": (device.position or {}).get("label") or device.identifier,
+            "status": "failed",
+            "message": "Camera stream could not be opened or read.",
+        }
+
+    return {
+        "id": str(device.id),
+        "type": device.type,
+        "identifier": device.identifier,
+        "name": (device.position or {}).get("label") or device.identifier,
+        "status": "passed",
+        "message": "Camera stream is reachable.",
+    }
+
+
+def _microphone_readiness(device: Device) -> dict[str, Any]:
+    healthy = device.status in {"online", "active", "ready", "running"}
+    return {
+        "id": str(device.id),
+        "type": device.type,
+        "identifier": device.identifier,
+        "name": (device.position or {}).get("label") or device.identifier,
+        "status": "passed" if healthy else "failed",
+        "message": "Microphone is marked online." if healthy else f"Microphone status is {device.status or 'unknown'}.",
+    }
+
+
+def _get_session_hall_and_assignment(
+    db: Session,
+    session_id: uuid.UUID,
+    hall_id: uuid.UUID,
+    current_user: User,
+) -> tuple[ExamSession, Hall, Assignment | None]:
+    session = db.query(ExamSession).filter(ExamSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Exam session not found")
+
+    hall = (
+        db.query(Hall)
+        .filter(Hall.id == hall_id, Hall.deleted_at.is_(None))
+        .options(selectinload(Hall.devices))
+        .first()
+    )
+    if not hall or all(h.id != hall_id for h in session.halls):
+        raise HTTPException(status_code=404, detail="Hall is not linked to this exam session")
+
+    assignment = db.query(Assignment).filter(
+        Assignment.exam_session_id == session_id,
+        Assignment.hall_id == hall_id,
+    ).first()
+
+    if current_user.role not in {"admin", "referee"}:
+        if not assignment or assignment.invigilator_id != current_user.id:
+            raise HTTPException(status_code=403, detail="You are not assigned to monitor this hall")
+
+    return session, hall, assignment
 
 @router.get("/my", response_model=List[AssignmentDetailedResponse])
 def get_my_assignments(
@@ -73,6 +169,61 @@ def start_monitoring(
         
     stream.start_hall_monitoring(hall_id, session_id, db)
     return {"status": "monitoring started"}
+
+
+@router.get("/{session_id}/halls/{hall_id}/readiness")
+def get_hall_readiness(
+    session_id: uuid.UUID,
+    hall_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_invigilator)
+) -> Any:
+    """
+    Check every configured camera and microphone before a hall starts monitoring.
+    Failed checks are warnings for the UI; start remains allowed by policy.
+    """
+    session, hall, _ = _get_session_hall_and_assignment(db, session_id, hall_id, current_user)
+    active_devices = [device for device in hall.devices if device.deleted_at is None]
+
+    results = []
+    for device in active_devices:
+        if device.type == "camera":
+            results.append(_camera_readiness(device))
+        elif device.type == "microphone":
+            results.append(_microphone_readiness(device))
+
+    camera_count = sum(1 for device in active_devices if device.type == "camera")
+    mic_count = sum(1 for device in active_devices if device.type == "microphone")
+    if camera_count == 0:
+        results.append({
+            "id": "missing-camera",
+            "type": "camera",
+            "identifier": "missing-camera",
+            "name": "Camera",
+            "status": "failed",
+            "message": "No cameras are registered for this hall.",
+        })
+    if mic_count == 0:
+        results.append({
+            "id": "missing-microphone",
+            "type": "microphone",
+            "identifier": "missing-microphone",
+            "name": "Microphone",
+            "status": "failed",
+            "message": "No microphones are registered for this hall.",
+        })
+
+    failed_count = sum(1 for result in results if result["status"] != "passed")
+    return {
+        "session_id": str(session.id),
+        "hall_id": str(hall.id),
+        "hall_name": hall.name,
+        "exam_name": session.exam_name,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "overall_status": "passed" if failed_count == 0 else "warning",
+        "failed_count": failed_count,
+        "devices": results,
+    }
 
 @router.post("/{session_id}/halls/{hall_id}/monitoring/stop")
 def stop_monitoring(

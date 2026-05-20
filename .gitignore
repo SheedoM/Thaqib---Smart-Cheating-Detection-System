@@ -122,6 +122,7 @@ temp/
 archive/
 alerts/
 scratch/
+uploads/
 */.vite/
 node_modules/
 frontend/dist/

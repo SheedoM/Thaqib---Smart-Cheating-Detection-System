@@ -1,6 +1,7 @@
 import uuid
+from pathlib import Path
 from typing import List, Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Request
 from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
@@ -15,6 +16,37 @@ router = APIRouter()
 
 # Admin only restriction
 require_admin = RequireRole(["admin"])
+
+UPLOADS_DIR = Path("uploads/users")
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_IMAGE_SIZE = 2 * 1024 * 1024
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+
+
+@router.post("/upload-image")
+async def upload_user_image(
+    image: UploadFile = File(...),
+    _ = Depends(require_admin),
+) -> Any:
+    """
+    Upload an invigilator/referee profile image and return a public URL.
+    """
+    suffix = ALLOWED_IMAGE_TYPES.get(image.content_type or "")
+    if not suffix:
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG, and WebP images are allowed.")
+
+    content = await image.read()
+    if len(content) > MAX_IMAGE_SIZE:
+        raise HTTPException(status_code=413, detail="Image must be 2MB or smaller.")
+
+    filename = f"{uuid.uuid4().hex}{suffix}"
+    destination = UPLOADS_DIR / filename
+    destination.write_bytes(content)
+    return {"url": f"/uploads/users/{filename}"}
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("10/minute")
@@ -43,6 +75,7 @@ def create_user(
         username=user.username,
         full_name=user.full_name,
         email=user.email,
+        image=getattr(user, "image", None),
         role=user.role,
         password_hash=get_password_hash(user.password)
     )

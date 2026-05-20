@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from src.thaqib.core.limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
@@ -12,6 +14,8 @@ from src.thaqib.api.routes import ptt, auth, institutions, halls, setup, devices
 from src.thaqib.config.settings import get_settings
 
 settings = get_settings()
+UPLOADS_DIR = Path("uploads")
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
@@ -92,6 +96,7 @@ app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(exams.router, prefix="/api/sessions", tags=["Exam Sessions"])
 app.include_router(events.router, prefix="/api/events", tags=["Detection Events"])
 app.include_router(stream.router, prefix="/api/stream", tags=["Video Stream"])
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 @app.get("/")
 async def root():

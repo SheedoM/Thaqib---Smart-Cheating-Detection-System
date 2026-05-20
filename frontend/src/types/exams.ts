@@ -33,3 +33,23 @@ export interface HallMonitoringStatus {
     timestamp: string;
   }>;
 }
+
+export interface DeviceReadiness {
+  id: string;
+  type: 'camera' | 'microphone' | string;
+  identifier: string;
+  name: string;
+  status: 'passed' | 'failed';
+  message: string;
+}
+
+export interface HallReadiness {
+  session_id: string;
+  hall_id: string;
+  hall_name: string;
+  exam_name: string;
+  checked_at: string;
+  overall_status: 'passed' | 'warning';
+  failed_count: number;
+  devices: DeviceReadiness[];
+}
