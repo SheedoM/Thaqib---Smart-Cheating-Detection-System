@@ -1,4 +1,5 @@
 import { apiUrl, authFetch } from '../config/api';
+import { useEffect, useState, useCallback } from 'react';
 
 function formatUptime(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -84,7 +85,7 @@ export default function CameraModal({ mode, alert, camera, stats, pttStatusText,
 }
 
 
-// ── Camera View (enlarged live feed) ─────────────────────────────────────────
+// ── Camera View (enlarged live feed + working controls) ───────────────────────
 
 function CameraView({
   camera,
@@ -93,6 +94,53 @@ function CameraView({
   camera: CameraModalProps['camera'];
   stats: CameraStats | null;
 }) {
+  const deviceId = camera?.id ?? null;
+  const [quality, setQuality] = useState<number | null>(null);
+  const [resolution, setResolution] = useState<string | null>(null);
+  const [toggling, setToggling] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+
+  // Load current controls state on open
+  useEffect(() => {
+    if (!deviceId) return;
+    authFetch(`/api/stream/cameras/${deviceId}/controls`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) { setQuality(d.quality); setResolution(d.resolution); } })
+      .catch(() => {});
+  }, [deviceId]);
+
+  const toggleQuality = useCallback(async () => {
+    if (!deviceId || toggling) return;
+    setToggling(true);
+    try {
+      const r = await authFetch(`/api/stream/cameras/${deviceId}/quality`, { method: 'POST' });
+      if (r.ok) { const d = await r.json(); setQuality(d.quality); }
+    } finally { setToggling(false); }
+  }, [deviceId, toggling]);
+
+  const toggleResolution = useCallback(async () => {
+    if (!deviceId || toggling) return;
+    setToggling(true);
+    try {
+      const r = await authFetch(`/api/stream/cameras/${deviceId}/resolution`, { method: 'POST' });
+      if (r.ok) { const d = await r.json(); setResolution(d.resolution); }
+    } finally { setToggling(false); }
+  }, [deviceId, toggling]);
+
+  // Keyboard shortcuts: V = quality, G = resolution
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.key === 'v' || e.key === 'V') void toggleQuality();
+      if (e.key === 'g' || e.key === 'G') void toggleResolution();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [toggleQuality, toggleResolution]);
+
+  const qualityLabel = quality === 50 ? 'LOW' : quality === 75 ? 'MED' : quality === 90 ? 'HIGH' : quality != null ? `${quality}%` : '—';
+
   return (
     <div className="modal-content" dir="rtl">
       {/* Header */}
@@ -106,7 +154,6 @@ function CameraView({
 
       {/* Video feed */}
       <div className="modal-video-wrapper">
-        {/* Location tooltip */}
         <div className="modal-location-tooltip">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
@@ -116,11 +163,7 @@ function CameraView({
         </div>
 
         {camera?.feedPath ? (
-          <img
-            src={apiUrl(camera.feedPath)}
-            alt="بث مباشر"
-            className="modal-video-img"
-          />
+          <img src={apiUrl(camera.feedPath)} alt="بث مباشر" className="modal-video-img" />
         ) : (
           <div className="camera-feed-placeholder" style={{ minHeight: '360px' }}>
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
@@ -131,6 +174,44 @@ function CameraView({
           </div>
         )}
       </div>
+
+      {/* Live controls — only shown when camera is running */}
+      {deviceId && (
+        <div style={{ display: 'flex', gap: '8px', padding: '10px 0 4px', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', direction: 'ltr' }}>
+          <button
+            onClick={() => setShowShortcuts(s => !s)}
+            style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '5px 10px', cursor: 'pointer', fontSize: '12px', color: '#6b7280', fontWeight: 700 }}>
+            ⌨ اختصارات {showShortcuts ? '▲' : '▼'}
+          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={toggleQuality} disabled={toggling}
+              style={{ background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: '8px', padding: '5px 14px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#374151' }}>
+              🎬 Quality: <span style={{ color: '#44006E' }}>{qualityLabel}</span>
+              <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[V]</span>
+            </button>
+            <button onClick={toggleResolution} disabled={toggling}
+              style={{ background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: '8px', padding: '5px 14px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#374151' }}>
+              📐 Res: <span style={{ color: '#44006E' }}>{resolution ?? '—'}</span>
+              <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[G]</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Keyboard shortcut legend */}
+      {showShortcuts && (
+        <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '12px 16px', marginBottom: 8, direction: 'rtl' }}>
+          <p style={{ fontSize: 11, fontWeight: 900, color: '#6b7280', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>اختصارات لوحة المفاتيح</p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px', fontSize: 12, alignItems: 'center' }}>
+            <kbd style={{ background: '#e5e7eb', borderRadius: 4, padding: '2px 8px', fontFamily: 'monospace', fontWeight: 700 }}>V</kbd>
+            <span style={{ color: '#374151', fontWeight: 700 }}>تبديل جودة الفيديو — LOW 50% → MED 75% → HIGH 90%</span>
+            <kbd style={{ background: '#e5e7eb', borderRadius: 4, padding: '2px 8px', fontFamily: 'monospace', fontWeight: 700 }}>G</kbd>
+            <span style={{ color: '#374151', fontWeight: 700 }}>تبديل دقة المعالجة — NATIVE → 1080p → 720p</span>
+            <kbd style={{ background: '#e5e7eb', borderRadius: 4, padding: '2px 8px', fontFamily: 'monospace', fontWeight: 700 }}>Esc</kbd>
+            <span style={{ color: '#374151', fontWeight: 700 }}>إغلاق النافذة</span>
+          </div>
+        </div>
+      )}
 
       {/* Stats bar */}
       <div className="modal-stats-bar">
@@ -163,7 +244,6 @@ function CameraView({
           <span className="modal-stat-value">{stats?.selected_count || 0}</span>
         </div>
       </div>
-
     </div>
   );
 }
@@ -295,23 +375,11 @@ function AlertView({
           className="alert-btn-green"
           style={{ flex: 1 }}
           title={pttStatusText}
-          onPointerDown={(e) => {
-            e.preventDefault();
-            void onPttStart();
-          }}
-          onPointerUp={(e) => {
-            e.preventDefault();
-            onPttStop();
-          }}
+          onPointerDown={(e) => { e.preventDefault(); void onPttStart(); }}
+          onPointerUp={(e) => { e.preventDefault(); onPttStop(); }}
           onPointerCancel={() => onPttStop()}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            void onPttStart();
-          }}
-          onMouseUp={(e) => {
-            e.preventDefault();
-            onPttStop();
-          }}
+          onMouseDown={(e) => { e.preventDefault(); void onPttStart(); }}
+          onMouseUp={(e) => { e.preventDefault(); onPttStop(); }}
           onMouseLeave={() => onPttStop()}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
