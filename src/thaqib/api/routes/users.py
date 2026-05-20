@@ -1,20 +1,75 @@
 import uuid
+from pathlib import Path
 from typing import List, Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.users import User
 from src.thaqib.db.models.infrastructure import Institution
 from src.thaqib.schemas.users import UserCreate, UserResponse, UserUpdate
-from src.thaqib.api.dependencies import RequireRole
-from src.thaqib.core.security import get_password_hash
+from src.thaqib.api.dependencies import RequireRole, get_current_user
+from src.thaqib.core.security import get_password_hash, verify_password
 from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
 # Admin only restriction
 require_admin = RequireRole(["admin"])
+
+class PasswordChangePayload(BaseModel):
+    current_password: str
+    new_password: str
+
+@router.put("/me/password", status_code=200)
+@limiter.limit("5/minute")
+def change_my_password(
+    request: Request,
+    payload: PasswordChangePayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Allow any authenticated user to change their own password."""
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="كلمة المرور الحالية غير صحيحة")
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=400, detail="كلمة المرور الجديدة يجب أن تكون 8 أحرف على الأقل")
+    current_user.password_hash = get_password_hash(payload.new_password)
+    db.add(current_user)
+    db.commit()
+    return {"message": "تم تغيير كلمة المرور بنجاح"}
+
+UPLOADS_DIR = Path("uploads/users")
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_IMAGE_SIZE = 2 * 1024 * 1024
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+
+
+@router.post("/upload-image")
+async def upload_user_image(
+    image: UploadFile = File(...),
+    _ = Depends(require_admin),
+) -> Any:
+    """
+    Upload an invigilator/referee profile image and return a public URL.
+    """
+    suffix = ALLOWED_IMAGE_TYPES.get(image.content_type or "")
+    if not suffix:
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG, and WebP images are allowed.")
+
+    content = await image.read()
+    if len(content) > MAX_IMAGE_SIZE:
+        raise HTTPException(status_code=413, detail="Image must be 2MB or smaller.")
+
+    filename = f"{uuid.uuid4().hex}{suffix}"
+    destination = UPLOADS_DIR / filename
+    destination.write_bytes(content)
+    return {"url": f"/uploads/users/{filename}"}
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("10/minute")
@@ -43,6 +98,7 @@ def create_user(
         username=user.username,
         full_name=user.full_name,
         email=user.email,
+        image=getattr(user, "image", None),
         role=user.role,
         password_hash=get_password_hash(user.password)
     )
@@ -104,8 +160,19 @@ def update_user(
         raise HTTPException(status_code=404, detail="User not found")
         
     update_data = user_in.model_dump(exclude_unset=True)
+    if "username" in update_data:
+        existing = db.query(User).filter(User.username == update_data["username"], User.id != user_id).first()
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail="A user with this username already exists.",
+            )
+
+    password = update_data.pop("password", None)
     for field, value in update_data.items():
         setattr(user, field, value)
+    if password:
+        user.password_hash = get_password_hash(password)
         
     db.add(user)
     db.commit()

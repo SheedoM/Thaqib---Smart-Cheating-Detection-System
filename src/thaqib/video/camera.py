@@ -1,11 +1,12 @@
 """
-Camera connection handler for IP cameras and webcams.
-
-Provides a unified interface for capturing frames from various video sources.
+Camera connection handler for IP cameras, webcams, and video files.
 """
 
 import logging
 import time
+import platform
+import threading
+from collections import deque
 from dataclasses import dataclass
 from typing import Generator
 
@@ -74,6 +75,13 @@ class CameraStream:
         self._cap: cv2.VideoCapture | None = None
         self._frame_index = 0
         self._is_opened = False
+        self._original_width: int = 0
+        self._original_height: int = 0
+        
+        # Threaded Queue
+        self._frame_queue = deque(maxlen=5)
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
 
     def open(self) -> bool:
         """
@@ -89,7 +97,9 @@ class CameraStream:
 
         # Create video capture
         if isinstance(self.source, int):
-            self._cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW)  # DirectShow on Windows
+            # DirectShow is Windows-only; use generic backend on other platforms
+            backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
+            self._cap = cv2.VideoCapture(self.source, backend)
         else:
             self._cap = cv2.VideoCapture(self.source)
 
@@ -102,10 +112,12 @@ class CameraStream:
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self._cap.set(cv2.CAP_PROP_FPS, self.target_fps)
 
-        # Get actual properties
+        # Get actual properties and cache for public access
         actual_width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         actual_fps = self._cap.get(cv2.CAP_PROP_FPS)
+        self._original_width = actual_width
+        self._original_height = actual_height
 
         logger.info(
             f"Camera opened: {actual_width}x{actual_height} @ {actual_fps:.1f} FPS"
@@ -113,10 +125,91 @@ class CameraStream:
 
         self._is_opened = True
         self._frame_index = 0
+        
+        # Start reader thread
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._update_loop, daemon=True)
+        self._thread.start()
+
         return True
+
+    def _update_loop(self) -> None:
+        """Background thread to read frames without blocking pipeline."""
+        fps = self.target_fps if self.target_fps else 30.0
+        frame_time_target = 1.0 / fps
+        failed_frames = 0
+
+        while not self._stop_event.is_set() and self._is_opened:
+            start_time = time.time()
+            if self._cap is None or not self._cap.isOpened():
+                logger.warning("Camera lost, reconnecting...")
+                if self._cap is not None:
+                    self._cap.release()
+                time.sleep(2.0)
+                
+                # Attempt to reconnect
+                if isinstance(self.source, int):
+                    backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
+                    self._cap = cv2.VideoCapture(self.source, backend)
+                else:
+                    self._cap = cv2.VideoCapture(self.source)
+                    
+                if self._cap.isOpened():
+                    self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                    self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                    self._cap.set(cv2.CAP_PROP_FPS, self.target_fps)
+                    logger.info("Camera reconnected successfully.")
+                    failed_frames = 0
+                    continue
+                else:
+                    logger.error("Reconnection failed. Retrying in 2 seconds...")
+                    time.sleep(2.0)
+                    continue
+                
+            ret, frame = self._cap.read()
+            if not ret:
+                failed_frames += 1
+                if failed_frames > 15:
+                    # For video files, EOF is expected — stop cleanly
+                    # instead of reconnecting (which would replay the file).
+                    if isinstance(self.source, str) and not self.source.startswith("rtsp"):
+                        logger.info("Video file ended (EOF). Stopping reader thread.")
+                        self._is_opened = False
+                        break
+                    logger.warning(f"Failed to read {failed_frames} consecutive frames. Reconnecting...")
+                    if self._cap is not None:
+                        self._cap.release()
+                    self._cap = None
+                    failed_frames = 0
+                continue
+                
+            failed_frames = 0
+            self._frame_index += 1
+            fd = FrameData(
+                frame=frame,
+                timestamp=time.time(),
+                frame_index=self._frame_index,
+                width=frame.shape[1],
+                height=frame.shape[0],
+            )
+            self._frame_queue.append(fd)
+            
+            # Pace video files so they don't immediately exhaust the deque
+            if isinstance(self.source, str):
+                elapsed = time.time() - start_time
+                sleep_time = frame_time_target - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
+        self._stop_event.set()
 
     def close(self) -> None:
         """Close the camera connection."""
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+            
         if self._cap is not None:
             self._cap.release()
             self._cap = None
@@ -125,28 +218,25 @@ class CameraStream:
 
     def read(self) -> FrameData | None:
         """
-        Read a single frame from the camera.
+        Read a single frame from the camera queue.
 
         Returns:
-            FrameData object if successful, None if failed.
+            FrameData object if successful, None if failed or stream ended.
         """
-        if not self._is_opened or self._cap is None:
+        if not self._is_opened:
             return None
 
-        ret, frame = self._cap.read()
-        if not ret:
-            logger.warning("Failed to read frame from camera")
-            return None
+        # Wait for a frame to arrive in the queue
+        while self._is_opened and not self._stop_event.is_set():
+            if self._frame_queue:
+                return self._frame_queue.popleft()
+            time.sleep(0.01)
 
-        self._frame_index += 1
-
-        return FrameData(
-            frame=frame,
-            timestamp=time.time(),
-            frame_index=self._frame_index,
-            width=frame.shape[1],
-            height=frame.shape[0],
-        )
+        # Catch any final frames before stopping
+        if self._frame_queue:
+            return self._frame_queue.popleft()
+            
+        return None
 
     def frames(self) -> Generator[FrameData, None, None]:
         """
@@ -174,6 +264,16 @@ class CameraStream:
     def is_opened(self) -> bool:
         """Check if camera is opened."""
         return self._is_opened
+
+    @property
+    def original_width(self) -> int:
+        """Original frame width from the camera/video source."""
+        return self._original_width
+
+    @property
+    def original_height(self) -> int:
+        """Original frame height from the camera/video source."""
+        return self._original_height
 
     @property
     def frame_count(self) -> int:

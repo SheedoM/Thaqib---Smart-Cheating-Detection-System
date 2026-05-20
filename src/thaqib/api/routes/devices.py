@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from typing import List, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
@@ -25,13 +26,14 @@ def create_device(
     """
     Create a new device. Admin only.
     """
-    hall = db.query(Hall).filter(Hall.id == device.hall_id).first()
+    hall = db.query(Hall).filter(Hall.id == device.hall_id, Hall.deleted_at.is_(None)).first()
     if not hall:
         raise HTTPException(status_code=404, detail="Hall not found")
         
     db_obj = db.query(Device).filter(
         Device.identifier == device.identifier, 
-        Device.hall_id == device.hall_id
+        Device.hall_id == device.hall_id,
+        Device.deleted_at.is_(None)
     ).first()
     
     if db_obj:
@@ -45,19 +47,16 @@ def create_device(
         type=device.type,
         identifier=device.identifier,
         ip_address=device.ip_address,
-        stream_url=device.stream_url,
+        stream_url=device.stream_url or "",
         position=device.position,
         coverage_area=device.coverage_area,
-        status=device.status
+        status=device.status or "offline",
+        last_health_check=datetime.now(timezone.utc),
     )
     db.add(new_device)
     db.commit()
     db.refresh(new_device)
     
-    # Optional handling of datetime for response compatibility
-    if new_device.last_health_check:
-        new_device.last_health_check = new_device.last_health_check.isoformat()
-        
     return new_device
 
 @router.get("/", response_model=List[DeviceResponse])
@@ -71,15 +70,11 @@ def read_devices(
     """
     Retrieve devices. Can be filtered by hall. Admin only.
     """
-    query = db.query(Device)
+    query = db.query(Device).filter(Device.deleted_at.is_(None))
     if hall_id:
         query = query.filter(Device.hall_id == hall_id)
         
     devices = query.offset(skip).limit(limit).all()
-    # Handle datetime serialization if necessary (pydantic handles it usually when model allows string or datetime)
-    for device in devices:
-        if device.last_health_check:
-             device.last_health_check = device.last_health_check.isoformat()
     return devices
 
 @router.get("/{device_id}", response_model=DeviceResponse)
@@ -91,12 +86,10 @@ def read_device(
     """
     Get device by ID. Admin only.
     """
-    device = db.query(Device).filter(Device.id == device_id).first()
+    device = db.query(Device).filter(Device.id == device_id, Device.deleted_at.is_(None)).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
         
-    if device.last_health_check:
-        device.last_health_check = device.last_health_check.isoformat()
     return device
 
 @router.put("/{device_id}", response_model=DeviceResponse)
@@ -111,20 +104,23 @@ def update_device(
     """
     Update a device. Admin only.
     """
-    device = db.query(Device).filter(Device.id == device_id).first()
+    device = db.query(Device).filter(Device.id == device_id, Device.deleted_at.is_(None)).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
         
     update_data = device_in.model_dump(exclude_unset=True)
+    next_stream_url = update_data.get("stream_url", device.stream_url)
+    if device.type == "camera" and not (next_stream_url or "").strip():
+        raise HTTPException(status_code=422, detail="Camera devices require stream_url")
+
     for field, value in update_data.items():
-        setattr(device, field, value)
+        setattr(device, field, value if field != "stream_url" or value is not None else "")
+    device.last_health_check = datetime.now(timezone.utc)
         
     db.add(device)
     db.commit()
     db.refresh(device)
     
-    if device.last_health_check:
-        device.last_health_check = device.last_health_check.isoformat()
     return device
 
 @router.delete("/{device_id}", response_model=DeviceResponse)
@@ -138,13 +134,12 @@ def delete_device(
     """
     Delete a device. Admin only.
     """
-    device = db.query(Device).filter(Device.id == device_id).first()
+    device = db.query(Device).filter(Device.id == device_id, Device.deleted_at.is_(None)).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
-        
-    db.delete(device)
+
+    device.deleted_at = datetime.now(timezone.utc)
+    db.add(device)
     db.commit()
-    
-    if device.last_health_check:
-         device.last_health_check = device.last_health_check.isoformat()
+    db.refresh(device)
     return device

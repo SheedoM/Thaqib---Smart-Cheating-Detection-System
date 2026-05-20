@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
 import { Loader2 } from 'lucide-react';
+import { authFetch } from '../config/api';
 
-export default function LoginPage() {
+interface LoginPageProps {
+  onLoginSuccess?: () => void;
+}
+
+export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const [formData, setFormData] = useState({
     identifier: '',
     password: '',
@@ -24,7 +29,7 @@ export default function LoginPage() {
       params.append('username', formData.identifier);
       params.append('password', formData.password);
 
-      const response = await fetch('http://localhost:8000/api/auth/login', {
+      const response = await authFetch('/api/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -34,14 +39,10 @@ export default function LoginPage() {
 
       if (response.ok) {
         const data = await response.json();
-        // Save tokens to localStorage
-        localStorage.setItem('thaqib_access_token', data.access_token);
-        localStorage.setItem('thaqib_refresh_token', data.refresh_token);
-        
         console.log('Login successful', data);
-        alert('تم تسجيل الدخول بنجاح!');
-        // In a real app, we would use a router to redirect here
-        window.location.reload(); 
+        if (onLoginSuccess) {
+          onLoginSuccess();
+        }
       } else {
         const errData = await response.json();
         setErrorMsg(errData.detail || 'خطأ في اسم المستخدم أو كلمة المرور');

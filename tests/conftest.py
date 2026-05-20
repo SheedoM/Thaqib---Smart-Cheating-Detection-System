@@ -1,4 +1,5 @@
 import pytest
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -7,6 +8,13 @@ from fastapi.testclient import TestClient
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.resolve()))
+
+os.environ["APP_ENV"] = "testing"
+os.environ["LOG_FORMAT"] = "csv"
+os.environ["SECRET_KEY"] = "test-secret-key-with-at-least-32-characters"
+os.environ["INTERNAL_EVENT_TOKEN"] = "test-internal-event-token"
+os.environ["STREAM_MANAGER_ENABLED"] = "false"
+os.environ["DATABASE_ECHO"] = "false"
 
 from src.thaqib.main import app
 from src.thaqib.db.database import get_db
@@ -99,10 +107,8 @@ def admin_token_headers(client, admin_user):
         "password": "securepassword",
     }
     r = client.post("/api/auth/login", data=login_data)
-    tokens = r.json()
-    a_token = tokens["access_token"]
-    headers = {"Authorization": f"Bearer {a_token}"}
-    return headers
+    assert r.status_code == 200
+    return {"X-CSRF-Token": r.json()["csrf_token"]}
 
 @pytest.fixture(scope="function")
 def invigilator_token_headers(client, invigilator_user):
@@ -111,7 +117,5 @@ def invigilator_token_headers(client, invigilator_user):
         "password": "securepassword",
     }
     r = client.post("/api/auth/login", data=login_data)
-    tokens = r.json()
-    a_token = tokens["access_token"]
-    headers = {"Authorization": f"Bearer {a_token}"}
-    return headers
+    assert r.status_code == 200
+    return {"X-CSRF-Token": r.json()["csrf_token"]}

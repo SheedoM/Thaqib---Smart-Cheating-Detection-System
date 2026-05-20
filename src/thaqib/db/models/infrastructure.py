@@ -47,6 +47,7 @@ class Hall(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     floor: Mapped[Optional[str]] = mapped_column(String(20))
     capacity: Mapped[int] = mapped_column(Integer, nullable=False)
     layout_map: Mapped[Optional[dict]] = mapped_column(JSON)
+    image: Mapped[Optional[str]] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(20), default="not_ready")
     # SRS FR-03.7: 'ready' when all devices online, 'not_ready' otherwise
 
@@ -71,7 +72,7 @@ class Device(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     # 'camera' or 'microphone' — SRS FR-03.2
     identifier: Mapped[str] = mapped_column(String(100), nullable=False)
     ip_address: Mapped[Optional[str]] = mapped_column(String(45))
-    stream_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    stream_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     position: Mapped[dict] = mapped_column(JSON, nullable=False)
     # Position label + coordinates for spatial mapping
     coverage_area: Mapped[Optional[dict]] = mapped_column(JSON)
