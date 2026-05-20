@@ -479,6 +479,8 @@ def _run_pipeline(camera: CameraRuntime) -> None:
 
     pipeline = VideoPipeline(source=parsed_source, detection_interval=_detection_interval, on_alert=on_alert)
     pipeline._archive_annotated = (_archive_mode == "annotated")
+    # Expose pipeline to HTTP control endpoints (toggle_video_quality / toggle_processing_resolution)
+    runtime._pipeline = pipeline
 
     try:
         started = pipeline.start()
@@ -914,3 +916,46 @@ async def get_alert_report_pdf(alert_id: str, _=Depends(require_stream_user)) ->
         "Cache-Control": "no-store",
     }
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+# ── Live camera controls ───────────────────────────────────────────────────────
+# Store pipeline reference on CameraRuntime so HTTP endpoints can call methods on it.
+# _run_pipeline() assigns runtime._pipeline after construction.
+
+@router.post("/cameras/{device_id}/quality")
+async def toggle_camera_quality(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """Cycle the running pipeline's video quality preset (LOW 50 → MED 75 → HIGH 90)."""
+    runtime = _camera_states.get(device_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="Camera not running")
+    pipeline = getattr(runtime, "_pipeline", None)
+    if pipeline is None:
+        raise HTTPException(status_code=503, detail="Pipeline not yet ready")
+    pipeline.toggle_video_quality()
+    return JSONResponse({"quality": pipeline._video_quality})
+
+
+@router.post("/cameras/{device_id}/resolution")
+async def toggle_camera_resolution(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """Cycle the running pipeline's processing resolution (NATIVE → 1080p → 720p)."""
+    runtime = _camera_states.get(device_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="Camera not running")
+    pipeline = getattr(runtime, "_pipeline", None)
+    if pipeline is None:
+        raise HTTPException(status_code=503, detail="Pipeline not yet ready")
+    label = pipeline.toggle_processing_resolution()
+    return JSONResponse({"resolution": label})
+
+
+@router.get("/cameras/{device_id}/controls")
+async def get_camera_controls(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """Return current quality and resolution settings for a running camera."""
+    runtime = _camera_states.get(device_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="Camera not running")
+    pipeline = getattr(runtime, "_pipeline", None)
+    if pipeline is None:
+        return JSONResponse({"quality": 75, "resolution": "NATIVE"})
+    label, _ = pipeline._processing_presets[pipeline._processing_preset_idx]
+    return JSONResponse({"quality": pipeline._video_quality, "resolution": label})
