@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { apiUrl, authFetch } from '../config/api';
-import { Clock, ShieldAlert, AlertTriangle, Users } from 'lucide-react';
+import { authFetch } from '../config/api';
+import { Clock, ShieldAlert, Users } from 'lucide-react';
 
 interface ExamSession {
   id: string;
@@ -11,8 +11,18 @@ interface ExamSession {
   student_count: number;
 }
 
+interface ReportStats {
+  events: number;
+  highSeverity: number;
+}
+
+interface DetectionEvent {
+  severity: string;
+}
+
 export default function ReportsTab({ initialReport = null, onBack }: { initialReport?: ExamSession | null, onBack?: () => void }) {
   const [sessions, setSessions] = useState<ExamSession[]>([]);
+  const [statsBySession, setStatsBySession] = useState<Record<string, ReportStats>>({});
   const [loading, setLoading] = useState(true);
   const [selectedReport, setSelectedReport] = useState<ExamSession | null>(initialReport);
 
@@ -32,6 +42,30 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
     };
     fetchReports();
   }, []);
+
+  useEffect(() => {
+    if (sessions.length === 0) return;
+
+    const fetchStats = async () => {
+      const entries = await Promise.all(sessions.map(async (session) => {
+        try {
+          const res = await authFetch(`/api/events/?exam_session_id=${session.id}&limit=1000`);
+          if (!res.ok) return [session.id, { events: 0, highSeverity: 0 }] as const;
+          const events = await res.json() as DetectionEvent[];
+          return [session.id, {
+            events: events.length,
+            highSeverity: events.filter((event) => event.severity === 'high').length,
+          }] as const;
+        } catch {
+          return [session.id, { events: 0, highSeverity: 0 }] as const;
+        }
+      }));
+
+      setStatsBySession(Object.fromEntries(entries));
+    };
+
+    fetchStats();
+  }, [sessions]);
 
   const calculateTimeAgo = (dateStr: string) => {
     try {
@@ -60,6 +94,8 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
   };
 
   if (selectedReport) {
+    const selectedStats = statsBySession[selectedReport.id] || { events: 0, highSeverity: 0 };
+
     return (
       <div className="reports-section p-8 w-full max-w-7xl mx-auto" dir="rtl">
         <button onClick={() => { if (onBack) onBack(); else setSelectedReport(null); }} className="mb-6 text-[#44006E] font-bold flex items-center gap-2 hover:underline cursor-pointer">
@@ -102,7 +138,7 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
                   </div>
                   <div className="border border-[#ff3636] text-[#ff3636] flex items-center gap-2 px-4 py-2 rounded-2xl h-[40px]">
                     <ShieldAlert size={20} />
-                    <span className="text-[20px] font-medium">14 تحذير</span>
+                    <span className="text-[20px] font-medium">{selectedStats.highSeverity} تحذير</span>
                   </div>
                 </div>
               </div>
@@ -165,8 +201,7 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-6 gap-y-12 mt-8">
           {sessions.map((session) => {
-            const casesCount = Math.floor(Math.random() * 5) + 1; // Mock data since API doesn't provide it yet
-            const alertsCount = Math.floor(Math.random() * 20) + 5; // Mock data
+            const stats = statsBySession[session.id] || { events: 0, highSeverity: 0 };
             const studentCount = session.student_count || 420;
 
             return (
@@ -195,7 +230,7 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
                   <div className="flex flex-col gap-2 mb-6 w-full px-4">
                     <div className="flex items-center justify-end gap-2">
                       <span className="text-[16px] font-medium text-gray-400 group-hover:text-purple-200 transition-colors duration-300">
-                        {casesCount} حالات مؤكدة
+                        {stats.events} حالات مؤكدة
                       </span>
                       <ShieldAlert size={16} className="text-gray-400 group-hover:text-purple-200 transition-colors duration-300" />
                     </div>
@@ -217,7 +252,7 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
                         التنبيهات
                       </span>
                       <span className="text-[24px] font-bold text-gray-800 group-hover:text-white transition-colors duration-300">
-                        {alertsCount}
+                        {stats.highSeverity}
                       </span>
                     </div>
                     <div className="flex flex-col items-center gap-1">
