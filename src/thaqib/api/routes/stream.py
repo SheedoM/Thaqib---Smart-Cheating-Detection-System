@@ -470,7 +470,23 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             name=f"AlertClipPoll-{state.track_id}",
         ).start()
 
-    pipeline = VideoPipeline(source=parsed_source, detection_interval=1.0, on_alert=on_alert)
+    # Load persisted runtime settings (written by /api/settings PUT)
+    _sys_settings_path = Path("data/system_settings.json")
+    _sys_override: dict = {}
+    if _sys_settings_path.exists():
+        try:
+            import json as _json
+            _sys_override = _json.loads(_sys_settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    _detection_interval = float(_sys_override.get("detection_interval", 1.0))
+    _jpeg_quality = int(_sys_override.get("video_quality", 60))  # default 60 for stream
+    _archive_mode = str(_sys_override.get("archive_mode", "raw"))
+
+    pipeline = VideoPipeline(source=parsed_source, detection_interval=_detection_interval, on_alert=on_alert)
+    # Override archive mode if it differs from compiled-in default
+    pipeline._archive_annotated = (_archive_mode == "annotated")
 
     try:
         started = pipeline.start()
@@ -525,7 +541,7 @@ def _run_pipeline(camera: CameraRuntime) -> None:
                 camera.stats["frame_drops"] = camera.stats.get("frame_drops", 0) + 1
                 continue
 
-            ok, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 60])
+            ok, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, _jpeg_quality])
             if not ok:
                 continue
 
