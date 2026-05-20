@@ -88,6 +88,7 @@ const NAV_ITEMS = [
   { label: 'القاعات', key: 'halls', active: false },
   { label: 'الإمتحانات', key: 'exams', active: false },
   { label: 'المشرفين', key: 'supervisors', active: false },
+  { label: 'التقارير', key: 'reports', active: false },
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -501,6 +502,8 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
           <ExamsTab />
         ) : activeNav === 'supervisors' ? (
           <SupervisorsTab />
+        ) : activeNav === 'reports' ? (
+          <ReportsTab />
         ) : (
           <div className="dashboard-empty-state">
             <h3>قريباً</h3>

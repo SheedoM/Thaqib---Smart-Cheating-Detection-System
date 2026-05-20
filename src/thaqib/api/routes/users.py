@@ -104,8 +104,19 @@ def update_user(
         raise HTTPException(status_code=404, detail="User not found")
         
     update_data = user_in.model_dump(exclude_unset=True)
+    if "username" in update_data:
+        existing = db.query(User).filter(User.username == update_data["username"], User.id != user_id).first()
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail="A user with this username already exists.",
+            )
+
+    password = update_data.pop("password", None)
     for field, value in update_data.items():
         setattr(user, field, value)
+    if password:
+        user.password_hash = get_password_hash(password)
         
     db.add(user)
     db.commit()

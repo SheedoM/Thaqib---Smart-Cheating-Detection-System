@@ -12,12 +12,19 @@ interface ExamItem {
   status: string;
   student_count: number;
   halls?: { id: string, name: string }[];
+  assignments?: AssignmentSimple[];
   period?: string;
   configuration?: { period?: string };
 }
 
 interface HallSimple { id: string; name: string; }
 interface UserSimple { id: string; full_name: string; }
+interface AssignmentSimple {
+  id: string;
+  invigilator_id: string;
+  hall_id: string;
+  role: 'primary' | 'secondary';
+}
 
 // ─── Main Tab ────────────────────────────────────────────────────────────────
 
@@ -183,7 +190,7 @@ function ExamModal({ exam, onClose, onSuccess }: { exam: ExamItem | null, onClos
     student_count: exam?.student_count || 30,
     hall_ids: exam?.halls?.map(h => h.id) || [] as string[],
     period: exam?.period || exam?.configuration?.period || 'الفترة الأولي',
-    invigilator_ids: [] as string[],
+    invigilator_ids: Array.from(new Set(exam?.assignments?.map(a => a.invigilator_id) || [])) as string[],
   });
   const [halls, setHalls] = useState<HallSimple[]>([]);
   const [supervisors, setSupervisors] = useState<UserSimple[]>([]);
@@ -192,10 +199,20 @@ function ExamModal({ exam, onClose, onSuccess }: { exam: ExamItem | null, onClos
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    authFetch('/api/halls/').then(r => r.ok && r.json().then(setHalls)).catch(() => {});
-    authFetch('/api/users/').then(r => r.ok && r.json().then((users: any[]) =>
-      setSupervisors(users.filter(u => u.role === 'invigilator' || u.role === 'referee'))
-    )).catch(() => {});
+    authFetch('/api/halls/')
+      .then((r) => {
+        if (r.ok) return r.json().then(setHalls);
+      })
+      .catch(() => {});
+    authFetch('/api/users/')
+      .then((r) => {
+        if (r.ok) {
+          return r.json().then((users: any[]) =>
+            setSupervisors(users.filter(u => u.role === 'invigilator' || u.role === 'referee'))
+          );
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -222,13 +239,28 @@ function ExamModal({ exam, onClose, onSuccess }: { exam: ExamItem | null, onClos
 
       if (res.ok) {
         const saved = await res.json();
-        for (const uid of formData.invigilator_ids) {
-          try {
-            await authFetch(`/api/sessions/${saved.id}/assignments`, {
-              method: 'POST',
-              body: JSON.stringify({ invigilator_id: uid, role: 'primary' })
-            });
-          } catch { /* ignore */ }
+        if (exam?.assignments?.length) {
+          for (const assignment of exam.assignments) {
+            try {
+              await authFetch(`/api/sessions/${saved.id}/assignments/${assignment.id}`, {
+                method: 'DELETE'
+              });
+            } catch { /* keep saving even if a stale assignment was already gone */ }
+          }
+        }
+        for (const hallId of formData.hall_ids) {
+          for (const [index, uid] of formData.invigilator_ids.entries()) {
+            try {
+              await authFetch(`/api/sessions/${saved.id}/assignments`, {
+                method: 'POST',
+                body: JSON.stringify({
+                  invigilator_id: uid,
+                  hall_id: hallId,
+                  role: index === 0 ? 'primary' : 'secondary'
+                })
+              });
+            } catch { /* ignore duplicate or partial assignment failures */ }
+          }
         }
         setIsSuccess(true);
         setTimeout(onSuccess, 1800);
@@ -452,7 +484,7 @@ function DeleteConfirmModal({
 
         {/* Subtitle */}
         <p className="text-sm text-gray-400 font-medium mb-7 leading-relaxed">
-          إذا قمت بحذف الإمتحان فلن تتمكن من إيجاده أو إضافته<br />
+          سيتم حذف {examName} ولن تتمكن من إيجاده أو إضافته<br />
           أو العثور على المعلومات الخاصة به
         </p>
 

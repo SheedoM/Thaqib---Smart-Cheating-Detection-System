@@ -214,6 +214,13 @@ def update_exam_session(
         raise HTTPException(status_code=404, detail="Exam session not found")
         
     update_data = session_in.model_dump(exclude_unset=True)
+    hall_ids = update_data.pop("hall_ids", None)
+    if hall_ids is not None:
+        halls = db.query(Hall).filter(Hall.id.in_(hall_ids), Hall.deleted_at.is_(None)).all()
+        if len(halls) != len(hall_ids):
+            raise HTTPException(status_code=400, detail="One or more halls could not be found.")
+        session.halls = halls
+
     for field, value in update_data.items():
         setattr(session, field, value)
         

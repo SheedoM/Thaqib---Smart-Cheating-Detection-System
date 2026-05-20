@@ -23,11 +23,13 @@ class UserCreate(UserBase):
     institution_id: uuid.UUID
 
 class UserUpdate(BaseModel):
+    username: Optional[str] = Field(None, min_length=3, max_length=50, pattern="^[a-zA-Z0-9_.-]+$")
     full_name: Optional[str] = None
     email: Optional[EmailStr] = None
     role: Optional[str] = None
     status: Optional[str] = None
     ptt_id: Optional[str] = None
+    password: Optional[str] = Field(None, min_length=8, max_length=72)
 
 class UserResponse(UserBase):
     id: uuid.UUID
