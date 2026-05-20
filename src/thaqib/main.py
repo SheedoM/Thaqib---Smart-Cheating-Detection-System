@@ -10,13 +10,12 @@ from src.thaqib.core.limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from src.thaqib.api.routes import ptt, auth, institutions, halls, setup, devices, users, exams, events, stream
+from src.thaqib.api.routes import ptt, auth, institutions, halls, setup, devices, users, exams, events, stream, settings as settings_router
 from src.thaqib.config.settings import get_settings
 
 settings = get_settings()
 UPLOADS_DIR = Path("uploads")
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -96,6 +95,7 @@ app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(exams.router, prefix="/api/sessions", tags=["Exam Sessions"])
 app.include_router(events.router, prefix="/api/events", tags=["Detection Events"])
 app.include_router(stream.router, prefix="/api/stream", tags=["Video Stream"])
+app.include_router(settings_router.router, prefix="/api/settings", tags=["System Settings"])
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 @app.get("/")
