@@ -470,22 +470,14 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             name=f"AlertClipPoll-{state.track_id}",
         ).start()
 
-    # Load persisted runtime settings (written by /api/settings PUT)
-    _sys_settings_path = Path("data/system_settings.json")
-    _sys_override: dict = {}
-    if _sys_settings_path.exists():
-        try:
-            import json as _json
-            _sys_override = _json.loads(_sys_settings_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-
-    _detection_interval = float(_sys_override.get("detection_interval", 1.0))
-    _jpeg_quality = int(_sys_override.get("video_quality", 60))  # default 60 for stream
-    _archive_mode = str(_sys_override.get("archive_mode", "raw"))
+    # Load runtime settings — get_settings() re-reads .env after any PUT /api/settings
+    from src.thaqib.config.settings import get_settings as _get_settings
+    _rt = _get_settings()
+    _detection_interval = _rt.detection_interval
+    _jpeg_quality = _rt.video_quality
+    _archive_mode = _rt.archive_mode
 
     pipeline = VideoPipeline(source=parsed_source, detection_interval=_detection_interval, on_alert=on_alert)
-    # Override archive mode if it differs from compiled-in default
     pipeline._archive_annotated = (_archive_mode == "annotated")
 
     try:
