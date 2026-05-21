@@ -72,9 +72,7 @@ interface HallItem {
   mics: MicItem[];
 }
 
-interface DashboardPageProps {
-  onLogout: () => void;
-}
+
 
 interface CurrentUser {
   full_name: string;
@@ -126,7 +124,7 @@ function timeSince(isoString: string): string {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export default function DashboardPage({ onLogout }: DashboardPageProps) {
+export default function DashboardPage() {
   const [activeNav, setActiveNav] = useState('home');
   const [activeTab, setActiveTab] = useState<TabType>('cameras');
   const [halls, setHalls] = useState<HallItem[]>([]);
@@ -154,16 +152,13 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
 
   const ptt = useInvigilatorPtt();
 
-  const ensurePttConnected = async () => {
-    if (ptt.state === 'connected') return true;
-    return await ptt.connect();
-  };
-
   const startPtt = async () => {
     pttPressedRef.current = true;
-    const ok = await ensurePttConnected();
-    if (!ok) return;
-    if (!pttPressedRef.current) return; // user already released
+    // If not connected, connect first (startSpeak will be queued inside the hook)
+    if (ptt.state !== 'connected') {
+      await ptt.connect();
+    }
+    if (!pttPressedRef.current) return; // user released before connection completed
     ptt.startSpeak();
   };
 

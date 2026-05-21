@@ -480,7 +480,7 @@ def _run_pipeline(camera: CameraRuntime) -> None:
     pipeline = VideoPipeline(source=parsed_source, detection_interval=_detection_interval, on_alert=on_alert)
     pipeline._archive_annotated = (_archive_mode == "annotated")
     # Expose pipeline to HTTP control endpoints (toggle_video_quality / toggle_processing_resolution)
-    runtime._pipeline = pipeline
+    camera._pipeline = pipeline
 
     try:
         started = pipeline.start()
@@ -918,44 +918,163 @@ async def get_alert_report_pdf(alert_id: str, _=Depends(require_stream_user)) ->
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
-# ── Live camera controls ───────────────────────────────────────────────────────
-# Store pipeline reference on CameraRuntime so HTTP endpoints can call methods on it.
-# _run_pipeline() assigns runtime._pipeline after construction.
 
+# ── Live camera controls ──────────────────────────────────────────────────────
+# _run_pipeline() assigns runtime._pipeline after construction.
+# Endpoints map 1:1 to the keyboard shortcuts in the visualizer bottom bar:
+# [S] Monitor  [M] Remove-click  [C] Clear  [T] Neighbors  [R] Archive
+# [D] Papers   [F] Phone         [L] Lines  [V] Quality    [G] Speed
+# [W] Clock    [P] Panel
+
+def _get_pipeline_or_404(device_id: str):
+    runtime = _camera_states.get(device_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="Camera not running")
+    pipeline = getattr(runtime, "_pipeline", None)
+    if pipeline is None:
+        raise HTTPException(status_code=503, detail="Pipeline not yet ready")
+    return runtime, pipeline
+
+
+# [V] video quality
 @router.post("/cameras/{device_id}/quality")
 async def toggle_camera_quality(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
-    """Cycle the running pipeline's video quality preset (LOW 50 → MED 75 → HIGH 90)."""
-    runtime = _camera_states.get(device_id)
-    if runtime is None:
-        raise HTTPException(status_code=404, detail="Camera not running")
-    pipeline = getattr(runtime, "_pipeline", None)
-    if pipeline is None:
-        raise HTTPException(status_code=503, detail="Pipeline not yet ready")
+    """[V] Cycle video quality LOW 50 -> MED 75 -> HIGH 90."""
+    _, pipeline = _get_pipeline_or_404(device_id)
     pipeline.toggle_video_quality()
-    return JSONResponse({"quality": pipeline._video_quality})
+    q = pipeline._video_quality
+    label = "HIGH" if q >= 90 else ("MED" if q >= 75 else "LOW")
+    return JSONResponse({"quality": q, "label": label})
 
 
+# [G] processing resolution
 @router.post("/cameras/{device_id}/resolution")
 async def toggle_camera_resolution(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
-    """Cycle the running pipeline's processing resolution (NATIVE → 1080p → 720p)."""
-    runtime = _camera_states.get(device_id)
-    if runtime is None:
-        raise HTTPException(status_code=404, detail="Camera not running")
-    pipeline = getattr(runtime, "_pipeline", None)
-    if pipeline is None:
-        raise HTTPException(status_code=503, detail="Pipeline not yet ready")
+    """[G] Cycle processing resolution NATIVE -> 1080p -> 720p."""
+    _, pipeline = _get_pipeline_or_404(device_id)
     label = pipeline.toggle_processing_resolution()
     return JSONResponse({"resolution": label})
 
 
+# [R] archive mode
+@router.post("/cameras/{device_id}/archive")
+async def toggle_camera_archive(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """[R] Toggle archive overlay between raw and annotated."""
+    _, pipeline = _get_pipeline_or_404(device_id)
+    mode = pipeline.toggle_archive_mode()
+    return JSONResponse({"archive_mode": mode})
+
+
+# [S] select all students
+@router.post("/cameras/{device_id}/select-all")
+async def select_all_students(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """[S] Select (start monitoring) all currently tracked students."""
+    _, pipeline = _get_pipeline_or_404(device_id)
+    tracker = getattr(pipeline, "_tracker", None)
+    all_ids = [t.track_id for t in getattr(tracker, "tracks", [])] if tracker else []
+    pipeline.select_students(all_ids)
+    return JSONResponse({"selected": all_ids, "count": len(all_ids)})
+
+
+# [C] clear selection
+@router.post("/cameras/{device_id}/clear-selection")
+async def clear_student_selection(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """[C] Stop monitoring all students."""
+    _, pipeline = _get_pipeline_or_404(device_id)
+    pipeline.clear_selection()
+    return JSONResponse({"selected": [], "count": 0})
+
+
+# [M] deselect one student
+@router.post("/cameras/{device_id}/deselect/{track_id}")
+async def deselect_student(device_id: str, track_id: int, _=Depends(require_stream_user)) -> JSONResponse:
+    """[M] Remove a specific student from monitoring."""
+    _, pipeline = _get_pipeline_or_404(device_id)
+    pipeline.remove_selection(track_id)
+    return JSONResponse({"deselected": track_id})
+
+
+# Visualizer display toggles — [T][D][F][L][W][P]
+# These operate on runtime._visualizer. Returns state=null if no visualizer is attached
+# (plain MJPEG mode without the VideoVisualizer annotation layer).
+
+def _vis_toggle(device_id: str, toggle_method: str, state_attr: str) -> JSONResponse:
+    runtime, _ = _get_pipeline_or_404(device_id)
+    viz = getattr(runtime, "_visualizer", None)
+    if viz is None:
+        return JSONResponse({"state": None, "note": "visualizer not attached in MJPEG mode"})
+    getattr(viz, toggle_method)()
+    return JSONResponse({"state": getattr(viz, state_attr)})
+
+
+@router.post("/cameras/{device_id}/toggle/neighbors")
+async def toggle_neighbors(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """[T] Toggle neighbor graph lines on/off."""
+    return _vis_toggle(device_id, "toggle_neighbors", "show_neighbors")
+
+
+@router.post("/cameras/{device_id}/toggle/papers")
+async def toggle_papers(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """[D] Toggle paper bounding-box display on/off."""
+    return _vis_toggle(device_id, "toggle_paper", "show_paper")
+
+
+@router.post("/cameras/{device_id}/toggle/phones")
+async def toggle_phones(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """[F] Toggle phone bounding-box display on/off."""
+    return _vis_toggle(device_id, "toggle_phone", "show_phone")
+
+
+@router.post("/cameras/{device_id}/toggle/gaze-lines")
+async def toggle_gaze_lines(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """[L] Toggle gaze-to-paper link lines on/off."""
+    return _vis_toggle(device_id, "toggle_gaze_lines", "show_gaze_lines")
+
+
+@router.post("/cameras/{device_id}/toggle/timestamp")
+async def toggle_timestamp(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """[W] Toggle live timestamp overlay on/off."""
+    return _vis_toggle(device_id, "toggle_timestamp", "show_timestamp")
+
+
+@router.post("/cameras/{device_id}/toggle/panel")
+async def toggle_panel(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """[P] Toggle control panel overlay on/off."""
+    return _vis_toggle(device_id, "toggle_control_panel", "show_control_panel")
+
+
+# GET controls — read current state of all toggles
 @router.get("/cameras/{device_id}/controls")
 async def get_camera_controls(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
-    """Return current quality and resolution settings for a running camera."""
+    """Return current quality, resolution, archive mode, selection count, and visualizer state."""
     runtime = _camera_states.get(device_id)
     if runtime is None:
         raise HTTPException(status_code=404, detail="Camera not running")
     pipeline = getattr(runtime, "_pipeline", None)
     if pipeline is None:
-        return JSONResponse({"quality": 75, "resolution": "NATIVE"})
-    label, _ = pipeline._processing_presets[pipeline._processing_preset_idx]
-    return JSONResponse({"quality": pipeline._video_quality, "resolution": label})
+        return JSONResponse({"quality": 75, "quality_label": "MED", "resolution": "NATIVE",
+                             "archive_mode": "raw", "selected_count": 0, "visualizer": None})
+    q = pipeline._video_quality
+    q_label = "HIGH" if q >= 90 else ("MED" if q >= 75 else "LOW")
+    res_label, _ = pipeline._processing_presets[pipeline._processing_preset_idx]
+    viz = getattr(runtime, "_visualizer", None)
+    viz_state = None
+    if viz is not None:
+        viz_state = {
+            "show_neighbors": viz.show_neighbors,
+            "show_paper": viz.show_paper,
+            "show_phone": viz.show_phone,
+            "show_gaze_lines": viz.show_gaze_lines,
+            "show_timestamp": viz.show_timestamp,
+            "show_control_panel": viz.show_control_panel,
+        }
+    tracker = getattr(pipeline, "_tracker", None)
+    return JSONResponse({
+        "quality": q,
+        "quality_label": q_label,
+        "resolution": res_label,
+        "archive_mode": pipeline.archive_mode,
+        "selected_count": len(getattr(pipeline, "_selected_ids", set())),
+        "tracked_count": len(getattr(tracker, "tracks", [])) if tracker else 0,
+        "visualizer": viz_state,
+    })

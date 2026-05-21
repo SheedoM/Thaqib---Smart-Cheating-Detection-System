@@ -95,49 +95,59 @@ function CameraView({
   stats: CameraStats | null;
 }) {
   const deviceId = camera?.id ?? null;
-  const [quality, setQuality] = useState<number | null>(null);
-  const [resolution, setResolution] = useState<string | null>(null);
+  const [controls, setControls] = useState<Record<string, unknown>>({});
   const [toggling, setToggling] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+
+  const quality = typeof controls.quality === 'number' ? controls.quality : null;
+  const resolution = typeof controls.resolution === 'string' ? controls.resolution : null;
+  const archiveMode = typeof controls.archive_mode === 'string' ? controls.archive_mode : null;
+  const selectedCount = typeof controls.selected_count === 'number' ? controls.selected_count : null;
+  const trackedCount = typeof controls.tracked_count === 'number' ? controls.tracked_count : null;
 
   // Load current controls state on open
   useEffect(() => {
     if (!deviceId) return;
     authFetch(`/api/stream/cameras/${deviceId}/controls`)
       .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) { setQuality(d.quality); setResolution(d.resolution); } })
+      .then(d => { if (d) setControls(d); })
       .catch(() => {});
   }, [deviceId]);
 
-  const toggleQuality = useCallback(async () => {
+  const post = useCallback(async (path: string) => {
     if (!deviceId || toggling) return;
     setToggling(true);
     try {
-      const r = await authFetch(`/api/stream/cameras/${deviceId}/quality`, { method: 'POST' });
-      if (r.ok) { const d = await r.json(); setQuality(d.quality); }
+      const r = await authFetch(`/api/stream/cameras/${deviceId}${path}`, { method: 'POST' });
+      if (r.ok) {
+        const d = await r.json();
+        setControls(prev => ({ ...prev, ...d }));
+      }
     } finally { setToggling(false); }
   }, [deviceId, toggling]);
 
-  const toggleResolution = useCallback(async () => {
-    if (!deviceId || toggling) return;
-    setToggling(true);
-    try {
-      const r = await authFetch(`/api/stream/cameras/${deviceId}/resolution`, { method: 'POST' });
-      if (r.ok) { const d = await r.json(); setResolution(d.resolution); }
-    } finally { setToggling(false); }
-  }, [deviceId, toggling]);
-
-  // Keyboard shortcuts: V = quality, G = resolution
+  // Keyboard shortcuts — all pipeline controls from visualizer bottom bar
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      if (e.key === 'v' || e.key === 'V') void toggleQuality();
-      if (e.key === 'g' || e.key === 'G') void toggleResolution();
+      switch (e.key.toLowerCase()) {
+        case 'v': void post('/quality'); break;
+        case 'g': void post('/resolution'); break;
+        case 'r': void post('/archive'); break;
+        case 's': void post('/select-all'); break;
+        case 'c': void post('/clear-selection'); break;
+        case 't': void post('/toggle/neighbors'); break;
+        case 'd': void post('/toggle/papers'); break;
+        case 'f': void post('/toggle/phones'); break;
+        case 'l': void post('/toggle/gaze-lines'); break;
+        case 'w': void post('/toggle/timestamp'); break;
+        case 'p': void post('/toggle/panel'); break;
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [toggleQuality, toggleResolution]);
+  }, [post]);
 
   const qualityLabel = quality === 50 ? 'LOW' : quality === 75 ? 'MED' : quality === 90 ? 'HIGH' : quality != null ? `${quality}%` : '—';
 
@@ -175,24 +185,54 @@ function CameraView({
         )}
       </div>
 
-      {/* Live controls — only shown when camera is running */}
+      {/* Live controls */}
       {deviceId && (
-        <div style={{ display: 'flex', gap: '8px', padding: '10px 0 4px', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', direction: 'ltr' }}>
-          <button
-            onClick={() => setShowShortcuts(s => !s)}
-            style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '5px 10px', cursor: 'pointer', fontSize: '12px', color: '#6b7280', fontWeight: 700 }}>
-            ⌨ اختصارات {showShortcuts ? '▲' : '▼'}
-          </button>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={toggleQuality} disabled={toggling}
-              style={{ background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: '8px', padding: '5px 14px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#374151' }}>
+        <div style={{ padding: '8px 0 4px', direction: 'ltr' }}>
+          {/* Row 1: status + shortcut toggle */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {selectedCount !== null && trackedCount !== null && (
+                <span style={{ fontSize: 11, fontWeight: 900, color: '#6b7280', padding: '2px 8px', background: '#f3f4f6', borderRadius: 6 }}>
+                  المراقبة: {selectedCount}/{trackedCount}
+                </span>
+              )}
+              {archiveMode && (
+                <span style={{ fontSize: 11, fontWeight: 900, color: '#44006E', padding: '2px 8px', background: '#f3e8ff', borderRadius: 6 }}>
+                  أرشيف: {archiveMode}
+                </span>
+              )}
+            </div>
+            <button onClick={() => setShowShortcuts(s => !s)}
+              style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '4px 10px', cursor: 'pointer', fontSize: '12px', color: '#6b7280', fontWeight: 700 }}>
+              ⌨ اختصارات {showShortcuts ? '▲' : '▼'}
+            </button>
+          </div>
+          {/* Row 2: action buttons */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button onClick={() => void post('/quality')} disabled={toggling}
+              style={{ background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: '8px', padding: '4px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#374151' }}>
               🎬 Quality: <span style={{ color: '#44006E' }}>{qualityLabel}</span>
               <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[V]</span>
             </button>
-            <button onClick={toggleResolution} disabled={toggling}
-              style={{ background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: '8px', padding: '5px 14px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#374151' }}>
-              📐 Res: <span style={{ color: '#44006E' }}>{resolution ?? '—'}</span>
+            <button onClick={() => void post('/resolution')} disabled={toggling}
+              style={{ background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: '8px', padding: '4px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#374151' }}>
+              📀 Res: <span style={{ color: '#44006E' }}>{resolution ?? '—'}</span>
               <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[G]</span>
+            </button>
+            <button onClick={() => void post('/archive')} disabled={toggling}
+              style={{ background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: '8px', padding: '4px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#374151' }}>
+              💾 Archive: <span style={{ color: '#44006E' }}>{archiveMode ?? '—'}</span>
+              <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[R]</span>
+            </button>
+            <button onClick={() => void post('/select-all')} disabled={toggling}
+              style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '4px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#166534' }}>
+              راقب الكل
+              <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[S]</span>
+            </button>
+            <button onClick={() => void post('/clear-selection')} disabled={toggling}
+              style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', padding: '4px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#991b1b' }}>
+              إلغاء المراقبة
+              <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[C]</span>
             </button>
           </div>
         </div>
@@ -202,13 +242,26 @@ function CameraView({
       {showShortcuts && (
         <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '12px 16px', marginBottom: 8, direction: 'rtl' }}>
           <p style={{ fontSize: 11, fontWeight: 900, color: '#6b7280', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>اختصارات لوحة المفاتيح</p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px', fontSize: 12, alignItems: 'center' }}>
-            <kbd style={{ background: '#e5e7eb', borderRadius: 4, padding: '2px 8px', fontFamily: 'monospace', fontWeight: 700 }}>V</kbd>
-            <span style={{ color: '#374151', fontWeight: 700 }}>تبديل جودة الفيديو — LOW 50% → MED 75% → HIGH 90%</span>
-            <kbd style={{ background: '#e5e7eb', borderRadius: 4, padding: '2px 8px', fontFamily: 'monospace', fontWeight: 700 }}>G</kbd>
-            <span style={{ color: '#374151', fontWeight: 700 }}>تبديل دقة المعالجة — NATIVE → 1080p → 720p</span>
-            <kbd style={{ background: '#e5e7eb', borderRadius: 4, padding: '2px 8px', fontFamily: 'monospace', fontWeight: 700 }}>Esc</kbd>
-            <span style={{ color: '#374151', fontWeight: 700 }}>إغلاق النافذة</span>
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '5px 16px', fontSize: 12, alignItems: 'center' }}>
+            {([
+              ['V', 'تبديل جودة الفيديو — LOW 50% → MED 75% → HIGH 90%'],
+              ['G', 'تبديل دقة المعالجة — NATIVE → 1080p → 720p'],
+              ['R', 'تبديل وضع الأرشيف (raw / annotated)'],
+              ['S', 'مراقبة جميع الطلاب المكتشفين'],
+              ['C', 'إيقاف مراقبة الجميع'],
+              ['T', 'تبديل رسوم الجيران ON/OFF'],
+              ['D', 'تبديل عرض إطارات الورق ON/OFF'],
+              ['F', 'تبديل عرض إطارات الهاتف ON/OFF'],
+              ['L', 'تبديل خطوط النظرة→ورق ON/OFF'],
+              ['W', 'تبديل التوقيت المرئي ON/OFF'],
+              ['P', 'إخفاء/إظهار لوحة التحكم'],
+              ['Esc', 'إغلاق النافذة'],
+            ] as [string, string][]).map(([key, desc]) => (
+              <>
+                <kbd key={key} style={{ background: '#e5e7eb', borderRadius: 4, padding: '2px 6px', fontFamily: 'monospace', fontWeight: 700, fontSize: 11 }}>{key}</kbd>
+                <span style={{ color: '#374151', fontWeight: 700 }}>{desc}</span>
+              </>
+            ))}
           </div>
         </div>
       )}

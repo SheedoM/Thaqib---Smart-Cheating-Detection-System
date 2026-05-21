@@ -98,7 +98,7 @@ export default function App() {
       <Routes>
         {user.role === 'admin' ? (
           <>
-            <Route path="/dashboard/*" element={<DashboardPage onLogout={handleLogout} />} />
+            <Route path="/dashboard/*" element={<DashboardPage />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </>
         ) : user.role === 'invigilator' ? (
