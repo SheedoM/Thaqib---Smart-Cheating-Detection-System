@@ -142,7 +142,7 @@ function SaveButton({ saving, saved, label = 'حفظ', onClick }: {
 
 const TABS = [
   { id: 'institution', label: 'المؤسسة' },
-  { id: 'video',       label: 'الفيديو والكشف' },
+  { id: 'video',       label: 'إعدادات الفيديو' },
   { id: 'tracking',   label: 'التتبع والكشف' },
   { id: 'audio',      label: 'الصوت' },
 ] as const;
