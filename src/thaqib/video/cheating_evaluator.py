@@ -34,6 +34,12 @@ class CheatingEvaluator:
         self._registry = registry
         self._cooldown_frames = cooldown_frames
         self._on_alert: Callable | None = None
+        # Grace period: if face/gaze disappears briefly, don't reset the
+        # suspicious timer immediately.  Only reset after GRACE_PERIOD seconds
+        # of continuous face loss.  This prevents detection glitches from
+        # interrupting a genuine cheating event.
+        self._face_lost_times: dict[int, float] = {}  # track_id → time face was lost
+        self._GRACE_PERIOD: float = 2.0  # seconds
 
     @property
     def on_alert(self):
@@ -42,6 +48,45 @@ class CheatingEvaluator:
     @on_alert.setter
     def on_alert(self, callback):
         self._on_alert = callback
+
+    def _handle_face_lost(self, state, track_id: int) -> None:
+        """Called when face mesh or gaze is unavailable for a student.
+
+        Implements a grace period: the suspicious_start_time is preserved for
+        up to GRACE_PERIOD seconds of continuous face loss.  This prevents
+        brief detection glitches from resetting a genuine cheating event.
+        After the grace period expires, the timer is cleared as usual.
+        """
+        now = time.time()
+
+        # Record the moment the face was first lost (don't overwrite if already set)
+        if track_id not in self._face_lost_times:
+            self._face_lost_times[track_id] = now
+
+        face_lost_duration = now - self._face_lost_times[track_id]
+
+        if face_lost_duration < self._GRACE_PERIOD:
+            # Within grace period — keep suspicious_start_time intact so the
+            # cheating timer continues when the face reappears.
+            # Still tick down the is_cheating cooldown to avoid eternal red box.
+            if state.is_cheating and not state.is_using_phone:
+                state.cheating_cooldown -= 1
+                if state.cheating_cooldown <= -90:
+                    state.is_cheating = False
+                    state.cheating_cooldown = 0
+                    state.cheating_target_paper = None
+                    state.cheating_target_neighbor = None
+        else:
+            # Grace period expired — reset the suspicious timer normally.
+            self._face_lost_times.pop(track_id, None)
+            state.suspicious_start_time = 0.0
+            if state.is_cheating and not state.is_using_phone:
+                state.cheating_cooldown -= 1
+                if state.cheating_cooldown <= -90:
+                    state.is_cheating = False
+                    state.cheating_cooldown = 0
+                    state.cheating_target_paper = None
+                    state.cheating_target_neighbor = None
 
     def evaluate(self, track_id: int) -> None:
         """
@@ -52,32 +97,17 @@ class CheatingEvaluator:
         state = self._registry.get(track_id)
         if not state or not state.face_mesh or not state.surrounding_papers:
             if state:
-                state.suspicious_start_time = 0.0
-                # Freeze cooldown when face is undetected, BUT cap the freeze
-                # at 90 frames (~3s). After that, decrement anyway so the
-                # red box doesn't stay forever.
-                if state.is_cheating and not state.is_using_phone:
-                    state.cheating_cooldown -= 1
-                    if state.cheating_cooldown <= -90:
-                        state.is_cheating = False
-                        state.cheating_cooldown = 0
-                        state.cheating_target_paper = None
-                        state.cheating_target_neighbor = None
+                self._handle_face_lost(state, track_id)
             return
 
         # Use shared gaze computation (single source of truth with visualizer)
         gaze_dir = compute_gaze_direction(state.face_mesh)
         if gaze_dir is None:
-            state.suspicious_start_time = 0.0
-            # Same freeze logic for invalid gaze
-            if state.is_cheating and not state.is_using_phone:
-                state.cheating_cooldown -= 1
-                if state.cheating_cooldown <= -90:
-                    state.is_cheating = False
-                    state.cheating_cooldown = 0
-                    state.cheating_target_paper = None
-                    state.cheating_target_neighbor = None
+            self._handle_face_lost(state, track_id)
             return
+
+        # Face is present — clear any grace period timer
+        self._face_lost_times.pop(track_id, None)
 
         lm2d = state.face_mesh.landmarks_2d
         def pt2d(idx):

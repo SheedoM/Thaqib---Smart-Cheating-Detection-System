@@ -12,8 +12,7 @@ import os
 import cv2
 from queue import Queue, Empty
 from collections import deque
-from multiprocessing import Pool
-from multiprocessing import shared_memory as shm_mod
+from concurrent.futures import ThreadPoolExecutor, Future
 from dataclasses import dataclass, field
 from typing import Callable, Generator
 
@@ -34,6 +33,22 @@ from thaqib.video.cheating_evaluator import CheatingEvaluator
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AlertFrame:
+    """Normalized buffer entry for alert recordings.
+
+    Replaces ad-hoc (frame, track_id) / (frame, phone_bboxes) tuples
+    so the writer thread can rely on typed field access instead of
+    fragile positional unpacking.
+    """
+
+    frame: np.ndarray
+    # track_id is None for pre-event (global) frames — not yet confirmed cheating.
+    # phone_bboxes is [] for pre-event frames — phone not yet visible.
+    track_id: int | None = None
+    phone_bboxes: list = field(default_factory=list)
 
 
 @dataclass
@@ -139,19 +154,14 @@ class VideoPipeline:
         self._cheating_evaluator.on_alert = on_alert
 
 
-        # Process pool for face mesh — true CPU parallelism
-        settings = get_settings()
-        face_workers = min(settings.face_mesh_workers, os.cpu_count() or 4)
-        from thaqib.video.face_mesh_worker import init_worker, extract_in_worker
-        self._extract_in_worker = extract_in_worker  # Store ref for submit calls
-        self._face_pool = Pool(
-            processes=face_workers,
-            initializer=init_worker,
-        )
-        # Double-buffered shared memory: prevents data race where a worker
-        # reads from the block while the next frame overwrites it.
-        self._shm_pair: list[shm_mod.SharedMemory | None] = [None, None]
-        self._shm_idx: int = 0  # Alternates 0/1 each frame
+        # Thread pool for face mesh — created lazily in start().
+        # Uses threads instead of processes because Python's multiprocessing.Pool
+        # has an internal _handle_results thread that never gets GIL time during
+        # the pipeline's tight frame loop, causing ready() to never return True.
+        # MediaPipe inference is C++ and releases the GIL, so threads achieve
+        # real parallelism without the spawn/shared-memory overhead.
+        self._face_executor: ThreadPoolExecutor | None = None
+        self._fm_thread_local = None  # threading.local for per-thread FaceLandmarker
 
         self._is_running = False
 
@@ -173,8 +183,9 @@ class VideoPipeline:
 
         self._selected_ids: set[int] = set()
         
-        # Double-buffered face mesh jobs: submit on frame N, collect on frame N+2.
-        self._pending_mp_jobs: list[tuple] = []  # [(AsyncResult, track_id), ...]
+        # Face mesh futures: [(Future, track_id), ...]
+        self._pending_fm_futures: list[tuple[Future, int]] = []
+        self._fm_rr_idx: int = 0  # Round-robin index for face mesh job submission
         
         # Archive recording: continuous video save to archive/ folder
         self._archive_writer: cv2.VideoWriter | None = None
@@ -248,6 +259,99 @@ class VideoPipeline:
         logger.info(f"Processing resolution changed to: {label} (max_height={max_h})")
         return label
 
+    # ------------------------------------------------------------------
+    # Face mesh thread inference
+    # ------------------------------------------------------------------
+
+    def _fm_thread_infer(
+        self, frame: np.ndarray, bbox: tuple, fm_scale: float
+    ) -> "FaceMeshResult | None":
+        """Run face mesh inference in a worker thread.
+
+        Each thread lazily initializes its own FaceLandmarker in IMAGE mode
+        via threading.local() so there is no lock contention.  MediaPipe's
+        C++ inference releases the GIL, giving true parallelism.
+
+        Returns a FaceMeshResult or None if no face is detected.
+        """
+        import mediapipe as mp
+        from mediapipe.tasks.python import vision
+        from mediapipe.tasks.python.core import base_options as mp_base_options
+        from pathlib import Path
+
+        tl = self._fm_thread_local
+        if not hasattr(tl, "landmarker"):
+            model_path = Path(__file__).parent.parent.parent.parent / "models" / "face_landmarker.task"
+            opts = vision.FaceLandmarkerOptions(
+                base_options=mp_base_options.BaseOptions(
+                    model_asset_path=str(model_path)
+                ),
+                running_mode=vision.RunningMode.IMAGE,
+                num_faces=1,
+                min_face_detection_confidence=0.50,
+                min_face_presence_confidence=0.50,
+                min_tracking_confidence=0.50,
+                output_face_blendshapes=False,
+                output_facial_transformation_matrixes=True,
+            )
+            tl.landmarker = vision.FaceLandmarker.create_from_options(opts)
+
+        # Scale bbox to match the (potentially downscaled) frame
+        x1, y1, x2, y2 = [int(v * fm_scale) for v in bbox]
+
+        # Crop only the HEAD region (upper 40% of person bbox)
+        body_h = y2 - y1
+        y2 = y1 + int(body_h * 0.40)
+
+        # Dynamic 15% padding around the head crop
+        pad_w = int((x2 - x1) * 0.15)
+        pad_h = int((y2 - y1) * 0.15)
+        fh, fw = frame.shape[:2]
+        x1 = max(0, x1 - pad_w)
+        y1 = max(0, y1 - pad_h)
+        x2 = min(fw, x2 + pad_w)
+        y2 = min(fh, y2 + pad_h)
+
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        crop = frame[y1:y2, x1:x2]
+        if crop.shape[0] < 40 or crop.shape[1] < 40:
+            return None
+
+        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+
+        det = tl.landmarker.detect(mp_img)
+
+        if not det.face_landmarks:
+            return None
+
+        raw = det.face_landmarks[0]
+        ch, cw = crop.shape[:2]
+
+        lm = np.array([[l.x, l.y, l.z] for l in raw], dtype=float)
+        px_py = (lm[:, :2] * [cw, ch] + [x1, y1]).astype(int)
+
+        inv = 1.0 / fm_scale
+        lm2d = [(int(x * inv), int(y * inv)) for x, y in px_py]
+        lm3d = [tuple(row) for row in lm]
+
+        hmat = None
+        if det.facial_transformation_matrixes:
+            hmat = np.array(
+                det.facial_transformation_matrixes[0].data
+            ).reshape(4, 4)
+
+        bbox_orig = (int(x1 * inv), int(y1 * inv), int(x2 * inv), int(y2 * inv))
+
+        return FaceMeshResult(
+            landmarks_2d=lm2d,
+            landmarks_3d=lm3d,
+            bbox=bbox_orig,
+            head_matrix=hmat,
+        )
+
     def _detection_worker(self) -> None:
         """Background thread running YOLO detection."""
         last_detect_time = 0.0
@@ -284,8 +388,8 @@ class VideoPipeline:
                     
                     try:
                         self._detection_queue.put_nowait((detection_result, tools_result))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Detection queue put failed (queue full?): %s", e)
             
             time.sleep(0.01)  # Yield CPU
 
@@ -312,6 +416,29 @@ class VideoPipeline:
 
         self._is_running = True
         
+        # Capture measured FPS from the device — used to derive post-event buffer
+        # frame counts so they are correct for non-30-FPS sources.
+        self._camera_fps: float = self._camera.actual_fps
+        self._post_buffer_frames: int = max(1, round(self._camera_fps * 2))  # 2-second post-buffer
+        logger.info(f"Camera FPS: {self._camera_fps:.1f} — post-buffer = {self._post_buffer_frames} frames")
+
+        # Create thread pool for face mesh — threads share address space so
+        # no shared memory is needed.  Each thread lazily initializes its own
+        # FaceLandmarker via threading.local (see _fm_thread_infer).
+        settings = get_settings()
+        face_workers = min(settings.face_mesh_workers, os.cpu_count() or 4)
+        self._fm_thread_local = threading.local()
+        self._fm_num_workers = face_workers
+        try:
+            self._face_executor = ThreadPoolExecutor(
+                max_workers=face_workers,
+                thread_name_prefix="FaceMesh",
+            )
+            logger.info(f"Face-mesh thread pool created with {face_workers} workers")
+        except Exception as e:
+            logger.error(f"Failed to create face-mesh thread pool: {e}. Face mesh disabled.")
+            self._face_executor = None
+
         # Start async detection thread
         self._detection_thread = threading.Thread(
             target=self._detection_worker,
@@ -369,19 +496,12 @@ class VideoPipeline:
             self._detection_thread.join(timeout=1.0)
         self._camera.close()
         
-        # Clean up process pool and shared memory
+        # Clean up thread pool
         try:
-            self._face_pool.terminate()
-            self._face_pool.join()
-        except Exception:
-            pass
-        for i in range(2):
-            if self._shm_pair[i] is not None:
-                try:
-                    self._shm_pair[i].unlink()
-                except Exception:
-                    pass
-                self._shm_pair[i] = None
+            if self._face_executor is not None:
+                self._face_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as e:
+            logger.warning("Thread pool shutdown error: %s", e)
         
         logger.info("Video pipeline stopped")
 
@@ -436,17 +556,66 @@ class VideoPipeline:
         # Add to global frame ring buffer for alert recordings.
         # Always buffer — needed for both student gaze alerts AND phone alerts.
         # No copy needed: cv2.VideoCapture.read() allocates a fresh ndarray per call.
-        # Stored as (frame, None) tuples for type consistency with recording buffers.
-        self._global_frame_buffer.append((frame_data.frame, None))
+        self._global_frame_buffer.append(AlertFrame(frame_data.frame))
 
         # Check for new detection async result
         new_detection = False
         try:
             detection_result, tools_result = self._detection_queue.get_nowait()
+
+            # ── Split YOLO detections by class ──────────────────────────────────
+            # The detector may return both person (class 0) and phone (class 67)
+            # detections in one result. We must split them before the tracker:
+            #   • Person detections → ObjectTracker (tracking people)
+            #   • Phone detections  → merged into tools_result (phone alerts)
+            if detection_result is not None:
+                from thaqib.video.detector import HumanDetector
+                phone_class = HumanDetector.PHONE_CLASS_ID
+                phone_dets  = [d for d in detection_result.detections
+                               if d.class_id == phone_class]
+                person_dets = [d for d in detection_result.detections
+                               if d.class_id != phone_class]
+
+                # Rebuild a persons-only DetectionResult for the tracker
+                person_result = DetectionResult(
+                    frame_index=detection_result.frame_index,
+                    timestamp=detection_result.timestamp,
+                    detections=person_dets,
+                )
+
+                # Convert phone Detections → ToolDetection and merge into tools_result
+                if phone_dets and tools_result is not None:
+                    from thaqib.video.tools_detector import ToolDetection
+                    yolo_phone_tools = [
+                        ToolDetection(
+                            bbox=d.bbox,
+                            confidence=d.confidence,
+                            class_id=d.class_id,
+                            label="phone",  # canonical label for pipeline phone filter
+                        )
+                        for d in phone_dets
+                    ]
+                    # Merge: keep existing tools_result tools (papers etc.) + add YOLO phones
+                    from thaqib.video.tools_detector import ToolsDetectionResult
+                    tools_result = ToolsDetectionResult(
+                        frame_index=tools_result.frame_index,
+                        timestamp=tools_result.timestamp,
+                        tools=tools_result.tools + yolo_phone_tools,
+                    )
+                    logger.debug(
+                        f"YOLO phones injected: {len(yolo_phone_tools)} phone(s) "
+                        f"(conf={[round(d.confidence,2) for d in phone_dets]})"
+                    )
+
+                detection_result = person_result
+
             self._last_detection_result = detection_result
             self._last_tools_result = tools_result
             new_detection = True
-            logger.debug(f"Detection: {self._last_detection_result.count} persons, {self._last_tools_result.count} tools")
+            logger.debug(
+                f"Detection: {detection_result.count if detection_result else 0} persons, "
+                f"{tools_result.count if tools_result else 0} tools"
+            )
         except Empty:
             detection_result = self._last_detection_result
             tools_result = self._last_tools_result
@@ -492,12 +661,9 @@ class VideoPipeline:
         # Cleanup ReID memory and aliases
         if expired_ids:
             self._reid.remove_embeddings(expired_ids)
-            # Also prune tracker state to prevent memory leaks
-            for eid in expired_ids:
-                self._tracker._smoothed_bboxes.pop(eid, None)
-                self._tracker._match_counts.pop(eid, None)
-                self._tracker._locked_ids.discard(eid)
-                self._tracker._track_labels.pop(eid, None)
+            # Use the public API to prune tracker state — avoids reaching
+            # into private dicts/sets from outside the tracker class.
+            self._tracker.remove_tracks(expired_ids)
             keys_to_delete = [
                 bot_id for bot_id, thaqib_id in self._track_aliases.items()
                 if bot_id in expired_ids or thaqib_id in expired_ids
@@ -551,34 +717,31 @@ class VideoPipeline:
                 )
                 student_states.append(state)
 
-        # 2. Double-buffered face mesh (runs even when selection changes
-        #    to avoid orphaned jobs):
-        #    - First, COLLECT any completed jobs from PREVIOUS cycle
+        # 2. Face mesh via thread pool:
+        #    - First, COLLECT any completed futures from PREVIOUS cycle
         #    - Then, SUBMIT new jobs for this cycle
         
-        # Collect completed async results from previous cycle
+        # Collect completed futures
         still_pending = []
-        for async_result, orig_track_id in self._pending_mp_jobs:
-            if async_result.ready():
+        _fm_collected = 0  # DEBUG
+        _fm_none_count = 0  # DEBUG
+        _fm_errors = 0  # DEBUG
+        _fm_not_ready = 0  # DEBUG
+        for future, orig_track_id in self._pending_fm_futures:
+            if future.done():
                 try:
-                    tid, result_dict = async_result.get(timeout=0)
-                    
-                    # Convert plain dict back to FaceMeshResult
-                    result = None
-                    if result_dict is not None:
-                        hmat = (np.array(result_dict["hmat"]) 
-                                if result_dict["hmat"] is not None else None)
-                        result = FaceMeshResult(
-                            landmarks_2d=result_dict["lm2d"],
-                            landmarks_3d=result_dict["lm3d"],
-                            bbox=result_dict["bbox"],
-                            head_matrix=hmat,
-                        )
+                    result = future.result(timeout=0)
                     
                     reg_state = self._registry.get(orig_track_id)
                     if reg_state is not None:
-                        reg_state.face_mesh = result  # Allow None to clear stale meshes
-                        
+                        # Transient face mesh: always overwrite with current result.
+                        # If result is None (face not detected this frame), clear the
+                        # old mesh so we don't draw a stale/frozen face on screen.
+                        reg_state.face_mesh = result
+                        if result is not None:
+                            _fm_collected += 1  # DEBUG
+                        else:
+                            _fm_none_count += 1  # DEBUG
                     # ReID Integration — skip for locked IDs (already confirmed)
                     if result is not None and not self._tracker.is_locked(orig_track_id):
                         best_id = self._reid.match(result)
@@ -594,21 +757,46 @@ class VideoPipeline:
                         is_match = self._reid.register_embedding(actual_id, result)
                         self._tracker.verify_embedding_match(actual_id, is_match)
                 except Exception as e:
-                    logger.debug(f"Face mesh parallel error: {e}")
+                    _fm_errors += 1  # DEBUG
+                    logger.warning(f"Face mesh thread error (track {orig_track_id}): {e}")
             else:
-                still_pending.append((async_result, orig_track_id))
-        self._pending_mp_jobs = still_pending
+                _fm_not_ready += 1  # DEBUG
+                still_pending.append((future, orig_track_id))
+        self._pending_fm_futures = still_pending
 
-        # Cap pending jobs to prevent runaway accumulation.
-        max_pending = (self._face_pool._processes or 4) * 3
-        if len(self._pending_mp_jobs) > max_pending:
-            self._pending_mp_jobs = self._pending_mp_jobs[-max_pending:]
+        # Face mesh diagnostic (DEBUG level)
+        if frame_data.frame_index % 30 == 0 and (selected_tracks or self._pending_fm_futures):
+            fm_in_registry = sum(1 for s in self._registry.get_all() if s.face_mesh is not None)
+            logger.debug(
+                f"FM: collected={_fm_collected} none={_fm_none_count} "
+                f"errors={_fm_errors} not_ready={_fm_not_ready} "
+                f"pending={len(self._pending_fm_futures)} "
+                f"registry_with_mesh={fm_in_registry} "
+                f"student_states={len(student_states)} "
+                f"selected_tracks={len(selected_tracks)}"
+            )
 
-        # Submit NEW jobs for this cycle.
-        if selected_tracks:
-            # Skip students that already have a pending job.
-            pending_track_ids = {tid for _, tid in self._pending_mp_jobs}
-            new_students = [s for s in student_states if s.track_id not in pending_track_ids]
+        # Refresh face_mesh in student_states from the registry NOW
+        for state in student_states:
+            reg_state = self._registry.get(state.track_id)
+            if reg_state is not None and reg_state.face_mesh is not None:
+                state.face_mesh = reg_state.face_mesh
+
+        if frame_data.frame_index % 30 == 0 and student_states:
+            with_mesh = sum(1 for s in student_states if s.face_mesh is not None)
+            logger.debug(f"FM: student_states with mesh after refresh: {with_mesh}/{len(student_states)}")
+
+        # Submit NEW face-mesh jobs via thread pool.
+        # Only submit when there's capacity (pending < workers).
+        if selected_tracks and student_states and self._face_executor is not None:
+            available = self._fm_num_workers - len(self._pending_fm_futures)
+            new_students = []
+            if available > 0:
+                n_submit = min(available, len(student_states))
+                for i in range(n_submit):
+                    idx = (self._fm_rr_idx + i) % len(student_states)
+                    new_students.append(student_states[idx])
+                self._fm_rr_idx = (self._fm_rr_idx + n_submit) % len(student_states)
             
             if new_students:
                 # Compute face mesh scale factor once (original res → 1080p).
@@ -626,42 +814,19 @@ class VideoPipeline:
                     h, w = frame_data.frame.shape[:2]
                     new_w = int(w * fm_scale)
                     new_h = int(h * fm_scale)
-                    shared_frame = cv2.resize(frame_data.frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    fm_frame = cv2.resize(frame_data.frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
                 else:
-                    shared_frame = frame_data.frame
+                    fm_frame = frame_data.frame.copy()
                 
-                # Double-buffered shared memory: write to slot A while workers
-                # may still be reading from slot B (previous frame).
-                write_idx = self._shm_idx
-                self._shm_idx = 1 - write_idx  # Flip for next frame
-                
-                nbytes = shared_frame.nbytes
-                shm = self._shm_pair[write_idx]
-                if shm is None or shm.size < nbytes:
-                    if shm is not None:
-                        try:
-                            shm.unlink()
-                        except Exception:
-                            pass
-                    shm = shm_mod.SharedMemory(create=True, size=nbytes)
-                    self._shm_pair[write_idx] = shm
-                buf = np.ndarray(shared_frame.shape, dtype=shared_frame.dtype, buffer=shm.buf)
-                np.copyto(buf, shared_frame)
-                
-                # Submit new students via process pool.
+                # Submit to thread pool — threads share memory so no SHM needed.
+                # Each thread gets a reference to the same fm_frame ndarray.
+                # We pass a COPY of the frame so it's safe even if the main
+                # thread modifies frame_data on the next iteration.
                 for state in new_students:
-                    args = (
-                        shm.name,
-                        shared_frame.shape,
-                        str(shared_frame.dtype),
-                        state.bbox,
-                        state.track_id,
-                        fm_scale,
+                    future = self._face_executor.submit(
+                        self._fm_thread_infer, fm_frame, state.bbox, fm_scale
                     )
-                    async_result = self._face_pool.apply_async(
-                        self._extract_in_worker, (args,)
-                    )
-                    self._pending_mp_jobs.append((async_result, state.track_id))
+                    self._pending_fm_futures.append((future, state.track_id))
 
         # 3. Evaluate cheating on the MAIN THREAD — no race condition
         if selected_tracks:
@@ -698,7 +863,7 @@ class VideoPipeline:
                 # Only during/after frames are annotated with cheating evidence.
                 state.is_alert_recording = True
                 state.recording_buffer = deque(self._global_frame_buffer, maxlen=300)
-                state.frames_to_record = 60  # 2s post-buffer
+                state.frames_to_record = self._post_buffer_frames  # 2-second post-buffer
                 self._recording_skip_warned.discard(state.track_id)  # Reset warn on successful start
             
             if not state.is_alert_recording:
@@ -706,11 +871,11 @@ class VideoPipeline:
 
             # Append current frame + track ID to recording buffer at full resolution.
             # No copy needed: cv2.VideoCapture.read() allocates fresh per call.
-            state.recording_buffer.append((frame_data.frame, state.track_id))
+            state.recording_buffer.append(AlertFrame(frame_data.frame, state.track_id))
 
             if state.is_cheating:
                 # Still cheating — keep recording, reset post-cheating countdown
-                state.frames_to_record = 60  # Will countdown only after cheating stops
+                state.frames_to_record = self._post_buffer_frames  # Will countdown only after cheating stops
             else:
                 # Cheating stopped — count down the 2s post-buffer
                 state.frames_to_record -= 1
@@ -763,21 +928,21 @@ class VideoPipeline:
             self._phone_is_recording = True
             # Pre-event frames stored with empty bboxes [] — the phone wasn't
             # visible yet, so no red box should appear in the pre-buffer section.
-            pre = list(self._global_frame_buffer)[-60:]  # last 2s
+            pre = list(self._global_frame_buffer)[-self._post_buffer_frames:]  # last ~2s
             self._phone_recording_buffer = deque(
-                [(item[0], []) for item in pre],
+                [AlertFrame(item.frame, phone_bboxes=[]) for item in pre],
                 maxlen=300,
             )
-            self._phone_frames_to_record = 60
+            self._phone_frames_to_record = self._post_buffer_frames
             logger.info("Phone alert recording STARTED")
 
         if self._phone_is_recording:
             # Store frame alongside current phone bboxes (may be [] if phone just left)
             self._phone_recording_buffer.append(
-                (frame_data.frame, list(self._phone_current_bboxes))
+                AlertFrame(frame_data.frame, phone_bboxes=list(self._phone_current_bboxes))
             )
             if self._phone_detected:
-                self._phone_frames_to_record = 60  # reset post-countdown
+                self._phone_frames_to_record = self._post_buffer_frames  # reset post-countdown
             else:
                 self._phone_frames_to_record -= 1
                 if self._phone_frames_to_record <= 0:
@@ -1055,9 +1220,9 @@ class VideoPipeline:
 
             # Determine frame size from first valid frame
             height, width = None, None
-            for raw_frame, _ in frames:
-                if raw_frame is not None:
-                    height, width = raw_frame.shape[:2]
+            for item in frames:
+                if item.frame is not None:
+                    height, width = item.frame.shape[:2]
                     break
             if height is None:
                 return
@@ -1070,7 +1235,7 @@ class VideoPipeline:
                 height = max_h
             out_size = (width, height)
 
-            alerts_dir = Path("alerts")
+            alerts_dir = Path(self._settings.alerts_dir)
             alerts_dir.mkdir(exist_ok=True)
             time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
 
@@ -1086,7 +1251,7 @@ class VideoPipeline:
             for codec, ext in codec_options:
                 filename = alerts_dir / f"phone_alert_{time_str}{ext}"
                 fourcc = cv2.VideoWriter_fourcc(*codec)
-                writer = cv2.VideoWriter(str(filename), fourcc, 30.0, out_size)
+                writer = cv2.VideoWriter(str(filename), fourcc, self._camera_fps, out_size)
                 if writer.isOpened():
                     writer.set(cv2.VIDEOWRITER_PROP_QUALITY, self._video_quality)
                     logger.info(f"Phone alert: using codec '{codec}' → {filename}")
@@ -1100,13 +1265,13 @@ class VideoPipeline:
 
             frames_written = 0
             try:
-                for raw_frame, phone_bboxes in frames:
-                    if raw_frame is None:
+                for item in frames:
+                    if item.frame is None:
                         continue
-                    if phone_bboxes:
-                        out_frame = self._render_phone_alert_frame(raw_frame, phone_bboxes)
+                    if item.phone_bboxes:
+                        out_frame = self._render_phone_alert_frame(item.frame, item.phone_bboxes)
                     else:
-                        out_frame = raw_frame
+                        out_frame = item.frame
                     if out_frame.shape[:2] != (height, width):
                         out_frame = cv2.resize(out_frame, out_size, interpolation=cv2.INTER_AREA)
                     # Always burn timestamp into phone alert videos.
@@ -1115,7 +1280,7 @@ class VideoPipeline:
                     draw_timestamp_overlay(out_frame)
                     writer.write(out_frame)
                     frames_written += 1
-                duration = frames_written / 30.0
+                duration = frames_written / self._camera_fps
                 logger.info(
                     f"Saved phone alert video: {filename} "
                     f"({duration:.1f}s, {frames_written} frames)"
@@ -1158,15 +1323,14 @@ class VideoPipeline:
             from pathlib import Path
             from datetime import datetime
 
-            archive_dir = Path("archive")
+            archive_dir = Path(self._settings.archive_dir)
             archive_dir.mkdir(exist_ok=True)
 
             time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
             h, w = frame.shape[:2]
 
-            # Fixed at 30 FPS so playback is always normal speed,
-            # regardless of how fast the system processed each frame.
-            archive_fps = 30.0
+            # Use actual camera FPS so playback speed matches recording speed.
+            archive_fps = self._camera_fps
 
             # Try codecs in order of preference — MP4 first
             for codec, ext in [('avc1', '.mp4'), ('mp4v', '.mp4'), ('XVID', '.avi'), ('MJPG', '.avi')]:
@@ -1209,8 +1373,6 @@ class VideoPipeline:
                        Captured BEFORE state reset so the writer can render
                        paper/victim annotations correctly.
         """
-        actual_fps = 30.0  # Always save alert videos at 30 FPS for consistent playback
-        
         def writer_task():
             from pathlib import Path
             from datetime import datetime
@@ -1219,14 +1381,16 @@ class VideoPipeline:
                 logger.warning(f"Alert video for track {track_id}: empty frame list, skipping.")
                 return
             
-            alerts_dir = Path("alerts")
+            alerts_dir = Path(self._settings.alerts_dir)
             alerts_dir.mkdir(exist_ok=True)
             
             time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
             
             height, width = None, None
             for item in frames:
-                raw_frame = item[0] if isinstance(item, tuple) else item
+                raw_frame = item.frame if isinstance(item, AlertFrame) else (
+                    item[0] if isinstance(item, tuple) else item
+                )
                 if raw_frame is not None:
                     height, width = raw_frame.shape[:2]
                     break
@@ -1257,7 +1421,7 @@ class VideoPipeline:
             for codec, ext in codec_options:
                 filename = alerts_dir / f"{prefix}_track{track_id}_{time_str}{ext}"
                 fourcc = cv2.VideoWriter_fourcc(*codec)
-                writer = cv2.VideoWriter(str(filename), fourcc, actual_fps, out_size)
+                writer = cv2.VideoWriter(str(filename), fourcc, self._camera_fps, out_size)
                 if writer.isOpened():
                     writer.set(cv2.VIDEOWRITER_PROP_QUALITY, self._video_quality)
                     logger.info(f"Using codec '{codec}' for {filename}")
@@ -1271,7 +1435,9 @@ class VideoPipeline:
             
             frames_written = 0
             try:
-                for raw_frame, tid in frames:
+                for item in frames:
+                    raw_frame = item.frame if isinstance(item, AlertFrame) else (item[0] if isinstance(item, tuple) else item)
+                    tid = item.track_id if isinstance(item, AlertFrame) else (item[1] if isinstance(item, tuple) else None)
                     # Pre-event frames have tid=None → write raw.
                     # During/post frames have track_id → annotate.
                     if tid is not None:
@@ -1285,10 +1451,10 @@ class VideoPipeline:
                     draw_timestamp_overlay(out)
                     writer.write(out)
                     frames_written += 1
-                duration = frames_written / actual_fps
+                duration = frames_written / self._camera_fps
                 logger.info(
                     f"Saved {cheat_type} alert video: {filename} "
-                    f"({duration:.1f}s, {frames_written} frames, {actual_fps:.0f}fps)"
+                    f"({duration:.1f}s, {frames_written} frames, {self._camera_fps:.0f}fps)"
                 )
             except Exception as e:
                 logger.error(f"Error saving alert video: {e}")

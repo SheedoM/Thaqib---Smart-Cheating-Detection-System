@@ -58,6 +58,8 @@ class VideoVisualizer:
         self.show_gaze_lines: bool = True  # Lines: student → surrounding papers
         self.show_control_panel: bool = True
         self.show_timestamp: bool = True  # Live display only; recordings always have it
+        self.show_face_mesh: bool = True   # Green landmark dots on student faces
+        self._gaze_scales: dict[int, int] = {}  # track_id → smoothed gaze arrow scale
 
     def toggle_neighbors(self) -> None:
         """Toggle neighbor graph rendering on/off."""
@@ -86,6 +88,10 @@ class VideoVisualizer:
         regardless of this setting.
         """
         self.show_timestamp = not self.show_timestamp
+
+    def toggle_face_mesh(self) -> None:
+        """Toggle face mesh landmark dot rendering on/off (display only)."""
+        self.show_face_mesh = not self.show_face_mesh
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -232,6 +238,8 @@ class VideoVisualizer:
 
     def _draw_face_mesh(self, frame: np.ndarray, state, sc: float) -> None:
         """Draw all face mesh landmarks as green dots on the student's face."""
+        if not self.show_face_mesh:
+            return
         if state.face_mesh is None:
             return
         r = max(1, int(sc))  # 1px at 720p, 2px at 1440p, 3px at 2160p
@@ -257,11 +265,10 @@ class VideoVisualizer:
         base_scale = bbox_height * 1.0 if bbox_height < 100 * sc else bbox_height * 0.6
         SCALE = int(max(60 * sc, min(base_scale, 200 * sc)))
 
-        if not hasattr(state, "_gaze_scale"):
-            state._gaze_scale = SCALE
-        else:
-            state._gaze_scale = int(0.8 * state._gaze_scale + 0.2 * SCALE)
-        SCALE = state._gaze_scale
+        prev = self._gaze_scales.get(state.track_id)
+        if prev is not None:
+            SCALE = int(0.8 * prev + 0.2 * SCALE)
+        self._gaze_scales[state.track_id] = SCALE
 
         GAZE_COLOR = (0, 0, 255)
         ox, oy = int(lm2d[168][0]), int(lm2d[168][1])
@@ -342,7 +349,7 @@ class VideoVisualizer:
         overlay = roi.copy()
         cv2.rectangle(overlay, (0, 0), (w, bar_h), (10, 10, 10), -1)
         cv2.addWeighted(overlay, 0.70, roi, 0.30, 0, roi)
-        text = "[S] Monitor  [M] Remove-click  [C] Clear  [T] Neighbors  [R] Archive  [D] Papers  [F] Phone  [L] Lines  [V] Quality  [G] Speed  [W] Clock  [P] Panel  [Q] Quit"
+        text = "[S] Monitor  [M] Remove-click  [C] Clear  [T] Neighbors  [R] Archive  [D] Papers  [F] Phone  [L] Lines  [K] Face Map  [V] Quality  [G] Speed  [W] Clock  [P] Panel  [Q] Quit"
         cv2.putText(frame, text, (int(10 * sc), h - int(7 * sc)),
                     cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.42), (200, 200, 200), _th(sc, 1), cv2.LINE_AA)
 
@@ -358,7 +365,7 @@ class VideoVisualizer:
         title_h = int(28 * sc)
         margin  = int(10 * sc)
         dot_r   = int(5 * sc)
-        rows    = 16
+        rows    = 17
 
         panel_h = title_h + pad + rows * line_h + pad
         panel_x = margin
@@ -478,6 +485,10 @@ class VideoVisualizer:
 
         ts_color = (0, 255, 150) if self.show_timestamp else (100, 100, 100)
         row(lx, y, "Timestamp:", "ON (live)" if self.show_timestamp else "OFF (live)", val_color=ts_color)
+        y += line_h
+
+        fm_color = (0, 255, 0) if self.show_face_mesh else (100, 100, 100)
+        row(lx, y, "Face Mesh:", "ON" if self.show_face_mesh else "OFF", val_color=fm_color)
 
         # ══════════════════════════════════════════════════════════════
         # RIGHT COLUMN — CONTROLS
@@ -529,6 +540,10 @@ class VideoVisualizer:
         ts_color = (0, 255, 150) if self.show_timestamp else (100, 100, 100)
         ts_state = "ON" if self.show_timestamp else "OFF"
         key_row(rx, y, "W", "Clock on screen", ts_state, ts_color)
+        y += line_h
+        fm_color = (0, 255, 0) if self.show_face_mesh else (100, 100, 100)
+        fm_state = "ON" if self.show_face_mesh else "OFF"
+        key_row(rx, y, "K", "Face map points", fm_state, fm_color)
         y += line_h
         key_row(rx, y, "P", "Hide/show this panel",
                 "ON" if self.show_control_panel else "OFF",
