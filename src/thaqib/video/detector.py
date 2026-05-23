@@ -59,19 +59,24 @@ class DetectionResult:
 
 class HumanDetector:
     """
-    YOLOv8-based human detector.
+    YOLOv8/YOLO11-based human (and optionally phone) detector.
 
     Performs periodic detection of human subjects in video frames.
-    Only detects the 'person' class.
+    Only detects the 'person' class by default.
+
+    When yolo_phone_detection is enabled (settings default), also detects
+    'cell phone' (COCO class 67) in the same inference pass at zero extra cost.
+    Phone detections are identified by class_id == PHONE_CLASS_ID downstream.
 
     Example:
         >>> detector = HumanDetector()
         >>> result = detector.detect(frame, frame_index=1, timestamp=1234567890.0)
-        >>> for detection in result.detections:
-        ...     print(f"Person at {detection.center} with confidence {detection.confidence:.2f}")
+        >>> persons = [d for d in result.detections if d.class_id == HumanDetector.PERSON_CLASS_ID]
+        >>> phones  = [d for d in result.detections if d.class_id == HumanDetector.PHONE_CLASS_ID]
     """
 
-    PERSON_CLASS_ID = 0  # COCO class ID for person
+    PERSON_CLASS_ID = 0   # COCO class ID for person
+    PHONE_CLASS_ID  = 67  # COCO class ID for cell phone
 
     def __init__(
         self,
@@ -83,9 +88,9 @@ class HumanDetector:
         Initialize the human detector.
 
         Args:
-            model_name: YOLO model name (e.g., 'yolov8n', 'yolov8s'). 
+            model_name: YOLO model name (e.g., 'yolov8n', 'yolov8s').
                        If None, uses settings.
-            confidence_threshold: Minimum confidence for detections.
+            confidence_threshold: Minimum confidence for person detections.
                                  If None, uses settings.
             device: Device to run inference on ('cpu', 'cuda', 'mps').
                    If None, auto-selects best available.
@@ -93,11 +98,22 @@ class HumanDetector:
         settings = get_settings()
 
         self.model_name = model_name or settings.yolo_model
-        self.confidence_threshold = confidence_threshold or settings.detection_confidence
+        self.confidence_threshold = (
+            settings.detection_confidence if confidence_threshold is None
+            else confidence_threshold
+        )
         self.imgsz = getattr(settings, 'detection_imgsz', 640)
         self.device = device
 
+        # Phone detection via YOLO — same model, class 67
+        self._yolo_phone_detection: bool = settings.yolo_phone_detection
+        self._phone_class_id: int = settings.phone_class_id
+        self._phone_confidence: float = settings.phone_confidence
+        # Dedicated phone model path (empty = reuse main model)
+        self._phone_model_path: str = settings.phone_model.strip()
+
         self._model: YOLO | None = None
+        self._phone_model: YOLO | None = None  # Only set when phone_model_path is given
         self._is_loaded = False
 
     def load(self) -> None:
@@ -113,13 +129,41 @@ class HumanDetector:
         self._model = YOLO(f"{self.model_name}")
         self._model.to(self._device)
 
-        # Warmup: first CUDA inference compiles kernels and is slow.
-        # Run a dummy pass so the real first frame sees normal latency.
+        # Warmup main model
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
         self._model(dummy, verbose=False, device=self._device, imgsz=self.imgsz)
 
+        # Load dedicated phone model if configured
+        if self._yolo_phone_detection and self._phone_model_path:
+            logger.info(f"Loading dedicated phone model: {self._phone_model_path}")
+            try:
+                self._phone_model = YOLO(self._phone_model_path)
+                self._phone_model.to(self._device)
+                self._phone_model(dummy, verbose=False, device=self._device)
+                logger.info(f"Phone model loaded: {self._phone_model_path}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to load phone model '{self._phone_model_path}': {e}. "
+                    f"Falling back to main model for phone detection."
+                )
+                self._phone_model = None
+        else:
+            self._phone_model = None
+
         self._is_loaded = True
-        logger.info(f"YOLO model loaded successfully (device={self._device})")
+        phone_info = "OFF"
+        if self._yolo_phone_detection:
+            if self._phone_model_path and self._phone_model is not None:
+                phone_info = f"ON — dedicated model: {self._phone_model_path} (conf={self._phone_confidence})"
+            elif self._phone_model_path and self._phone_model is None:
+                phone_info = f"ON — fallback to main model (dedicated model failed to load)"
+            else:
+                phone_info = f"ON — shared model, class {self._phone_class_id} (conf={self._phone_confidence})"
+        logger.info(
+            f"YOLO model loaded: {self.model_name} | device={self._device} | "
+            f"imgsz={self.imgsz} | person_conf={self.confidence_threshold} | "
+            f"phone={phone_info}"
+        )
 
     def detect(
         self,
@@ -141,40 +185,62 @@ class HumanDetector:
         if not self._is_loaded:
             self.load()
 
-        # Run inference — resolution is configurable via DETECTION_IMGSZ env var
+        detections = []
+
+        # ── Person detection (always uses main model) ──────────────────────────
         results = self._model(
             frame,
             conf=self.confidence_threshold,
-            classes=[self.PERSON_CLASS_ID],  # Only detect persons
+            classes=[self.PERSON_CLASS_ID],
             device=self._device,
             verbose=False,
-            imgsz=self.imgsz
+            imgsz=self.imgsz,
         )
-
-        # Parse results
-        detections = []
         for result in results:
             boxes = result.boxes
             if boxes is None or len(boxes) == 0:
                 continue
-
             xyxy_arr = boxes.xyxy.cpu().numpy().astype(int)
             conf_arr = boxes.conf.cpu().numpy()
-            cls_arr = boxes.cls.cpu().numpy().astype(int)
-
             for i in range(len(boxes)):
-                detections.append(
-                    Detection(
-                        bbox=(
-                            xyxy_arr[i][0],
-                            xyxy_arr[i][1],
-                            xyxy_arr[i][2],
-                            xyxy_arr[i][3]
-                        ),
+                detections.append(Detection(
+                    bbox=(xyxy_arr[i][0], xyxy_arr[i][1], xyxy_arr[i][2], xyxy_arr[i][3]),
+                    confidence=float(conf_arr[i]),
+                    class_id=self.PERSON_CLASS_ID,
+                ))
+
+        # ── Phone detection ────────────────────────────────────────────────────
+        if self._yolo_phone_detection:
+            # Use dedicated phone model if available, else use main model
+            phone_model = self._phone_model if self._phone_model is not None else self._model
+            phone_classes = None if self._phone_model is not None else [self._phone_class_id]
+
+            phone_results = phone_model(
+                frame,
+                conf=self._phone_confidence,
+                classes=phone_classes,
+                device=self._device,
+                verbose=False,
+                imgsz=self.imgsz,
+            )
+            for result in phone_results:
+                boxes = result.boxes
+                if boxes is None or len(boxes) == 0:
+                    continue
+                xyxy_arr = boxes.xyxy.cpu().numpy().astype(int)
+                conf_arr = boxes.conf.cpu().numpy()
+                cls_arr  = boxes.cls.cpu().numpy().astype(int)
+                for i in range(len(boxes)):
+                    cls_id = int(cls_arr[i])
+                    # For shared model: only keep phone class
+                    # For dedicated model: keep all detections (model outputs only phones)
+                    if self._phone_model is None and cls_id != self._phone_class_id:
+                        continue
+                    detections.append(Detection(
+                        bbox=(xyxy_arr[i][0], xyxy_arr[i][1], xyxy_arr[i][2], xyxy_arr[i][3]),
                         confidence=float(conf_arr[i]),
-                        class_id=int(cls_arr[i]),
-                    )
-                )
+                        class_id=self._phone_class_id,  # always tag as phone class
+                    ))
 
         return DetectionResult(
             frame_index=frame_index,

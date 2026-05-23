@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     tools_model: str = "models/best.pt"
     tools_confidence: float = 0.45    # Confidence threshold for paper/phone detection
     detection_imgsz: int = 640        # YOLO inference resolution (640=fast, 1280=accurate)
+    # Phone detection via YOLO
+    # When True, the main YOLO model (yolo_model) is used to detect phones
+    # using the COCO class specified by phone_class_id (default 67 = cell phone).
+    # This is more reliable than relying on best.pt label names.
+    # Set to False to fall back to the tools model (best.pt) phone detection only.
+    yolo_phone_detection: bool = True
+    phone_class_id: int = 67          # COCO class ID for 'cell phone'
+    phone_confidence: float = 0.30    # Confidence threshold for phone detection (lower than person)
+    # Dedicated phone detection model.
+    # Leave empty ("") to reuse yolo_model for phone detection (default, zero extra cost).
+    # Set a path to load a separate model e.g. "models/phone_yolo11n.pt"
+    phone_model: str = ""             # e.g. "models/phone_yolo11n.pt"
 
     # Tracking
     tracking_max_distance: int = 100
@@ -54,6 +66,7 @@ class Settings(BaseSettings):
     # Re-Identification
     reid_match_threshold: float = 0.80   # Cosine similarity threshold for face re-ID
     reid_similarity_debug: bool = False  # Log per-frame similarity scores
+    reid_weights_path: str = "models/osnet_x0_25_msmt17.pt"  # OSNet Re-ID weights
 
     # Performance
     face_mesh_workers: int = 4           # Max parallel face mesh worker processes
@@ -75,6 +88,8 @@ class Settings(BaseSettings):
     archive_mode: Literal["raw", "annotated"] = "raw"
     # raw       -> original camera feed saved as-is
     # annotated -> saved with bounding boxes and overlays
+    archive_dir: str = "archive"  # Directory for continuous archive recordings
+    alerts_dir: str = "alerts"    # Directory for cheating/phone alert clips
 
     # =========================================================================
     # Audio Detection
@@ -261,6 +276,25 @@ class Settings(BaseSettings):
     # before saving the full audio clip.
     # Example: 5.0 = if no new cheating for 5 seconds → episode is over, save it.
     audio_episode_grace_sec: float = 5.0
+
+    # =========================================================================
+    # VAD-ONLY DETECTION MODE
+    # =========================================================================
+
+    # When True: skip Whisper entirely.
+    # As soon as Silero VAD confirms human speech on a LOCAL chunk → ALERT.
+    # This is the fastest possible detection path (~5ms per chunk vs ~4s Whisper).
+    # No transcription is produced — evidence JSON will have transcript="".
+    # Recommended for SILENT EXAMS where ANY speech is a violation.
+    # Combine with AUDIO_STRICT_MODE=true (has no effect if strict_mode=false
+    # since keyword mode requires a transcript to match against).
+    audio_vad_only: bool = False
+
+    # Cooldown in seconds between alerts for the same microphone in VAD-only mode.
+    # Prevents hundreds of alerts for a single continuous whisper.
+    # Example: 3.0 = after one alert, wait 3 seconds before firing another on
+    # the same mic (the EpisodeTracker will group them into one episode anyway).
+    audio_vad_alert_cooldown: float = 3.0
 
     # =========================================================================
 

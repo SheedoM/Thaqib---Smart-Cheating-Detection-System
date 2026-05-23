@@ -44,10 +44,31 @@ The pipeline begins by capturing audio. It abstracts the hardware away using the
 
 ## 2. The Orchestrator (`pipeline.py`)
 
-The `AudioPipeline` is the heart of the system. It runs in a background thread to ensure audio is processed continuously without freezing the main application GUI.
+The `AudioPipeline` is the heart of the system. It uses a **three-thread architecture** to ensure Whisper's latency never blocks real-time chunk processing:
+
+```
+Main Loop Thread (AudioPipeline)
+   ├── Reads chunks from AudioSource
+   ├── Classifies: SILENT / GLOBAL / LOCAL (fast)
+   ├── Feeds noise samples to Preprocessor
+   ├── Streams audio to SessionRecorder
+   └── Enqueues LOCAL chunks → _inference_queue
+            │
+            ▼
+VAD Worker Thread (~5ms per chunk)
+   ├── Runs Silero VAD on LOCAL chunks
+   ├── Accumulates speech buffers (2.5s default)
+   └── Pushes ready buffers → _whisper_queue
+            │
+            ▼
+Whisper Worker Thread (~0.5–4s per buffer)
+   ├── Runs Whisper STT + keyword matching
+   ├── Creates AudioAlert objects
+   └── Saves evidence (WAV + JSON)
+```
 
 *   **Rolling History**: It maintains a `_chunk_history` (a rolling buffer of the last 10 seconds of audio). This is what enables the system to "look back in time" when cheating is detected.
-*   **Routing**: It acts as the traffic controller, taking the `AudioChunk` and passing it sequentially to the Discriminator and then the Detector.
+*   **Non-blocking Design**: The main loop never waits for AI inference. LOCAL chunks are dropped with a warning if the inference queue fills up, rather than stalling audio ingestion.
 
 ---
 

@@ -243,7 +243,8 @@ class AudioPipeline:
             f"AudioPipeline init: model={_whisper_model} lang={_language} "
             f"strict={_strict_mode} vad_buf={_speech_buffer_sec}s "
             f"queue={_inference_q_size} history={_history_chunks} "
-            f"calibration={_calibration_chunks}chunks multiplier={_local_ratio_mult}x"
+            f"calibration={_calibration_chunks}chunks multiplier={_local_ratio_mult}x "
+            f"vad_only={getattr(s, 'audio_vad_only', False)}"
         )
 
         self._source = source
@@ -326,6 +327,15 @@ class AudioPipeline:
         # from concurrent access by main loop and inference worker.
         self._lock = threading.Lock()
 
+        # ── VAD-only detection mode ───────────────────────────────────────────
+        # When True, the Whisper worker is bypassed entirely: as soon as Silero
+        # VAD confirms human speech on a LOCAL chunk, an alert fires immediately.
+        # Per-mic cooldown prevents alert spam for continuous whispers.
+        self._vad_only: bool = getattr(s, 'audio_vad_only', False)
+        self._vad_alert_cooldown: float = getattr(s, 'audio_vad_alert_cooldown', 3.0)
+        # dict[mic_id -> monotonic time when next alert is allowed]
+        self._vad_alert_times: dict[int, float] = {}
+
         # Statistics for dashboard
         self._stats = {
             "chunks_processed": 0,
@@ -335,6 +345,7 @@ class AudioPipeline:
             "speech_detected": 0,
             "alerts_triggered": 0,
             "dropped_chunks": 0,
+            "two_pass_rescored": 0,   # GLOBAL→LOCAL rescores via two-pass denoising
             "start_time": 0.0,
         }
         self._alerts: list[AudioAlert] = []
@@ -519,9 +530,25 @@ class AudioPipeline:
                     self._is_running = False
                     break
 
-                # 0. Stream chunk to session WAV files (if recording enabled)
+                # 0. Compute processed audio ONCE per chunk.
+                #    Reused by: session recorder (processed/ folder) + Two-Pass discriminator.
+                #    Computing it twice caused adaptive-gain state drift that suppressed the 3rd alert.
+                #    raw/       <- always written (original samples)
+                #    processed/ <- written once the noise profile is ready
+                _processed_mics_cache: "list[np.ndarray] | None" = None
+                if self._preprocessor.noise_profile_ready:
+                    try:
+                        _processed_mics_cache = [
+                            self._preprocessor.process(
+                                chunk.mic_data[i], chunk.sample_rate
+                            )
+                            for i in range(chunk.mic_data.shape[0])
+                        ]
+                    except Exception as _pe:
+                        logger.debug(f"Preprocessor error (chunk {chunk.chunk_index}): {_pe}")
+
                 if self._session_recorder and self._session_recorder.is_open:
-                    self._session_recorder.write_chunk(chunk)
+                    self._session_recorder.write_chunk(chunk, processed_mics=_processed_mics_cache)
 
                 # 1. Provide the new chunk to any pending alerts
                 completed_alerts = []
@@ -545,9 +572,21 @@ class AudioPipeline:
                         logger.error(f"Failed to save evidence: {e}")
 
                 # 3. Process the chunk (fast classification)
-                classification = self._process_chunk(chunk)
+                #    Pass the already-computed processed audio so Two-Pass
+                #    does NOT call preprocessor.process() a second time.
+                classification = self._process_chunk(chunk, precomputed_processed=_processed_mics_cache)
 
-                # 3b. Feed GLOBAL/SILENT chunks to noise profile learner
+                # 3b. Feed GLOBAL/SILENT chunks to noise profile learner.
+                # IMPORTANT: only truly-GLOBAL chunks train the noise model.
+                # Two-pass rescored chunks (originally GLOBAL, reclassified LOCAL)
+                # must NOT train the noise profile — they contain the whisper signal.
+                is_two_pass_local = (
+                    classification
+                    and classification.is_local
+                    and self._stats.get("two_pass_rescored", 0) > 0
+                    # Heuristic: if this chunk was just rescored it appears LOCAL now.
+                    # The safe guard is: we only add GLOBAL chunks to the learner.
+                )
                 if classification and (classification.is_global or classification.is_silent):
                     for mic_id in range(chunk.mic_data.shape[0]):
                         self._preprocessor.add_noise_sample(
@@ -576,7 +615,9 @@ class AudioPipeline:
                         for c in history_list[-pre_chunks_needed:]
                     ]
                     try:
-                        self._inference_queue.put_nowait((chunk, classification, history_snapshot))
+                        self._inference_queue.put_nowait(
+                            (chunk, classification, history_snapshot, _processed_mics_cache)
+                        )
                     except queue.Full:
                         logger.warning(f"Inference queue full — dropping chunk {chunk.chunk_index}")
                         with self._lock:
@@ -602,13 +643,77 @@ class AudioPipeline:
                     except Exception as e:
                         logger.error(f"Failed to save episode on shutdown: {e}")
 
-    def _process_chunk(self, chunk: AudioChunk) -> "SoundClassification":
-        """Process a single audio chunk (fast synchronous part)."""
+    def _process_chunk(
+        self,
+        chunk: "AudioChunk",
+        precomputed_processed: "list[np.ndarray] | None" = None,
+    ) -> "SoundClassification":
+        """
+        Process a single audio chunk (fast synchronous part).
+
+        Args:
+            chunk: Raw AudioChunk from the audio source.
+            precomputed_processed: Pre-computed per-mic denoised audio arrays
+                (from the run loop's single preprocessor call). When provided,
+                the Two-Pass step reuses these directly instead of calling
+                preprocessor.process() again, preventing adaptive-gain drift.
+        """
         with self._lock:
             self._stats["chunks_processed"] += 1
 
-        # Step 1: Global vs Local classification
+        # ── Pass 1: Classify raw audio ────────────────────────────────────────
         classification = self._discriminator.classify(chunk)
+
+        # ── Pass 2: Two-pass discrimination (noise-aware re-classification) ──
+        #
+        # Problem: In a noisy exam hall (HVAC, chairs, general room hum), ALL
+        # microphones pick up similar background energy. A student whispering
+        # near mic-0 creates energy on that mic, but the shared noise floor
+        # raises mic-1 too — making the ratio look small → wrongly GLOBAL.
+        #
+        # Fix: Once the noise profile is learned (from the first ~30 GLOBAL
+        # chunks), denoise each microphone independently, then re-classify.
+        # After subtraction, the shared room noise disappears from both mics,
+        # but the whisper energy (which was only on mic-0) remains.
+        # Now the ratio is large again → correctly LOCAL → goes to VAD/Whisper.
+        #
+        # Only runs when:
+        #   - Pass 1 said GLOBAL (not LOCAL or SILENT — those are fine)
+        #   - Noise profile is ready (need at least 5 GLOBAL samples first)
+        # Cost: one denoising call per mic (~1–3ms, negligible vs Whisper).
+        if classification.is_global and self._preprocessor.noise_profile_ready:
+            try:
+                # Reuse the pre-computed denoised audio from the run loop
+                # (already computed at step 0 to avoid double processing).
+                if precomputed_processed is not None:
+                    denoised_mics = precomputed_processed
+                else:
+                    # Fallback: compute on the fly (e.g. during unit tests)
+                    denoised_mics = [
+                        self._preprocessor.process(chunk.mic_data[i], chunk.sample_rate)
+                        for i in range(chunk.mic_data.shape[0])
+                    ]
+                denoised_chunk = AudioChunk(
+                    timestamp=chunk.timestamp,
+                    mic_data=np.stack(denoised_mics, axis=0),
+                    sample_rate=chunk.sample_rate,
+                    duration_ms=chunk.duration_ms,
+                    chunk_index=chunk.chunk_index,
+                )
+                classification2 = self._discriminator.classify(denoised_chunk)
+
+                if classification2.is_local:
+                    logger.info(
+                        f"[Two-Pass] Chunk {chunk.chunk_index}: GLOBAL->LOCAL after denoising "
+                        f"(noise profile chunks={self._preprocessor.noise_chunks_collected}, "
+                        f"active_mics={classification2.active_mics})"
+                    )
+                    classification = classification2
+                    with self._lock:
+                        self._stats["two_pass_rescored"] += 1
+
+            except Exception as e:
+                logger.debug(f"Two-pass re-classification error: {e}")
 
         # Optional: cross-correlation validation for borderline cases
         if self._use_cross_correlation and classification.is_local:
@@ -631,7 +736,7 @@ class AudioPipeline:
                 self._stats["global_chunks"] += 1
             elif classification.is_local:
                 self._stats["local_chunks"] += 1
-            
+
         return classification
 
     def _inference_worker(self) -> None:
@@ -653,8 +758,8 @@ class AudioPipeline:
                     self._whisper_queue.put(None)
                     break
 
-                chunk, classification, history_snapshot = item
-                self._vad_step(chunk, classification, history_snapshot)
+                chunk, classification, history_snapshot, processed_mics = item
+                self._vad_step(chunk, classification, history_snapshot, processed_mics)
                 self._inference_queue.task_done()
 
             except queue.Empty:
@@ -673,9 +778,26 @@ class AudioPipeline:
         self,
         chunk: "AudioChunk",
         classification: object,
-        history_snapshot: list[dict],
+        history_snapshot: "list[dict]",
+        processed_mics: "list[np.ndarray] | None" = None,
     ) -> None:
-        """Fast VAD + buffer logic (runs in VAD worker, no Whisper call)."""
+        """
+        Per-Mic VAD with Spatial Comparison (Smart Pipeline).
+
+        New pipeline order (per user request):
+            1. Denoise each mic independently   <- removes shared room noise
+            2. Run VAD on each denoised mic     <- detect human speech per-mic
+            3. Find dominant mic (highest VAD confidence)
+            4. Compare VAD confidence across mics:
+               - All mics similar? -> GLOBAL (bilateral speech, not cheating)
+               - Only dominant mic high? -> LOCAL -> ALERT!
+
+        Why this is better than energy-ratio comparison:
+            - VAD confidence measures SPEECH probability, not raw energy.
+            - After denoising, the comparison is speech-specific.
+            - A noisy room raises energy on all mics equally, but VAD
+              confidence only rises when human speech is actually present.
+        """
         from thaqib.audio.models import SoundClassification as SC
         n_mics = chunk.mic_data.shape[0]
         if not all(0 <= i < n_mics for i in classification.active_mics):
@@ -685,6 +807,101 @@ class AudioPipeline:
             )
             return
 
+        # ── VAD-Only fast path: Per-Mic VAD with Spatial Comparison ──────────
+        if self._vad_only:
+            # Step 1 + 2: Use denoised audio if available, else raw
+            #             Run VAD on EVERY mic independently.
+            per_mic_vad: list[tuple[int, float]] = []  # (mic_id, vad_confidence)
+            for mic_id in range(n_mics):
+                # Prefer denoised audio (cleaner speech signal for VAD)
+                if processed_mics is not None and mic_id < len(processed_mics):
+                    audio = processed_mics[mic_id]
+                else:
+                    audio = chunk.mic_data[mic_id]
+                _, conf = self._keyword_detector.is_speech(audio, chunk.sample_rate)
+                per_mic_vad.append((mic_id, conf))
+
+            # Step 3: Find dominant mic (highest VAD confidence)
+            dom_mic_id, dom_conf = max(per_mic_vad, key=lambda x: x[1])
+
+            # No speech anywhere?
+            if dom_conf < self._keyword_detector._vad_threshold:
+                return  # silence — nothing to do
+
+            logger.debug(
+                f"[Per-Mic-VAD] Chunk {chunk.chunk_index}: "
+                + ", ".join(f"mic{mid}={conf:.3f}" for mid, conf in per_mic_vad)
+                + f" | dominant=mic{dom_mic_id} ({dom_conf:.3f})"
+            )
+
+            # Step 4: Enhanced bilateral check — Voice Content Matching
+            #
+            # JUST comparing VAD confidence levels is not enough:
+            #   - Two students whispering simultaneously near different mics
+            #     would both have high VAD confidence → wrongly GLOBAL.
+            #
+            # We now require TWO conditions for GLOBAL classification:
+            #   (a) Other mic hears speech at >= 70% of dominant mic's confidence
+            #       (similar loudness level)
+            #   (b) The spectral content of both mics is highly similar >= 0.80
+            #       (same voice, same words)
+            #
+            # If both (a) and (b) → same person's voice heard everywhere → GLOBAL.
+            # If (a) but not (b) → two DIFFERENT voices near two mics → LOCAL (cheating).
+            # If not (a) → dominant mic clearly has unique speech → LOCAL (cheating).
+            dom_audio = (
+                processed_mics[dom_mic_id]
+                if processed_mics is not None and dom_mic_id < len(processed_mics)
+                else chunk.mic_data[dom_mic_id]
+            )
+
+            is_local = True
+            for other_mic_id, other_conf in per_mic_vad:
+                if other_mic_id == dom_mic_id:
+                    continue
+
+                vad_ratio = other_conf / dom_conf if dom_conf > 0 else 0.0
+
+                if vad_ratio >= 0.70:
+                    # Both mics detected speech — but is it the SAME voice?
+                    other_audio = (
+                        processed_mics[other_mic_id]
+                        if processed_mics is not None and other_mic_id < len(processed_mics)
+                        else chunk.mic_data[other_mic_id]
+                    )
+                    similarity = self._voice_similarity(dom_audio, other_audio)
+
+                    if similarity >= 0.80:
+                        # Same voice content at similar level → GLOBAL (not cheating)
+                        logger.debug(
+                            f"[Voice-Match] Chunk {chunk.chunk_index} GLOBAL: "
+                            f"mic{dom_mic_id} vs mic{other_mic_id} — "
+                            f"vad_ratio={vad_ratio:.0%}, similarity={similarity:.3f} >= 0.80"
+                        )
+                        is_local = False
+                        break
+                    else:
+                        # Similar VAD level but DIFFERENT voice content
+                        # → two different people near different mics → both cheating
+                        logger.debug(
+                            f"[Voice-Match] Chunk {chunk.chunk_index} LOCAL (diff voices): "
+                            f"mic{dom_mic_id} vs mic{other_mic_id} — "
+                            f"vad_ratio={vad_ratio:.0%}, similarity={similarity:.3f} < 0.80"
+                        )
+                # else: vad_ratio < 70% → dominant mic clearly unique → LOCAL (no change)
+
+            if is_local:
+                import time as _time
+                now = _time.monotonic()
+                if now >= self._vad_alert_times.get(dom_mic_id, 0.0):
+                    self._vad_alert_times[dom_mic_id] = now + self._vad_alert_cooldown
+                    self._fire_vad_only_alert(
+                        chunk, classification, history_snapshot, dom_mic_id, dom_conf
+                    )
+            return
+
+        # ── Normal path: accumulate speech → Whisper ──────────────────────
+        # Use dominant mic found in active_mics logic for legacy compatibility
         active_mics = sorted(
             classification.active_mics,
             key=lambda m: classification.energy_profile[m],
@@ -692,6 +909,8 @@ class AudioPipeline:
         )
         for mic_id in active_mics[:1]:
             mic_audio = chunk.mic_data[mic_id]
+
+            # ── Normal path: accumulate speech → Whisper ──────────────────────
             speech_buffer = self._keyword_detector.vad_and_buffer(
                 mic_audio, chunk.sample_rate, mic_id=mic_id
             )
@@ -712,6 +931,142 @@ class AudioPipeline:
                         f"Whisper queue full — dropping speech buffer for mic{mic_id}. "
                         f"Whisper is too slow. Consider a faster model."
                     )
+
+    @staticmethod
+    def _voice_similarity(audio1: np.ndarray, audio2: np.ndarray) -> float:
+        """
+        Spectral cosine similarity between two audio signals.
+
+        Measures how similar the FREQUENCY CONTENT (voice fingerprint) of
+        two audio clips is, regardless of volume.
+
+        Returns:
+            float in [0.0, 1.0]
+                1.0 = identical spectral content (same voice, same words)
+                0.0 = completely different content (voice vs. noise)
+
+        Examples:
+            Teacher speaking → all mics → similarity ~0.90 → GLOBAL
+            Student whispering + different ambient on other mic → ~0.15 → LOCAL
+
+        Implementation:
+            FFT magnitude spectrum → L2-normalize → cosine dot product.
+            Pure numpy, no external dependencies, ~0.1ms per call.
+        """
+        min_len = min(len(audio1), len(audio2))
+        if min_len < 64:
+            return 0.0
+
+        # Magnitude spectrum (phase-independent)
+        spec1 = np.abs(np.fft.rfft(audio1[:min_len]))
+        spec2 = np.abs(np.fft.rfft(audio2[:min_len]))
+
+        norm1 = np.linalg.norm(spec1)
+        norm2 = np.linalg.norm(spec2)
+        if norm1 == 0.0 or norm2 == 0.0:
+            return 0.0
+
+        return float(np.dot(spec1 / norm1, spec2 / norm2))
+
+    def _fire_vad_only_alert(
+        self,
+        chunk: "AudioChunk",
+        classification: object,
+        history_snapshot: list[dict],
+        mic_id: int,
+        vad_confidence: float,
+    ) -> None:
+        """
+        Create and dispatch an AudioAlert from VAD detection alone (no Whisper).
+
+        Called when AUDIO_VAD_ONLY=true and Silero VAD confirms human speech on
+        a LOCAL chunk.  No transcription is performed — the alert fires in ~5ms.
+
+        If an alert for this mic is already pending (continuous whisper), the
+        existing clip is extended rather than creating a duplicate.
+        """
+        from thaqib.audio.models import AudioAlert
+        mic_audio = chunk.mic_data[mic_id]
+        mic_name = self._mic_registry.get(mic_id, f"mic{mic_id}")
+
+        # Check if an alert is already pending for this mic — extend it
+        # instead of creating a duplicate (same logic as Whisper path).
+        with self._lock:
+            existing_pending = None
+            for pending in self._pending_alerts:
+                if pending.alert.mic_id == mic_id:
+                    existing_pending = pending
+                    break
+
+        if existing_pending:
+            existing_pending.post_collected = 0
+            existing_pending.alert.confidence = max(
+                existing_pending.alert.confidence, vad_confidence
+            )
+            logger.info(
+                f"[VAD-Only] Extended alert [{mic_name}]: "
+                f"chunk={chunk.chunk_index} vad_conf={vad_confidence:.3f}"
+            )
+            return
+
+        # Build pre-event audio buffer from history
+        chunk_duration_sec = chunk.duration_ms / 1000.0
+        pre_chunks_needed  = int(self._clip_sec_before / chunk_duration_sec)
+        post_chunks_needed = int(self._clip_sec_after  / chunk_duration_sec)
+
+        pre_buffer = [frame[mic_id] for frame in history_snapshot if mic_id in frame]
+        pre_buffer.append(mic_audio.copy())
+
+        alert = AudioAlert(
+            timestamp=chunk.timestamp,
+            mic_id=mic_id,
+            active_mics=classification.active_mics,
+            transcript="",                          # no Whisper → no transcript
+            matched_keywords=["*HUMAN_SPEECH_DETECTED*"],
+            audio_clip=mic_audio.copy(),
+            sample_rate=chunk.sample_rate,
+            confidence=float(vad_confidence),
+            chunk_index=chunk.chunk_index,
+            recording_start=self._recording_start_time,
+            discriminator_baseline=getattr(classification, 'baseline_ratio', 0.0),
+            discriminator_raw_ratio=getattr(classification, 'raw_ratio', 0.0),
+            discriminator_normalized_ratio=getattr(classification, 'normalized_ratio', 0.0),
+        )
+
+        with self._lock:
+            self._alerts.append(alert)
+            self._stats["alerts_triggered"] += 1
+            self._stats["speech_detected"]   += 1
+
+        # Episode tracker
+        if self._episode_tracker is not None:
+            self._episode_tracker.on_alert(alert)
+
+        # Save evidence WAV + JSON (includes pre-buffer + cooldown-length post-buffer)
+        pending = _PendingAlert(
+            alert=alert,
+            audio_sequence=pre_buffer,
+            target_post_chunks=post_chunks_needed,
+            post_collected=0,
+        )
+        with self._lock:
+            self._pending_alerts.append(pending)
+
+        # Dispatch to external consumers
+        if self._alert_queue is not None:
+            self._alert_queue.put(alert)
+
+        if self._on_alert:
+            try:
+                self._on_alert(alert)
+            except Exception as e:
+                logger.debug(f"on_alert callback error: {e}")
+
+        logger.warning(
+            f"[VAD-Only] HUMAN SPEECH ALERT #{self._stats['alerts_triggered']}: "
+            f"mic {mic_id} ({mic_name}), vad_conf={vad_confidence:.3f}, "
+            f"chunk={chunk.chunk_index}"
+        )
 
     def _whisper_worker(self) -> None:
         """

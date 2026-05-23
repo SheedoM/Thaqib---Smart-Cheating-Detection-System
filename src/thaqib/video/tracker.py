@@ -91,7 +91,7 @@ class ObjectTracker:
         self.max_distance = max_distance or settings.tracking_max_distance
         self.max_age = max_age or settings.tracking_max_age
         
-        self.reid_weights_path = getattr(settings, "reid_weights_path", "models/osnet_x0_25_msmt17.pt")
+        self.reid_weights_path = settings.reid_weights_path
 
         self._tracker = self._make_tracker()
 
@@ -222,6 +222,24 @@ class ObjectTracker:
     def clear_selection(self) -> None:
         self._selected_ids.clear()
         logger.info("Cleared all track selections")
+
+    def remove_tracks(self, expired_ids: set[int]) -> None:
+        """Prune internal state for expired track IDs.
+
+        Called by the pipeline after the registry has expired tracks.
+        Keeps tracker memory bounded and prevents stale smoothed-bbox
+        entries from polluting future frames.
+
+        Args:
+            expired_ids: Set of track IDs that are no longer active.
+        """
+        for eid in expired_ids:
+            self._smoothed_bboxes.pop(eid, None)
+            self._match_counts.pop(eid, None)
+            self._locked_ids.discard(eid)
+            self._track_labels.pop(eid, None)
+        if expired_ids:
+            logger.debug("Pruned tracker state for expired IDs: %s", expired_ids)
 
     def set_label(self, track_id: int, label: str) -> None:
         self._track_labels[track_id] = label
