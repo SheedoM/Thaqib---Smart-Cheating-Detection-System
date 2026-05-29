@@ -24,6 +24,7 @@ interface Alert {
   snapshot_file: string;
   video_file?: string | null;
   location: string;
+  status?: string;
 }
 
 interface CameraStats {
@@ -124,9 +125,10 @@ function timeSince(isoString: string): string {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export default function DashboardPage() {
+export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
   const [activeNav, setActiveNav] = useState('home');
   const [activeTab, setActiveTab] = useState<TabType>('cameras');
+  const [selectedHallId, setSelectedHallId] = useState<string>('all');
   const [halls, setHalls] = useState<HallItem[]>([]);
   const [hallsLoaded, setHallsLoaded] = useState(false);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -152,19 +154,38 @@ export default function DashboardPage() {
 
   const ptt = useInvigilatorPtt();
 
-  const startPtt = async () => {
+  const startPtt = async (targetId?: string) => {
     pttPressedRef.current = true;
     // If not connected, connect first (startSpeak will be queued inside the hook)
     if (ptt.state !== 'connected') {
       await ptt.connect();
     }
     if (!pttPressedRef.current) return; // user released before connection completed
-    ptt.startSpeak();
+    await ptt.startSpeak(targetId);
   };
 
   const stopPtt = () => {
     pttPressedRef.current = false;
     ptt.stopSpeak();
+  };
+
+  const confirmAlert = async (alert: Alert) => {
+    const res = await authFetch(`/api/alerts/${alert.id}/confirm`, { method: 'POST' });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => null);
+    setAlerts(prev => prev.map(item => item.id === alert.id ? { ...item, status: 'confirmed' } : item));
+    setSelectedAlert(prev => prev && prev.id === alert.id ? { ...prev, status: 'confirmed' } : prev);
+    await startPtt(data?.ptt_target_id);
+  };
+
+  const cancelAlert = async (alert: Alert) => {
+    const res = await authFetch(`/api/alerts/${alert.id}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ notes: 'Cancelled after review.' }),
+    });
+    if (!res.ok) return;
+    setAlerts(prev => prev.map(item => item.id === alert.id ? { ...item, status: 'cancelled' } : item));
+    setSelectedAlert(prev => prev && prev.id === alert.id ? { ...prev, status: 'cancelled' } : prev);
   };
 
   useEffect(() => {
@@ -300,6 +321,9 @@ export default function DashboardPage() {
   };
 
   // ─── Render ────────────────────────────────────────────────────────────────
+  const visibleHalls = selectedHallId === 'all' ? halls : halls.filter((hall) => hall.id === selectedHallId);
+  const selectedHallName = halls.find((hall) => hall.id === selectedHallId)?.name;
+  const visibleAlerts = selectedHallName ? alerts.filter((alert) => alert.hall_name === selectedHallName) : alerts;
 
   return (
     <div className="dashboard-root" dir="rtl">
@@ -343,6 +367,31 @@ export default function DashboardPage() {
                   <polyline points="21 3 21 9 15 9"/>
                 </svg>
               </button>
+              <div
+                title={ptt.statusText}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '7px 10px',
+                  borderRadius: 999,
+                  background: ptt.micState === 'blocked' ? '#fff7ed' : ptt.state === 'connected' ? '#ecfdf5' : '#f4f4f5',
+                  color: ptt.micState === 'blocked' ? '#c2410c' : ptt.state === 'connected' ? '#047857' : '#71717a',
+                  fontSize: 11,
+                  fontWeight: 800,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: 999,
+                    background: ptt.isTransmitting ? '#ef4444' : ptt.micState === 'blocked' ? '#f97316' : ptt.state === 'connected' ? '#10b981' : '#a1a1aa',
+                  }}
+                />
+                {ptt.isTransmitting ? 'PTT إرسال' : ptt.micState === 'blocked' ? 'الميكروفون محجوب' : ptt.state === 'connected' ? 'PTT متصل' : ptt.state === 'connecting' ? 'PTT يتصل' : 'PTT غير متصل'}
+              </div>
               {/* Notification bell */}
               <button
                 className="dashboard-icon-btn"
@@ -402,6 +451,15 @@ export default function DashboardPage() {
                   <path d="M12 1v2m0 18v2m-9-11h2m18 0h2m-2.636-7.364l-1.414 1.414M6.05 17.95l-1.414 1.414m0-14.728l1.414 1.414M17.95 17.95l1.414 1.414"/>
                 </svg>
               </button>
+              {onLogout && (
+                <button className="dashboard-icon-btn" title="تسجيل الخروج" onClick={onLogout}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                    <polyline points="16 17 21 12 16 7"/>
+                    <line x1="21" y1="12" x2="9" y2="12"/>
+                  </svg>
+                </button>
+              )}
             </div>
 
             {/* Center: nav items */}
@@ -456,12 +514,21 @@ export default function DashboardPage() {
               </div>
 
               {/* Left (in RTL): hall selector */}
-              <div className="dashboard-hall-select">
-                <span>القاعة</span>
+              <label className="dashboard-hall-select">
+                <select
+                  value={selectedHallId}
+                  onChange={(event) => setSelectedHallId(event.target.value)}
+                  style={{ border: 0, background: 'transparent', color: 'inherit', font: 'inherit', outline: 'none' }}
+                >
+                  <option value="all">كل القاعات</option>
+                  {halls.map((hall) => (
+                    <option key={hall.id} value={hall.id}>{hall.name}</option>
+                  ))}
+                </select>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <polyline points="6 9 12 15 18 9"/>
                 </svg>
-              </div>
+              </label>
             </div>
           )}
         </div>
@@ -472,7 +539,7 @@ export default function DashboardPage() {
         {activeNav === 'home' ? (
           activeTab === 'cases' ? (
             <CasesTab
-              alerts={alerts}
+              alerts={visibleAlerts}
               onViewAlert={openAlertModal}
               onPttStart={startPtt}
               onPttStop={stopPtt}
@@ -480,7 +547,7 @@ export default function DashboardPage() {
             />
           ) : (
               <CamerasTab
-                halls={halls}
+                halls={visibleHalls}
                 hallsLoaded={hallsLoaded}
                 statsByCamera={statsByCamera}
                 onClickCamera={openCameraModal}
@@ -517,6 +584,8 @@ export default function DashboardPage() {
           pttStatusText={ptt.statusText}
           onPttStart={startPtt}
           onPttStop={stopPtt}
+          onConfirmAlert={confirmAlert}
+          onCancelAlert={cancelAlert}
           onClose={closeModal}
         />
       )}

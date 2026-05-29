@@ -1,5 +1,5 @@
 import { apiUrl, authFetch } from '../config/api';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 
 function formatUptime(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -26,6 +26,7 @@ interface Alert {
   snapshot_file: string;
   video_file?: string | null;
   location: string;
+  status?: string;
 }
 
 interface CameraStats {
@@ -59,10 +60,12 @@ interface CameraModalProps {
   pttStatusText: string;
   onPttStart: () => void | Promise<void>;
   onPttStop: () => void;
+  onConfirmAlert?: (alert: Alert) => void | Promise<void>;
+  onCancelAlert?: (alert: Alert) => void | Promise<void>;
   onClose: () => void;
 }
 
-export default function CameraModal({ mode, alert, camera, stats, pttStatusText, onPttStart, onPttStop, onClose }: CameraModalProps) {
+export default function CameraModal({ mode, alert, camera, stats, pttStatusText, onPttStart, onPttStop, onConfirmAlert, onCancelAlert, onClose }: CameraModalProps) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-container" onClick={(e) => e.stopPropagation()}>
@@ -77,7 +80,7 @@ export default function CameraModal({ mode, alert, camera, stats, pttStatusText,
         {mode === 'camera' ? (
           <CameraView camera={camera} stats={stats} />
         ) : (
-          <AlertView alert={alert} pttStatusText={pttStatusText} onPttStart={onPttStart} onPttStop={onPttStop} />
+          <AlertView alert={alert} pttStatusText={pttStatusText} onPttStart={onPttStart} onPttStop={onPttStop} onConfirmAlert={onConfirmAlert} onCancelAlert={onCancelAlert} />
         )}
       </div>
     </div>
@@ -98,6 +101,7 @@ function CameraView({
   const [controls, setControls] = useState<Record<string, unknown>>({});
   const [toggling, setToggling] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const inFlightPathsRef = useRef<Set<string>>(new Set());
 
   const quality = typeof controls.quality === 'number' ? controls.quality : null;
   const resolution = typeof controls.resolution === 'string' ? controls.resolution : null;
@@ -115,7 +119,8 @@ function CameraView({
   }, [deviceId]);
 
   const post = useCallback(async (path: string) => {
-    if (!deviceId || toggling) return;
+    if (!deviceId || inFlightPathsRef.current.has(path)) return;
+    inFlightPathsRef.current.add(path);
     setToggling(true);
     try {
       const r = await authFetch(`/api/stream/cameras/${deviceId}${path}`, { method: 'POST' });
@@ -123,27 +128,35 @@ function CameraView({
         const d = await r.json();
         setControls(prev => ({ ...prev, ...d }));
       }
-    } finally { setToggling(false); }
-  }, [deviceId, toggling]);
+    } finally {
+      inFlightPathsRef.current.delete(path);
+      setToggling(inFlightPathsRef.current.size > 0);
+    }
+  }, [deviceId]);
 
   // Keyboard shortcuts — all pipeline controls from visualizer bottom bar
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.repeat) return;
+      let path: string | null = null;
       switch (e.key.toLowerCase()) {
-        case 'v': void post('/quality'); break;
-        case 'g': void post('/resolution'); break;
-        case 'r': void post('/archive'); break;
-        case 's': void post('/select-all'); break;
-        case 'c': void post('/clear-selection'); break;
-        case 't': void post('/toggle/neighbors'); break;
-        case 'd': void post('/toggle/papers'); break;
-        case 'f': void post('/toggle/phones'); break;
-        case 'l': void post('/toggle/gaze-lines'); break;
-        case 'w': void post('/toggle/timestamp'); break;
-        case 'p': void post('/toggle/panel'); break;
+        case 'v': path = '/quality'; break;
+        case 'g': path = '/resolution'; break;
+        case 'r': path = '/archive'; break;
+        case 's': path = '/select-all'; break;
+        case 'c': path = '/clear-selection'; break;
+        case 't': path = '/toggle/neighbors'; break;
+        case 'd': path = '/toggle/papers'; break;
+        case 'f': path = '/toggle/phones'; break;
+        case 'l': path = '/toggle/gaze-lines'; break;
+        case 'w': path = '/toggle/timestamp'; break;
+        case 'p': path = '/toggle/panel'; break;
       }
+      if (!path) return;
+      e.preventDefault();
+      void post(path);
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -309,11 +322,15 @@ function AlertView({
   pttStatusText,
   onPttStart,
   onPttStop,
+  onConfirmAlert,
+  onCancelAlert,
 }: {
   alert: Alert | null;
   pttStatusText: string;
   onPttStart: () => void | Promise<void>;
   onPttStop: () => void;
+  onConfirmAlert?: (alert: Alert) => void | Promise<void>;
+  onCancelAlert?: (alert: Alert) => void | Promise<void>;
 }) {
   if (!alert) return null;
 
@@ -416,6 +433,16 @@ function AlertView({
 
       {/* Action buttons */}
       <div className="modal-actions">
+        {alert.status !== 'confirmed' && (
+          <button className="alert-btn-primary" style={{ flex: 1, background: '#16a34a' }} onClick={() => void onConfirmAlert?.(alert)}>
+            تأكيد الحالة
+          </button>
+        )}
+        {alert.status !== 'cancelled' && (
+          <button className="alert-btn-primary" style={{ flex: 1, background: '#6b7280' }} onClick={() => void onCancelAlert?.(alert)}>
+            إلغاء بعد المراجعة
+          </button>
+        )}
         <button className="alert-btn-primary" style={{ flex: 1 }} onClick={downloadReport}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>

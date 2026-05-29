@@ -15,6 +15,7 @@ import {
 import { authFetch, apiUrl } from '../../config/api';
 import type { HallMonitoringStatus, HallReadiness } from '../../types/exams';
 import { useInvigilatorPtt } from '../../hooks/useInvigilatorPtt';
+import { isInsecureLanContext } from '../../lib/secureContext';
 
 interface FeedItem {
   device_id: string;
@@ -32,10 +33,16 @@ export default function HallMonitoringPage() {
   const [isChecking, setIsChecking] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [feeds, setFeeds] = useState<FeedItem[]>([]);
+  const [showAllAlerts, setShowAllAlerts] = useState(false);
   const navigate = useNavigate();
 
-  // PTT Hook — auto-connect so mic is ready in hall (invigilator talks to control_room_1)
+  // PTT Hook — auto-connect receive-only; mic permission is requested on press.
   const ptt = useInvigilatorPtt({ autoConnect: true });
+  const pttLabel =
+    ptt.isTransmitting ? 'يتحدث' :
+    ptt.micState === 'blocked' ? 'ميك محجوب' :
+    ptt.micState === 'ready' ? 'ميك جاهز' :
+    ptt.state === 'connected' ? 'PTT متصل' : 'غير متصل';
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -144,6 +151,7 @@ export default function HallMonitoringPage() {
   const isMonitoring = status?.is_active;
   // Use the first configured feed for the main view
   const primaryFeed = feeds.find((f) => f.source_configured) ?? feeds[0] ?? null;
+  const visibleAlerts = showAllAlerts ? (status?.alerts ?? []) : (status?.alerts ?? []).slice(0, 3);
 
   return (
     <div className="flex flex-col min-h-full">
@@ -162,18 +170,18 @@ export default function HallMonitoringPage() {
         </div>
         <div className="mr-auto flex items-center gap-2">
           {/* PTT connection badge */}
-          <div className={`flex items-center gap-1 px-2 py-1 rounded-lg ${
-            ptt.state === 'connected' ? 'bg-green-50' : 'bg-gray-50'
+          <div title={ptt.statusText} className={`flex items-center gap-1 px-2 py-1 rounded-lg ${
+            ptt.micState === 'blocked' ? 'bg-amber-50' : ptt.state === 'connected' ? 'bg-green-50' : 'bg-gray-50'
           }`}>
             {ptt.state === 'connected' ? (
-              <Wifi size={12} className="text-green-500" />
+              <Wifi size={12} className={ptt.micState === 'blocked' ? 'text-amber-500' : 'text-green-500'} />
             ) : (
               <WifiOff size={12} className="text-gray-400" />
             )}
             <span className={`text-[9px] font-bold uppercase ${
-              ptt.state === 'connected' ? 'text-green-600' : 'text-gray-400'
+              ptt.micState === 'blocked' ? 'text-amber-700' : ptt.state === 'connected' ? 'text-green-600' : 'text-gray-400'
             }`}>
-              {ptt.isTransmitting ? 'يتحدث' : ptt.state === 'connected' ? 'PTT' : 'غير متصل'}
+              {pttLabel}
             </span>
           </div>
           {isMonitoring ? (
@@ -254,6 +262,11 @@ export default function HallMonitoringPage() {
             <span>{error}</span>
           </div>
         )}
+        {isInsecureLanContext() && (
+          <div className="bg-amber-50 border border-amber-100 text-amber-800 px-4 py-3 rounded-xl mb-6 text-xs font-bold">
+            Microphone requires HTTPS on mobile. اتصال PTT سيبقى متصلاً للاستقبال، لكن الإرسال يحتاج HTTPS.
+          </div>
+        )}
 
         {!isMonitoring && readiness && (
           <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-2xl p-4">
@@ -317,20 +330,26 @@ export default function HallMonitoringPage() {
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-bold text-gray-900 uppercase tracking-tight">آخر التنبيهات</h3>
             {(status?.stats?.active_alerts ?? 0) > 0 && (
-              <span className="text-[10px] font-bold text-thaqib-primary px-2 py-0.5 bg-purple-50 rounded-full">عرض الكل</span>
+              <button
+                type="button"
+                onClick={() => setShowAllAlerts((value) => !value)}
+                className="text-[10px] font-bold text-thaqib-primary px-2 py-0.5 bg-purple-50 rounded-full"
+              >
+                {showAllAlerts ? 'عرض أقل' : 'عرض الكل'}
+              </button>
             )}
           </div>
 
           <div className="space-y-3">
-            {status?.alerts && status.alerts.length > 0 ? (
-              status.alerts.slice(0, 3).map((alert, idx) => (
+            {visibleAlerts.length > 0 ? (
+              visibleAlerts.map((alert, idx) => (
                 <div key={idx} className="flex items-start gap-3 p-3 bg-red-50/50 rounded-xl border border-red-100/50">
                   <div className="bg-red-100 p-2 rounded-lg text-red-600">
                     <AlertTriangle size={16} />
                   </div>
                   <div>
-                    <p className="text-xs font-bold text-gray-900 mb-0.5">{alert.type}</p>
-                    <p className="text-[10px] text-gray-500 leading-tight">{alert.message}</p>
+                    <p className="text-xs font-bold text-gray-900 mb-0.5">{alert.type || alert.event_type}</p>
+                    <p className="text-[10px] text-gray-500 leading-tight">{alert.message || alert.severity}</p>
                   </div>
                   <span className="mr-auto text-[9px] font-medium text-gray-400">منذ قليل</span>
                 </div>

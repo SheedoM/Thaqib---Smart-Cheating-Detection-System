@@ -96,9 +96,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {user.role === 'admin' ? (
+        {user.role === 'admin' || user.role === 'referee' ? (
           <>
-            <Route path="/dashboard/*" element={<DashboardPage />} />
+            <Route path="/dashboard/*" element={<DashboardPage onLogout={handleLogout} />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </>
         ) : user.role === 'invigilator' ? (
@@ -120,7 +120,7 @@ export default function App() {
         )}
         
         {/* Default redirect for / or any unknown route */}
-        <Route path="/" element={<Navigate to={user.role === 'admin' ? "/dashboard" : "/invigilator"} replace />} />
+        <Route path="/" element={<Navigate to={user.role === 'admin' || user.role === 'referee' ? "/dashboard" : "/invigilator"} replace />} />
       </Routes>
     </BrowserRouter>
   );

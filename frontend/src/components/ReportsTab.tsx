@@ -20,7 +20,15 @@ interface ReportData {
   actual_start: string | null;
   actual_end: string | null;
   student_count: number;
-  kpis: { total_events: number; high_severity: number; medium_severity: number; low_severity: number };
+  kpis: {
+    total_events: number;
+    high_severity: number;
+    medium_severity: number;
+    low_severity: number;
+    detected_alerts?: number;
+    confirmed_incidents?: number;
+    cancelled_incidents?: number;
+  };
   halls: Array<{
     hall_id: string;
     hall_name: string;
@@ -31,10 +39,17 @@ interface ReportData {
   }>;
   timeline: Array<{
     id: string;
+    alert_id?: string | null;
     event_type: string;
     severity: string;
     timestamp: string;
     confidence_score: number | null;
+    student_position?: Record<string, unknown>;
+    alert_status?: string;
+    resolution_notes?: string | null;
+    video_clip_path?: string | null;
+    audio_clip_path?: string | null;
+    snapshot_file?: string | null;
   }>;
 }
 
@@ -167,7 +182,11 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
                       </div>
                       <div className="border border-[#ff3636] text-[#ff3636] flex items-center gap-2 px-4 py-2 rounded-2xl">
                         <ShieldAlert size={18} />
-                        <span className="text-[16px] font-medium">{kpis?.high_severity ?? 0} تحذير عالي</span>
+                        <span className="text-[16px] font-medium">{kpis?.confirmed_incidents ?? 0} حالات مؤكدة</span>
+                      </div>
+                      <div className="border border-gray-300 text-gray-600 flex items-center gap-2 px-4 py-2 rounded-2xl">
+                        <ShieldAlert size={18} />
+                        <span className="text-[16px] font-medium">{kpis?.cancelled_incidents ?? 0} ملغاة</span>
                       </div>
                     </>
                   )}
@@ -224,16 +243,45 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
           {/* Event Timeline */}
           {timeline.length > 0 && (
             <div>
-              <h4 className="text-lg font-bold text-gray-800 mb-4">آخر الأحداث</h4>
-              <div className="space-y-2">
-                {timeline.map((ev) => (
-                  <div key={ev.id} className="flex items-center gap-4 p-3 bg-gray-50 rounded-xl">
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${ev.severity === 'high' ? 'bg-red-500' : ev.severity === 'medium' ? 'bg-yellow-500' : 'bg-green-500'}`} />
-                    <span className="flex-1 text-sm font-bold text-gray-800">{ev.event_type}</span>
-                    <span className="text-xs text-gray-400">{new Date(ev.timestamp).toLocaleTimeString('ar-EG')}</span>
-                    {ev.confidence_score && <span className="text-xs text-gray-400">{Math.round(ev.confidence_score * 100)}%</span>}
-                  </div>
-                ))}
+              <h4 className="text-lg font-bold text-gray-800 mb-4">سجل التنبيهات والمراجعة</h4>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 text-gray-500 font-bold">
+                      <th className="text-right px-4 py-3 rounded-r-xl">الوقت</th>
+                      <th className="text-right px-4 py-3">النوع</th>
+                      <th className="text-right px-4 py-3">الطالب</th>
+                      <th className="text-right px-4 py-3">الحالة</th>
+                      <th className="text-right px-4 py-3">الدليل</th>
+                      <th className="text-right px-4 py-3 rounded-l-xl">ملاحظات</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {timeline.map((ev) => {
+                      const trackId = ev.student_position?.track_id ?? '—';
+                      return (
+                        <tr key={ev.id} className="border-b border-gray-50 hover:bg-gray-50">
+                          <td className="px-4 py-3 text-gray-500">{new Date(ev.timestamp).toLocaleTimeString('ar-EG')}</td>
+                          <td className="px-4 py-3 font-bold text-gray-800">{ev.event_type}</td>
+                          <td className="px-4 py-3 text-gray-700">{String(trackId)}</td>
+                          <td className="px-4 py-3">
+                            <span className={`px-2 py-0.5 rounded-lg font-bold ${
+                              ev.alert_status === 'confirmed' ? 'bg-red-50 text-red-700' :
+                              ev.alert_status === 'cancelled' ? 'bg-gray-100 text-gray-600' :
+                              'bg-yellow-50 text-yellow-700'
+                            }`}>
+                              {ev.alert_status === 'confirmed' ? 'مؤكدة' : ev.alert_status === 'cancelled' ? 'ملغاة' : 'مكتشفة'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-gray-500">
+                            {ev.video_clip_path ? 'مقطع فيديو' : ev.snapshot_file ? 'لقطة' : ev.audio_clip_path ? 'صوت' : '—'}
+                          </td>
+                          <td className="px-4 py-3 text-gray-500">{ev.resolution_notes || '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
@@ -297,7 +345,7 @@ export default function ReportsTab({ initialReport = null, onBack }: { initialRe
                   <div className="flex flex-col gap-2 mb-6 w-full px-4">
                     <div className="flex items-center justify-end gap-2">
                       <span className="text-[16px] font-medium text-gray-400 group-hover:text-purple-200 transition-colors duration-300">
-                        {stats.events} حالات مؤكدة
+                        {stats.events} تنبيه
                       </span>
                       <ShieldAlert size={16} className="text-gray-400 group-hover:text-purple-200 transition-colors duration-300" />
                     </div>

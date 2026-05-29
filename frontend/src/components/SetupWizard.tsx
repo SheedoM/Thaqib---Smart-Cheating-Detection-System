@@ -10,6 +10,7 @@ export default function SetupWizard({ onSuccess }: SetupWizardProps) {
   const [formData, setFormData] = useState({
     institution_name: '',
     admin: '',
+    admin_password: '',
     logo_file: null as File | null,
   });
 
@@ -17,7 +18,7 @@ export default function SetupWizard({ onSuccess }: SetupWizardProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [installSuccess, setInstallSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [generatedCreds, setGeneratedCreds] = useState<{username: string, password: string} | null>(null);
+  const [generatedCreds, setGeneratedCreds] = useState<{username: string} | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -52,6 +53,7 @@ export default function SetupWizard({ onSuccess }: SetupWizardProps) {
       const payload = {
         institution_name: formData.institution_name,
         admin: formData.admin,
+        admin_password: formData.admin_password,
         logo_url: formData.logo_file ? formData.logo_file.name : null,
       };
 
@@ -99,7 +101,7 @@ export default function SetupWizard({ onSuccess }: SetupWizardProps) {
           
           {generatedCreds && (
             <div className="bg-white p-4 rounded-lg w-full border border-green-100 text-right space-y-3 shadow-sm mb-6">
-              <p className="text-sm text-gray-500 mb-2 font-bold">بيانات الدخول المؤقتة (يرجى حفظها):</p>
+              <p className="text-sm text-gray-500 mb-2 font-bold">بيانات الدخول</p>
               <div className="flex justify-between items-center bg-gray-50 p-2 rounded">
                 <button onClick={() => copyToClipboard(generatedCreds.username)} className="text-gray-400 hover:text-green-600">
                   <Copy size={16} />
@@ -109,15 +111,9 @@ export default function SetupWizard({ onSuccess }: SetupWizardProps) {
                   <span className="text-xs text-gray-400 block">:اسم المستخدم</span>
                 </div>
               </div>
-              <div className="flex justify-between items-center bg-gray-50 p-2 rounded">
-                <button onClick={() => copyToClipboard(generatedCreds.password)} className="text-gray-400 hover:text-green-600">
-                  <Copy size={16} />
-                </button>
-                <div>
-                  <span className="font-mono text-left inline-block w-full">{generatedCreds.password}</span>
-                  <span className="text-xs text-gray-400 block">:كلمة المرور</span>
-                </div>
-              </div>
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-2">
+                كلمة المرور هي التي أدخلتها في نموذج الإعداد ولا يتم إرجاعها من الخادم.
+              </p>
             </div>
           )}
 
@@ -147,6 +143,17 @@ export default function SetupWizard({ onSuccess }: SetupWizardProps) {
             value={formData.admin}
             onChange={handleInputChange}
             className="thaqib-input"
+            required
+          />
+
+          <input
+            type="password"
+            name="admin_password"
+            placeholder="كلمة مرور الادمن"
+            value={formData.admin_password}
+            onChange={handleInputChange}
+            className="thaqib-input"
+            minLength={12}
             required
           />
 

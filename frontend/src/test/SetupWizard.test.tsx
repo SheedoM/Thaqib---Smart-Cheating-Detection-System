@@ -13,7 +13,8 @@ describe('SetupWizard Component', () => {
   it('renders installation form', () => {
     render(<SetupWizard onSuccess={() => {}} />);
     expect(screen.getByPlaceholderText(/اسم الكلية/i)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/الادمن/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/^الادمن$/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/كلمة مرور الادمن/i)).toBeInTheDocument();
     expect(screen.getByText(/الشعار/i)).toBeInTheDocument();
   });
 
@@ -23,7 +24,7 @@ describe('SetupWizard Component', () => {
       ok: true,
       json: async () => ({ 
         status: 'success', 
-        generated_credentials: { username: 'admin', password: 'password123' } 
+        generated_credentials: { username: 'admin' } 
       }),
     });
 
@@ -32,8 +33,11 @@ describe('SetupWizard Component', () => {
     fireEvent.change(screen.getByPlaceholderText(/اسم الكلية/i), {
       target: { value: 'Test University' },
     });
-    fireEvent.change(screen.getByPlaceholderText(/الادمن/i), {
+    fireEvent.change(screen.getByPlaceholderText(/^الادمن$/i), {
       target: { value: 'superadmin' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/كلمة مرور الادمن/i), {
+      target: { value: 'VerySecure123!' },
     });
     
     fireEvent.click(screen.getByRole('button', { name: /حفظ/i }));

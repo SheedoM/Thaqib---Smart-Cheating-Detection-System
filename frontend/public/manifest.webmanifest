@@ -1,0 +1,25 @@
+{
+  "name": "Thaqib",
+  "short_name": "Thaqib",
+  "description": "Smart exam monitoring and invigilation",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fafafb",
+  "theme_color": "#44006E",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/thaqib-logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/thaqib-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

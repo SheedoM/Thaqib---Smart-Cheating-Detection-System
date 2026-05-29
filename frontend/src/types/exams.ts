@@ -28,9 +28,13 @@ export interface HallMonitoringStatus {
     active_alerts: number;
   };
   alerts: Array<{
+    id?: string;
     type: string;
     message: string;
+    event_type?: string;
+    severity?: string;
     timestamp: string;
+    confidence_score?: number | null;
   }>;
 }
 
