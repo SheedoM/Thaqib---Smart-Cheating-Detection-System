@@ -17,6 +17,7 @@ class UserBase(BaseModel):
     email: EmailStr
     full_name: str = Field(..., min_length=2, max_length=100)
     role: str = Field(..., pattern="^(admin|invigilator|referee)$")
+    image: Optional[str] = None
 
 class UserCreate(UserBase):
     password: str = Field(..., min_length=8, max_length=72)
@@ -36,9 +37,9 @@ class UserUpdate(BaseModel):
 class UserResponse(UserBase):
     id: uuid.UUID
     institution_id: uuid.UUID
-    image: Optional[str] = None
     status: str
     ptt_id: Optional[str] = None
+    image: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

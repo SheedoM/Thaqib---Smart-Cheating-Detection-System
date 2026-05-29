@@ -39,6 +39,7 @@ class User(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     # 'admin', 'referee', 'invigilator' — SRS §2.1
     ptt_id: Mapped[Optional[str]] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="active")
+    image: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Relationships
     institution: Mapped["Institution"] = relationship("Institution", back_populates="users")

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-import { apiUrl, authFetch } from '../config/api';
+import { authFetch, apiUrl } from '../config/api';
 
 interface Supervisor {
   id: string; full_name: string; username: string;
@@ -40,8 +40,11 @@ export default function SupervisorsTab() {
   return (
     <div className="p-8" dir="rtl">
       {/* Header */}
-      <div className="flex justify-between items-center mb-8">
-        <h2 className="text-3xl font-black text-[#2D005F]">المشرفين</h2>
+      <div className="flex justify-between items-center mb-10">
+        <div className="flex items-center gap-4">
+          <div className="w-1.5 h-10 bg-[#44006E] rounded-full"></div>
+          <h2 className="text-3xl font-black text-[#2D005F]">إدارة المشرفين</h2>
+        </div>
         <div className="flex gap-3 items-center">
           <div className="relative">
             <svg className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -49,9 +52,11 @@ export default function SupervisorsTab() {
               className="bg-white border border-gray-200 rounded-2xl py-2.5 pr-9 pl-4 outline-none focus:ring-2 focus:ring-purple-200 text-sm font-bold w-52 shadow-sm" />
           </div>
           <button onClick={() => { setEditing(null); setModal(true); }}
-            className="bg-[#00D261] hover:bg-[#00B554] text-white px-5 py-2.5 rounded-2xl font-black flex items-center gap-2 shadow-lg shadow-green-100 transition-all hover:-translate-y-0.5 active:scale-95 cursor-pointer text-sm">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            إضافة مشرف
+            className="bg-[#44006e] text-white font-black flex items-center justify-center gap-2 shadow-lg hover:shadow-xl transition-all hover:-translate-y-0.5 active:scale-95 cursor-pointer"
+            style={{ width: '200px', height: '50px', borderRadius: '18px' }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span className="text-[17px]">إضافة مشرف</span>
           </button>
         </div>
       </div>
@@ -102,9 +107,17 @@ function SupervisorCard({ s, onEdit, onDelete }: { s: Supervisor, onEdit: () => 
       {/* Avatar */}
       <div className="flex justify-center py-3">
         <div className="w-20 h-20 rounded-full overflow-hidden bg-gradient-to-br from-[#9351bb] to-[#44006E] flex items-center justify-center text-white text-2xl font-black shadow-md group-hover:scale-105 transition-transform duration-300">
-          {imageSrc
-            ? <img src={imageSrc} className="w-full h-full object-cover" alt={s.full_name} />
-            : initials}
+          {s.image ? (
+            <img 
+              src={s.image.startsWith('data:') || s.image.startsWith('http') ? s.image : apiUrl(s.image)} 
+              className="w-full h-full object-cover" 
+              alt={s.full_name} 
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+                (e.currentTarget.parentElement as HTMLElement).innerHTML = initials;
+              }}
+            />
+          ) : initials}
         </div>
       </div>
 
@@ -241,9 +254,21 @@ function SupervisorModal({ supervisor, onClose, onSuccess }: { supervisor: Super
             if (f) { setImageFile(f); const r = new FileReader(); r.onload = ev => setImage(ev.target?.result as string); r.readAsDataURL(f); }
           }} />
           <div onClick={() => fileRef.current?.click()} className="w-full h-24 bg-gray-50 border-2 border-dashed border-gray-200 rounded-2xl flex flex-col items-center justify-center cursor-pointer hover:border-[#44006E] hover:bg-purple-50 transition-all group relative overflow-hidden">
+<<<<<<< HEAD
             {imagePreviewSrc ? (
               <><img src={imagePreviewSrc} className="absolute inset-0 w-full h-full object-cover" alt="preview" />
                 <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-white font-black text-xs">تغيير الصورة</span></div></>
+=======
+            {image ? (
+              <>
+                <img 
+                  src={image.startsWith('data:') || image.startsWith('http') ? image : apiUrl(image)} 
+                  className="absolute inset-0 w-full h-full object-cover" 
+                  alt="preview" 
+                />
+                <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-white font-black text-xs">تغيير الصورة</span></div>
+              </>
+>>>>>>> 5917366 (Standardize UI buttons, add advanced exam filters, and fix supervisor image support on backend/frontend)
             ) : (
               <><div className="w-9 h-9 bg-gray-200 group-hover:bg-purple-100 rounded-xl flex items-center justify-center mb-1.5 transition-colors">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9351bb" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>

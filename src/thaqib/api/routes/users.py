@@ -100,7 +100,8 @@ def create_user(
         email=user.email,
         image=getattr(user, "image", None),
         role=user.role,
-        password_hash=get_password_hash(user.password)
+        password_hash=get_password_hash(user.password),
+        image=user.image
     )
     db.add(new_user)
     db.commit()

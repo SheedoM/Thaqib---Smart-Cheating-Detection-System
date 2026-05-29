@@ -68,6 +68,7 @@ export default function HallsTab({}: HallsTabProps) {
 
   return (
     <div className="halls-section" dir="rtl" style={{ padding: '24px' }}>
+<<<<<<< HEAD
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-2xl font-semibold text-[#333]">إدارة القاعات</h2>
         <button 
@@ -77,6 +78,23 @@ export default function HallsTab({}: HallsTabProps) {
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           <span>إضافة قاعة</span>
+=======
+      <div className="flex justify-between items-center mb-10">
+        <div className="flex items-center gap-4">
+          <div className="w-1.5 h-10 bg-[#44006E] rounded-full"></div>
+          <h2 className="text-3xl font-black text-[#2D005F]">إدارة القاعات</h2>
+        </div>
+        <button 
+          className="cursor-pointer flex items-center justify-center gap-2 group shadow-lg hover:shadow-xl transition-all bg-[#44006e] text-white font-black" 
+          style={{ width: '200px', height: '50px', borderRadius: '18px' }}
+          onClick={() => setIsAddModalOpen(true)}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="group-hover:rotate-90 transition-transform duration-300">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          <span className="text-[17px]">إضافة قاعة</span>
+>>>>>>> 5917366 (Standardize UI buttons, add advanced exam filters, and fix supervisor image support on backend/frontend)
         </button>
       </div>
 

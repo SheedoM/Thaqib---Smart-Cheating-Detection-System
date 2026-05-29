@@ -52,8 +52,19 @@ export default function ExamsTab() {
   const [editingExam, setEditingExam] = useState<ExamItem | null>(null);
   const [deletingExam, setDeletingExam] = useState<ExamItem | null>(null);
   const [viewingReport, setViewingReport] = useState<ExamItem | null>(null);
+<<<<<<< HEAD
   const [startingExam, setStartingExam] = useState<ExamItem | null>(null);
   const [users, setUsers] = useState<UserSimple[]>([]);
+=======
+  const [search, setSearch] = useState('');
+  
+  // Advanced filters state
+  const [halls, setHalls] = useState<HallSimple[]>([]);
+  const [hallFilter, setHallFilter] = useState('');
+  const [dateFilter, setDateFilter] = useState('');
+  const [timeFilter, setTimeFilter] = useState('');
+  const [activeStatus, setActiveStatus] = useState<'upcoming' | 'past' | 'all'>('all');
+>>>>>>> 5917366 (Standardize UI buttons, add advanced exam filters, and fix supervisor image support on backend/frontend)
 
   const fetchExams = async () => {
     try {
@@ -79,6 +90,7 @@ export default function ExamsTab() {
     } catch (err) { console.error('Delete failed', err); }
   };
 
+<<<<<<< HEAD
   const fetchUsers = async () => {
     try {
       const res = await authFetch('/api/users/');
@@ -101,6 +113,20 @@ export default function ExamsTab() {
     return acc;
   }, {});
 
+=======
+  const fetchHallsList = async () => {
+    try {
+      const res = await authFetch('/api/halls/');
+      if (res.ok) setHalls(await res.json());
+    } catch (err) { console.error('Failed to fetch halls list', err); }
+  };
+
+  useEffect(() => { 
+    fetchExams(); 
+    fetchHallsList();
+  }, []);
+  
+>>>>>>> 5917366 (Standardize UI buttons, add advanced exam filters, and fix supervisor image support on backend/frontend)
   if (viewingReport) {
     return <ReportsTab initialReport={viewingReport as any} onBack={() => setViewingReport(null)} />;
   }
@@ -112,13 +138,84 @@ export default function ExamsTab() {
           <div className="w-1.5 h-10 bg-[#44006E] rounded-full"></div>
           <h2 className="text-3xl font-black text-[#2D005F]">إدارة الإمتحانات</h2>
         </div>
-        <button
-          onClick={() => { setEditingExam(null); setIsModalOpen(true); }}
-          className="bg-[#00D261] hover:bg-[#00B554] text-white px-7 py-3 rounded-[18px] font-black flex items-center gap-2 shadow-lg shadow-green-100 transition-all hover:-translate-y-0.5 active:scale-95 cursor-pointer"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-          إضافة إمتحان
-        </button>
+        <div className="flex gap-3 items-center">
+          <div className="relative">
+            <svg className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" placeholder="بحث باسم المادة..." value={search} onChange={e => setSearch(e.target.value)}
+              className="bg-white border border-gray-200 rounded-2xl py-2.5 pr-9 pl-4 outline-none focus:ring-2 focus:ring-purple-200 text-sm font-bold w-64 shadow-sm" />
+          </div>
+          <button
+            onClick={() => { setEditingExam(null); setIsModalOpen(true); }}
+            className="bg-[#44006e] text-white font-black flex items-center justify-center gap-2 shadow-lg hover:shadow-xl transition-all hover:-translate-y-0.5 active:scale-95 cursor-pointer"
+            style={{ width: '200px', height: '50px', borderRadius: '18px' }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <span className="text-[17px]">إضافة إمتحان</span>
+          </button>
+        </div>
+      </div>
+      
+      {/* ── Tabs & Filters ── */}
+      <div className="mb-8 space-y-6">
+        {/* Status Tabs */}
+        <div className="flex bg-gray-100/50 p-1.5 rounded-2xl w-fit">
+          {[
+            { id: 'all', label: 'الكل' },
+            { id: 'upcoming', label: 'القادمة' },
+            { id: 'past', label: 'السابقة' }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveStatus(tab.id as any)}
+              className={`px-8 py-2.5 rounded-xl font-black text-sm transition-all cursor-pointer ${activeStatus === tab.id ? 'bg-white text-[#44006E] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Advanced Filter Bar */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Hall Filter */}
+          <div className="relative group">
+             <label className="absolute -top-2 right-4 bg-gray-50 px-2 text-[10px] font-black text-gray-400 z-10">فلترة بالقاعة</label>
+             <select 
+               value={hallFilter} 
+               onChange={e => setHallFilter(e.target.value)}
+               className="w-full bg-white border border-gray-100 rounded-2xl py-3 px-4 outline-none focus:ring-2 focus:ring-purple-200 font-bold text-sm appearance-none shadow-sm cursor-pointer"
+             >
+               <option value="">جميع القاعات</option>
+               {halls.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
+             </select>
+          </div>
+
+          {/* Date Filter */}
+          <div className="relative group">
+             <label className="absolute -top-2 right-4 bg-gray-50 px-2 text-[10px] font-black text-gray-400 z-10">فلترة بالتاريخ</label>
+             <input 
+               type="date"
+               value={dateFilter}
+               onChange={e => setDateFilter(e.target.value)}
+               className="w-full bg-white border border-gray-100 rounded-2xl py-3 px-4 outline-none focus:ring-2 focus:ring-purple-200 font-bold text-sm shadow-sm cursor-pointer"
+             />
+             {dateFilter && <button onClick={() => setDateFilter('')} className="absolute left-10 top-1/2 -translate-y-1/2 text-gray-400 hover:text-red-500">✕</button>}
+          </div>
+
+          {/* Time Filter */}
+          <div className="relative group">
+             <label className="absolute -top-2 right-4 bg-gray-50 px-2 text-[10px] font-black text-gray-400 z-10">فلترة بالوقت</label>
+             <select 
+               value={timeFilter} 
+               onChange={e => setTimeFilter(e.target.value)}
+               className="w-full bg-white border border-gray-100 rounded-2xl py-3 px-4 outline-none focus:ring-2 focus:ring-purple-200 font-bold text-sm appearance-none shadow-sm cursor-pointer"
+             >
+               <option value="">جميع الفترات</option>
+               <option value="الفترة الأولي">الفترة الأولى</option>
+               <option value="الفترة الثانية">الفترة الثانية</option>
+               <option value="الفترة الثالثة">الفترة الثالثة</option>
+             </select>
+          </div>
+        </div>
       </div>
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
@@ -134,7 +231,19 @@ export default function ExamsTab() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-          {exams.map(exam => (
+          {exams.filter(ex => {
+            const matchesSearch = ex.exam_name.toLowerCase().includes(search.toLowerCase());
+            const matchesHall = hallFilter ? ex.halls?.some(h => h.id === hallFilter) : true;
+            const matchesDate = dateFilter ? ex.scheduled_start.startsWith(dateFilter) : true;
+            const matchesTime = timeFilter ? (ex.period === timeFilter || ex.configuration?.period === timeFilter) : true;
+            
+            const now = new Date();
+            const examDate = new Date(ex.scheduled_start);
+            const isPast = examDate < now;
+            const matchesStatus = activeStatus === 'all' ? true : (activeStatus === 'past' ? isPast : !isPast);
+            
+            return matchesSearch && matchesHall && matchesDate && matchesTime && matchesStatus;
+          }).map(exam => (
             <ExamCard
               key={exam.id}
               exam={exam}
