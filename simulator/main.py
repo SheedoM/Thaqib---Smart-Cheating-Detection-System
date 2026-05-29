@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Load configuration
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
+DEFAULT_VIDEOS_DIR = Path(os.environ.get("VIDEOS_DIR", Path(__file__).parent / "test_videos"))
 
 
 def load_config() -> dict:
@@ -36,6 +38,25 @@ def load_config() -> dict:
         with open(CONFIG_PATH, "r") as f:
             return yaml.safe_load(f) or {}
     return {"cameras": {}, "server": {"jpeg_quality": 85, "frame_skip": 1}}
+
+
+def resolve_video_path(video_path: str) -> str:
+    """Resolve Docker `/app/videos` config paths for local simulator runs."""
+    path = Path(video_path)
+    if path.exists():
+        return str(path)
+
+    candidates: list[Path] = []
+    if path.is_absolute():
+        candidates.append(DEFAULT_VIDEOS_DIR / path.name)
+    else:
+        candidates.append((CONFIG_PATH.parent / path).resolve())
+        candidates.append(DEFAULT_VIDEOS_DIR / path.name)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return video_path
 
 
 CONFIG = load_config()
@@ -178,7 +199,7 @@ def get_or_create_streamer(camera_id: str) -> VideoStreamer:
     with stream_lock:
         if camera_id not in active_streams:
             config = CAMERA_CONFIGS.get(camera_id, {})
-            video_path = config.get("video_path", f"/app/videos/{camera_id}.mp4")
+            video_path = resolve_video_path(config.get("video_path", f"/app/videos/{camera_id}.mp4"))
             fps = config.get("fps", 30)
             resolution = config.get("resolution", [1280, 720])
 
@@ -193,6 +214,23 @@ def get_or_create_streamer(camera_id: str) -> VideoStreamer:
             active_streams[camera_id] = streamer
 
         return active_streams[camera_id]
+
+
+def camera_readiness() -> list[dict]:
+    """Return lightweight video availability details for configured cameras."""
+    cameras = []
+    for cam_id, config in CAMERA_CONFIGS.items():
+        video_path = config.get("video_path", "")
+        resolved_path = resolve_video_path(video_path)
+        cameras.append(
+            {
+                "id": cam_id,
+                "video_path": video_path,
+                "resolved_video_path": resolved_path,
+                "video_exists": Path(resolved_path).exists(),
+            }
+        )
+    return cameras
 
 
 async def generate_mjpeg_stream(camera_id: str):
@@ -251,10 +289,27 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    cameras = camera_readiness()
+    missing_videos = [camera["id"] for camera in cameras if not camera["video_exists"]]
     return {
         "status": "healthy",
+        "ready": len(missing_videos) == 0,
         "active_streams": len(active_streams),
         "cameras_configured": len(CAMERA_CONFIGS),
+        "missing_videos": missing_videos,
+    }
+
+
+@app.get("/ready")
+async def readiness_check():
+    """Readiness endpoint that makes missing video mounts obvious."""
+    cameras = camera_readiness()
+    missing_videos = [camera["id"] for camera in cameras if not camera["video_exists"]]
+    return {
+        "ready": len(missing_videos) == 0,
+        "cameras_configured": len(CAMERA_CONFIGS),
+        "missing_videos": missing_videos,
+        "cameras": cameras,
     }
 
 
@@ -264,10 +319,12 @@ async def list_cameras():
     cameras = []
     for cam_id, config in CAMERA_CONFIGS.items():
         video_path = config.get("video_path", "")
-        exists = Path(video_path).exists()
+        resolved_path = resolve_video_path(video_path)
+        exists = Path(resolved_path).exists()
         cameras.append({
             "id": cam_id,
             "video_path": video_path,
+            "resolved_video_path": resolved_path,
             "video_exists": exists,
             "fps": config.get("fps", 30),
             "resolution": config.get("resolution", [1280, 720]),
@@ -331,11 +388,13 @@ async def camera_info(camera_id: str):
 
     config = CAMERA_CONFIGS[camera_id]
     video_path = config.get("video_path", "")
+    resolved_path = resolve_video_path(video_path)
 
     info = {
         "id": camera_id,
         "video_path": video_path,
-        "video_exists": Path(video_path).exists(),
+        "resolved_video_path": resolved_path,
+        "video_exists": Path(resolved_path).exists(),
         "fps": config.get("fps", 30),
         "resolution": config.get("resolution", [1280, 720]),
         "stream_url": f"/camera/{camera_id}/feed",

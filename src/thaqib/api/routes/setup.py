@@ -17,6 +17,7 @@ router = APIRouter()
 class SetupSystemPayload(BaseModel):
     institution_name: str = Field(..., min_length=2, max_length=150)
     admin: str = Field(..., min_length=2, max_length=100)
+    admin_password: str = Field(..., min_length=12, max_length=128)
     logo_url: str | None = Field(None, max_length=500)
 
 @router.get("/status")
@@ -57,17 +58,15 @@ def install_system(
     db.add(inst)
     db.flush() # flush to get the inst.id
     
-    # Generate robust defaults from the 3 variables format
+    # Generate robust defaults from the setup form.
     generated_username = payload.admin.lower().strip().replace(" ", "_")
     generated_email = f"{generated_username}@admin.local"
-    # Using a robust default password for the initial admin
-    default_password = "Admin_Password123!"
     
     # 2. Create Admin User
     admin_user = User(
         institution_id=inst.id,
         username=generated_username,
-        password_hash=get_password_hash(default_password),
+        password_hash=get_password_hash(payload.admin_password),
         full_name=payload.admin,
         email=generated_email,
         role="admin",
@@ -85,6 +84,5 @@ def install_system(
         "admin_id": admin_user.id,
         "generated_credentials": {
             "username": generated_username,
-            "password": default_password
         }
     }

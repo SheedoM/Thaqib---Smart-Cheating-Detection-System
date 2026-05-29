@@ -9,7 +9,7 @@ from src.thaqib.db.database import get_db
 from src.thaqib.db.models.exams import ExamSession, Assignment
 from src.thaqib.db.models.infrastructure import Device, Hall
 from src.thaqib.db.models.users import User
-from src.thaqib.db.models.events import DetectionEvent
+from src.thaqib.db.models.events import Alert, DetectionEvent
 from src.thaqib.schemas.exams import (
     ExamSessionCreate, ExamSessionResponse, ExamSessionUpdate, 
     AssignmentCreate, AssignmentResponse, AssignmentDetailedResponse
@@ -84,6 +84,14 @@ def _microphone_readiness(device: Device) -> dict[str, Any]:
         "status": "passed" if healthy else "failed",
         "message": "Microphone is marked online." if healthy else f"Microphone status is {device.status or 'unknown'}.",
     }
+
+
+def _aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _get_session_hall_and_assignment(
@@ -316,6 +324,8 @@ def get_hall_monitoring_status(
     recent_list = [
         {
             "id": str(e.id),
+            "type": e.event_type,
+            "message": f"{e.event_type} - {e.severity}",
             "event_type": e.event_type,
             "severity": e.severity,
             "timestamp": e.timestamp.isoformat(),
@@ -557,10 +567,23 @@ def get_session_report(
         .all()
     )
 
+    alerts = (
+        db.query(Alert)
+        .filter(Alert.exam_session_id == session_id)
+        .all()
+    )
+    alerts_by_event_id = {
+        str(alert.detection_event_id): alert
+        for alert in alerts
+        if alert.detection_event_id is not None
+    }
+
     total_events = len(events)
     high_severity = sum(1 for e in events if e.severity == "high")
     medium_severity = sum(1 for e in events if e.severity == "medium")
     low_severity = sum(1 for e in events if e.severity == "low")
+    confirmed_incidents = sum(1 for a in alerts if a.status == "confirmed")
+    cancelled_incidents = sum(1 for a in alerts if a.status in {"cancelled", "false_positive"})
 
     # Hall summaries
     hall_summaries = []
@@ -573,12 +596,15 @@ def get_session_report(
         if hall_assignments:
             a = hall_assignments[0]
             if a.monitoring_started_at and a.monitoring_ended_at:
+                started_at = _aware_utc(a.monitoring_started_at)
+                ended_at = _aware_utc(a.monitoring_ended_at)
                 duration_minutes = int(
-                    (a.monitoring_ended_at - a.monitoring_started_at).total_seconds() / 60
+                    (ended_at - started_at).total_seconds() / 60
                 )
             elif a.monitoring_started_at:
+                started_at = _aware_utc(a.monitoring_started_at)
                 duration_minutes = int(
-                    (datetime.now() - a.monitoring_started_at).total_seconds() / 60
+                    (datetime.now(timezone.utc) - started_at).total_seconds() / 60
                 )
         hall_events = [e for e in events if str(e.device_id) in [
             str(d.id) for d in hall.devices if d.deleted_at is None
@@ -593,16 +619,27 @@ def get_session_report(
         })
 
     # Timeline: last 20 events
-    timeline = [
-        {
+    timeline = []
+    for e in events[-20:]:
+        alert = alerts_by_event_id.get(str(e.id))
+        metadata = e.metadata_json or {}
+        timeline.append({
             "id": str(e.id),
+            "alert_id": str(alert.id) if alert else None,
             "event_type": e.event_type,
             "severity": e.severity,
             "timestamp": e.timestamp.isoformat(),
             "confidence_score": float(e.confidence_score) if e.confidence_score else None,
-        }
-        for e in events[-20:]
-    ]
+            "student_position": e.student_position,
+            "alert_status": alert.status if alert else "detected",
+            "confirmed_at": alert.confirmed_at.isoformat() if alert and alert.confirmed_at else None,
+            "cancelled_at": alert.cancelled_at.isoformat() if alert and alert.cancelled_at else None,
+            "resolution_notes": alert.resolution_notes if alert else None,
+            "video_clip_path": e.video_clip_path,
+            "audio_clip_path": e.audio_clip_path,
+            "snapshot_file": metadata.get("snapshot_file"),
+            "device_id": str(e.device_id) if e.device_id else None,
+        })
 
     return {
         "session_id": str(session.id),
@@ -619,6 +656,9 @@ def get_session_report(
             "high_severity": high_severity,
             "medium_severity": medium_severity,
             "low_severity": low_severity,
+            "detected_alerts": len(alerts),
+            "confirmed_incidents": confirmed_incidents,
+            "cancelled_incidents": cancelled_incidents,
         },
         "halls": hall_summaries,
         "timeline": timeline,

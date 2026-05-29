@@ -1,5 +1,7 @@
+import json
 import logging
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from src.thaqib.api.dependencies import RequireRole
 from src.thaqib.api.ws_manager import manager
 from src.thaqib.config.settings import get_settings
 from src.thaqib.core.security import decode_token
@@ -10,6 +12,17 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Push-to-Talk"])
 settings = get_settings()
+require_ptt_status_user = RequireRole(["admin", "referee", "invigilator"])
+
+
+@router.get("/status")
+async def ptt_status(_: User = Depends(require_ptt_status_user)):
+    """Expose lightweight PTT connection diagnostics for dashboards."""
+    connected_clients = sorted(manager.active_connections.keys())
+    return {
+        "connected_count": len(connected_clients),
+        "connected_clients": connected_clients,
+    }
 
 
 async def _authenticated_ptt_identity(websocket: WebSocket) -> str | None:
@@ -73,7 +86,6 @@ async def ptt_websocket_endpoint(websocket: WebSocket, client_id: str):
             elif "text" in message:
                 data = message["text"]
                 try:
-                    import json
                     parsed = json.loads(data)
                     msg_type = parsed.get("type")
                     target_id = parsed.get("target_id")

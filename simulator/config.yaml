@@ -4,17 +4,17 @@
 cameras:
   # Hall 101 cameras
   hall101_cam_front:
-    video_path: ./test_videos/cam1.mp4
+    video_path: /app/videos/cam1.mp4
     fps: 30
     resolution: [1280, 720]
     
   hall101_cam_back:
-    video_path: ./test_videos/cam2.mp4
+    video_path: /app/videos/cam2.mp4
     fps: 30
     resolution: [1280, 720]
     
   hall101_cam_side:
-    video_path: ./test_videos/cam1.mp4
+    video_path: /app/videos/cam1.mp4
     fps: 30
     resolution: [1280, 720]
     

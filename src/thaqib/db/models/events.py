@@ -129,6 +129,10 @@ class Alert(Base, UUIDMixin, TimestampMixin):
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     resolution_notes: Mapped[Optional[str]] = mapped_column(String(1000))
     escalated: Mapped[bool] = mapped_column(Boolean, default=False)
+    confirmed_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    cancelled_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Relationships
     exam_session: Mapped["ExamSession"] = relationship(
@@ -140,4 +144,12 @@ class Alert(Base, UUIDMixin, TimestampMixin):
     group_event: Mapped[Optional["GroupEvent"]] = relationship(
         "GroupEvent", back_populates="alerts"
     )
-    claimed_user: Mapped[Optional["User"]] = relationship("User")
+    claimed_user: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[claimed_by]
+    )
+    confirmed_user: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[confirmed_by]
+    )
+    cancelled_user: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[cancelled_by]
+    )

@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session, selectinload
 from src.thaqib.db.database import SessionLocal
 from src.thaqib.db.models.infrastructure import Device, Hall
 from src.thaqib.db.models.exams import Assignment
+from src.thaqib.db.models.events import Alert, DetectionEvent
 from src.thaqib.api.dependencies import RequireRole
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,10 @@ def _safe_slug(value: str) -> str:
             allowed.append("_")
     out = "".join(allowed).strip("_")
     return out or "unknown"
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _alerts_prefix_dir(camera: CameraRuntime, created_at_iso: str) -> Path:
@@ -77,6 +82,7 @@ class CameraRuntime:
     hall_id: str
     hall_name: str
     source: str
+    session_id: str | None = None
     thread: threading.Thread | None = None
     stop_event: threading.Event = field(default_factory=threading.Event)
     frame_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -131,7 +137,7 @@ def _poll_for_alert_clip(
     try:
         created_at = datetime.fromisoformat(created_at_iso)
     except Exception:
-        created_at = datetime.now()
+        created_at = _now_utc()
 
     deadline = time.time() + timeout_s
     patterns = [
@@ -153,7 +159,7 @@ def _poll_for_alert_clip(
             except OSError:
                 continue
             mtime = st.st_mtime
-            if datetime.fromtimestamp(mtime) < created_at:
+            if datetime.fromtimestamp(mtime, timezone.utc) < created_at:
                 continue
             if mtime > best_mtime:
                 best = p
@@ -180,6 +186,18 @@ def _poll_for_alert_clip(
                         except Exception:
                             rel_path = best.name
                         a["video_file"] = rel_path
+                        db = SessionLocal()
+                        try:
+                            alert = db.query(Alert).filter(Alert.id == uuid.UUID(alert_id)).first()
+                            if alert and alert.detection_event:
+                                alert.detection_event.video_clip_path = rel_path
+                                db.add(alert.detection_event)
+                                db.commit()
+                        except Exception as exc:
+                            db.rollback()
+                            logger.error("Failed to attach alert clip to persisted event: %s", exc)
+                        finally:
+                            db.close()
                         return
             return
 
@@ -283,7 +301,7 @@ def _load_active_camera_rows(db: Session) -> list[tuple[Hall, Device]]:
         .all()
     )
     
-    active_pairs: list[tuple[Hall, Device]] = []
+    active_pairs: list[tuple[uuid.UUID, Hall, Device]] = []
     for assignment in active_assignments:
         hall = assignment.hall
         if not hall or hall.deleted_at is not None:
@@ -297,7 +315,7 @@ def _load_active_camera_rows(db: Session) -> list[tuple[Hall, Device]]:
             source = (device.stream_url or "").strip()
             if not source:
                 continue
-            active_pairs.append((hall, device))
+            active_pairs.append((assignment.exam_session_id, hall, device))
     return active_pairs
 
 
@@ -411,8 +429,53 @@ def _save_alert_snapshot(frame: np.ndarray, camera: CameraRuntime, track_id: int
     return rel_path
 
 
+def _persist_stream_alert(camera: CameraRuntime, state: Any, alert_data: dict[str, Any]) -> str | None:
+    if not camera.session_id:
+        return None
+
+    db = SessionLocal()
+    try:
+        event = DetectionEvent(
+            exam_session_id=uuid.UUID(camera.session_id),
+            device_id=uuid.UUID(camera.device_id),
+            event_type=alert_data.get("event_type") or "gaze_alignment",
+            severity=alert_data.get("severity") or "high",
+            student_position={
+                "track_id": getattr(state, "track_id", None),
+                "looking_at": getattr(state, "looking_at_neighbor_id", None),
+            },
+            timestamp=datetime.fromisoformat(alert_data["timestamp"]),
+            confidence_score=None,
+            video_clip_path=alert_data.get("video_file"),
+            metadata_json={
+                "snapshot_file": alert_data.get("snapshot_file"),
+                "camera_identifier": camera.identifier,
+                "camera_name": camera.camera_name,
+                "hall_id": camera.hall_id,
+                "hall_name": camera.hall_name,
+                "stream_alert_id": alert_data.get("id"),
+            },
+        )
+        alert = Alert(
+            exam_session_id=uuid.UUID(camera.session_id),
+            detection_event=event,
+            alert_type="tier_2",
+            status="pending",
+        )
+        db.add(alert)
+        db.commit()
+        db.refresh(alert)
+        return str(alert.id)
+    except Exception as exc:
+        db.rollback()
+        logger.error("Failed to persist stream alert: %s", exc)
+        return None
+    finally:
+        db.close()
+
+
 def _run_pipeline(camera: CameraRuntime) -> None:
-    from thaqib.video.pipeline import VideoPipeline, StudentState
+    from src.thaqib.video.pipeline import VideoPipeline, StudentState
 
     parsed_source = _parse_source(camera.source)
     logger.info("Starting pipeline for %s (%s)", camera.identifier, parsed_source)
@@ -430,7 +493,7 @@ def _run_pipeline(camera: CameraRuntime) -> None:
         if frame_img is None:
             return
 
-        created_at = datetime.now().isoformat()
+        created_at = _now_utc().isoformat()
         rel_prefix = _alerts_prefix_dir(camera, created_at)
         filename = _save_alert_snapshot(frame_img, camera, state.track_id, created_at)
         alert_data = {
@@ -449,6 +512,9 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             "video_file": None,
             "location": f"{camera.hall_name} - {camera.camera_name}",
         }
+        persisted_alert_id = _persist_stream_alert(camera, state, alert_data)
+        if persisted_alert_id:
+            alert_data["id"] = persisted_alert_id
 
         with _alerts_lock:
             _alerts.insert(0, alert_data)
@@ -487,14 +553,14 @@ def _run_pipeline(camera: CameraRuntime) -> None:
         if not started:
             camera.stats["is_running"] = False
             camera.stats["last_error"] = f"Failed to open camera source: {camera.source}"
-            camera.stats["last_error_at"] = datetime.now().isoformat()
+            camera.stats["last_error_at"] = _now_utc().isoformat()
             logger.error("Camera %s failed to open source: %s", camera.identifier, camera.source)
             return
 
         camera.stats["is_running"] = True
         camera.stats["last_error"] = None
         camera.stats["last_error_at"] = None
-        camera.stats["started_at"] = datetime.now().isoformat()
+        camera.stats["started_at"] = _now_utc().isoformat()
         camera.stats["frame_drops"] = 0
 
         # Throttle JPEG encoding rate to reduce CPU and avoid UI freezes.
@@ -547,7 +613,7 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             uptime = 0
             if started_at:
                 try:
-                    uptime = int((datetime.now() - datetime.fromisoformat(started_at)).total_seconds())
+                    uptime = int((_now_utc() - datetime.fromisoformat(started_at)).total_seconds())
                 except Exception:
                     pass
 
@@ -567,7 +633,7 @@ def _run_pipeline(camera: CameraRuntime) -> None:
     except Exception:
         logger.exception("Pipeline error for camera %s", camera.identifier)
         camera.stats["last_error"] = "Pipeline error (see server logs)"
-        camera.stats["last_error_at"] = datetime.now().isoformat()
+        camera.stats["last_error_at"] = _now_utc().isoformat()
     finally:
         try:
             pipeline.stop()
@@ -590,7 +656,7 @@ def _refresh_camera_states() -> None:
     finally:
         db.close()
 
-    desired_ids = {str(device.id) for _, device in active_pairs}
+    desired_ids = {str(device.id) for _, _, device in active_pairs}
 
     with _manager_lock:
         stale_ids = [device_id for device_id in _camera_states if device_id not in desired_ids]
@@ -598,7 +664,7 @@ def _refresh_camera_states() -> None:
             _stop_camera_runtime(_camera_states[device_id])
             del _camera_states[device_id]
 
-        for hall, device in active_pairs:
+        for session_id, hall, device in active_pairs:
             device_id = str(device.id)
             runtime = _camera_states.get(device_id)
             source = (device.stream_url or "").strip()
@@ -615,6 +681,7 @@ def _refresh_camera_states() -> None:
                 hall_id=str(hall.id),
                 hall_name=hall.name,
                 source=source,
+                session_id=str(session_id),
             )
             runtime.thread = threading.Thread(
                 target=_run_pipeline,
@@ -634,7 +701,7 @@ def start_hall_monitoring(hall_id: uuid.UUID, session_id: uuid.UUID, db: Session
         Assignment.hall_id == hall_id
     ).first()
     if assignment:
-        assignment.monitoring_started_at = datetime.now()
+        assignment.monitoring_started_at = _now_utc()
         # Clear ended_at so re-start after stop works correctly (1D fix)
         assignment.monitoring_ended_at = None
         
@@ -674,6 +741,7 @@ def start_hall_monitoring(hall_id: uuid.UUID, session_id: uuid.UUID, db: Session
                 hall_id=str(hall.id),
                 hall_name=hall.name,
                 source=source,
+                session_id=str(session_id),
             )
             runtime.thread = threading.Thread(
                 target=_run_pipeline,
@@ -693,7 +761,7 @@ def stop_hall_monitoring(hall_id: uuid.UUID, session_id: uuid.UUID, db: Session)
         Assignment.hall_id == hall_id
     ).first()
     if assignment:
-        assignment.monitoring_ended_at = datetime.now()
+        assignment.monitoring_ended_at = _now_utc()
         
         # Check if all halls in this session have finished monitoring
         session = assignment.exam_session
@@ -708,9 +776,19 @@ def stop_hall_monitoring(hall_id: uuid.UUID, session_id: uuid.UUID, db: Session)
             Assignment.monitoring_ended_at.is_(None)
         ).count()
         
-        if monitoring_halls_count == 0:
-            # If nothing is currently monitoring, check if all halls have at least been touched or if we want to force completion
-            # For now, if the last active hall stops, we mark the session as completed
+        ended_hall_ids = {
+            row.hall_id
+            for row in db.query(Assignment).filter(
+                Assignment.exam_session_id == session_id,
+                Assignment.monitoring_started_at.isnot(None),
+                Assignment.monitoring_ended_at.isnot(None),
+            ).all()
+        }
+        all_linked_halls_finished = bool(session_hall_ids) and all(
+            hall_id in ended_hall_ids for hall_id in session_hall_ids
+        )
+
+        if monitoring_halls_count == 0 and all_linked_halls_finished:
             session.status = "completed"
             if not session.actual_end:
                 session.actual_end = assignment.monitoring_ended_at
