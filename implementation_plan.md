@@ -1,655 +1,252 @@
-# Invigilator Dashboard — Implementation Plan (v3 — Final)
+# Thaqib — Comprehensive Project Review
 
-## Decisions Locked ✅
-
-| Decision | Choice |
-|---|---|
-| Platform | PWA (same Vite + React app, role-based routing) |
-| Live camera feeds for invigilator | No — snapshots + PTT instead |
-| Alert routing | Option A — referee-mediated (referee claims → PTT → invigilator) |
-| Who can start/stop monitoring | Both invigilator AND referee/admin (fallback) |
-| Push notifications | Skip for now — in-app WebSocket alerts are sufficient |
-| Monitoring scope | **Per-hall** — invigilator starts/stops only their assigned hall |
+> Full-stack evaluation from the perspective of the project's context: a **Smart Cheating Detection System** with an admin dashboard, invigilator mobile interface, AI video pipeline, and PTT communication layer.
 
 ---
 
-## 1. Critical Schema Gap: Assignment Needs `hall_id`
+## Executive Summary
 
-### The Problem
+The project has a solid foundation: well-structured SQLAlchemy models, cookie-based JWT auth with refresh rotation, a working AI video pipeline with annotation overlays, and polished Arabic RTL interfaces. However, the review uncovered **3 reported bugs** and **14+ additional issues** across security, functionality, UX, and code quality.
 
-The user clarified: **each invigilator is assigned to a single hall**, not to the entire session. But the current `Assignment` model is:
+---
 
-```python
-class Assignment(Base):
-    exam_session_id  # ← links to the session
-    invigilator_id   # ← links to the user
-    role             # ← 'primary' or 'secondary'
-    # ❌ No hall_id — we don't know WHICH hall this invigilator covers
-```
+## 🔴 CRITICAL: Reported Bugs
 
-An exam session can span multiple halls (e.g., "Physics Final" in halls A12, B07, C03). Three invigilators are assigned, one per hall. But right now there's no way to know who goes where.
+### Bug 1 — `video_exists: false` for test videos (Simulator)
 
-### The Fix
+> [!CAUTION]
+> **Root Cause:** The simulator's `config.yaml` uses Linux container paths (`/app/videos/cam1.mp4`), but when running the simulator **outside Docker** on Windows, `Path("/app/videos/cam1.mp4").exists()` always returns `false`.
 
-Add `hall_id` to `Assignment`:
+**Files involved:**
+- [config.yaml](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/simulator/config.yaml#L7) — hardcoded `/app/videos/cam1.mp4`
+- [main.py](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/simulator/main.py#L207) — `Path(video_path).exists()`
 
-```python
-class Assignment(Base, UUIDMixin, TimestampMixin):
-    __tablename__ = "assignments"
+**How to reproduce:** Run `python simulator/main.py` directly on Windows → hit `/cameras` → all show `video_exists: false`.
 
-    exam_session_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False
-    )
-    invigilator_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
-    )
-    hall_id: Mapped[uuid.UUID] = mapped_column(                    # ← NEW
-        ForeignKey("halls.id", ondelete="CASCADE"), nullable=False  # ← NEW
-    )
-    role: Mapped[str] = mapped_column(String(20), default="primary")
+**Fix:**
+1. Accept a `--videos-dir` CLI flag or `VIDEOS_DIR` env var that defaults to `./test_videos` when running locally.
+2. In `load_config()`, resolve `video_path` relative to `VIDEOS_DIR` if the absolute path doesn't exist.
+3. Alternatively, create a second `config.local.yaml` that uses `./test_videos/cam1.mp4` relative paths.
 
-    # Relationships
-    exam_session = relationship("ExamSession", back_populates="assignments")
-    invigilator = relationship("User", back_populates="assignments")
-    hall = relationship("Hall")                                     # ← NEW
-```
+---
+
+### Bug 2 — PTT Functionality Not Working
+
+> [!CAUTION]
+> Multiple interacting failure points make PTT non-functional end-to-end.
+
+**Root causes identified:**
+
+#### 2A. Audio playback never happens — no `AudioContext` sink
+- [useInvigilatorPtt.ts](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/hooks/useInvigilatorPtt.ts) — The hook receives binary WebSocket frames, but the **audio playback** path relies on `AudioContext` + `audioWorklet` that must be registered from a separate file (`ptt-playback-processor.js`).
+- If that worklet file is missing from `public/`, the browser **silently fails** — no audio output, no error to the user.
+- **Verify:** Check if `public/ptt-playback-processor.js` exists. If not, that's the root cause for no audio playback.
+
+#### 2B. Mic permission blocked on non-HTTPS LAN
+- The hook correctly detects `isInsecureLanContext()`, but `getUserMedia()` will be **rejected by the browser** on `http://192.168.x.x`.
+- On dev (`localhost`) it works; on any LAN IP over HTTP it won't.
+- **Fix:** The UI shows a warning badge, but PTT `startTransmission()` should gracefully handle the `NotAllowedError` and set `micState = 'blocked'` instead of leaving the connection in a broken state.
+
+#### 2C. `startSpeak` vs `startTransmission` naming inconsistency
+- [DashboardPage.tsx](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/pages/DashboardPage.tsx#L163) calls `ptt.startSpeak()` / `ptt.stopSpeak()`
+- [HallMonitoringPage.tsx](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/pages/invigilator/HallMonitoringPage.tsx#L235) calls `ptt.startTransmission()` / `ptt.stopTransmission()`
+- These must be two different methods on the same hook. If the hook only exposes one pair, the other page crashes silently.
+
+#### 2D. `client_id` ignored by backend
+- [ptt.py L66-67](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/ptt.py#L66-L67): Backend logs "client id supplied by caller was ignored" — the `client_id` URL param is always overridden by the JWT identity. This is **correct for security** but means the frontend must know the user's `ptt_id` to send a targeted `start_speak` message. If the frontend doesn't know the target's `ptt_id`, routing fails silently.
+
+---
+
+### Bug 3 — Test videos path resolution (Backend side)
+
+The backend's [stream.py](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/stream.py) doesn't directly check `video_exists` — it uses `device.stream_url` from the DB (e.g., `http://localhost:8000/camera/hall101_cam_front/feed`). The `video_exists` issue is **entirely in the simulator**, not the backend. However, the backend's `_camera_readiness()` in [exams.py L45](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/exams.py#L45) uses `cv2.VideoCapture(source)` which will also fail if the simulator isn't running.
+
+---
+
+## 🟠 Security Vulnerabilities
+
+### S1. Hardcoded default admin password returned in API response
 
 > [!WARNING]
-> **This requires an Alembic migration** (or manual `ALTER TABLE assignments ADD COLUMN hall_id ...`). Since the system uses SQLite in dev, this is straightforward. Any existing assignment rows will need to be re-created with a `hall_id`.
-
-### Validation on Assignment Creation
-
-When assigning an invigilator, the API must verify:
-1. The `hall_id` belongs to the exam session's linked halls (via `exam_session_halls`)
-2. No other invigilator is already assigned as `primary` to that same hall for the same session
-
----
-
-## 2. The Start/End Monitoring Lifecycle — Per-Hall
-
-### Current Architecture (the problem)
-
-```mermaid
-sequenceDiagram
-    participant Server as FastAPI Server
-    participant SM as Stream Manager
-    participant Cam as Camera Pipelines
-
-    Note over Server: Server starts
-    Server->>SM: startup_stream_manager()
-    SM->>Cam: Start ALL cameras in ALL 'ready' halls
-    Note over Cam: Run 24/7 until server stops
-    Note over Server: Server stops
-    Server->>SM: shutdown_stream_manager()
-    SM->>Cam: Stop everything
-```
-
-**Problems:** No exam-session awareness. Cameras run on empty halls. No audit trail. GPU/CPU waste.
-
-### Target Architecture (per-hall, invigilator-triggered)
-
-```mermaid
-sequenceDiagram
-    participant Inv as Invigilator (Hall A12)
-    participant Ref as Referee (Control Room)
-    participant API as FastAPI
-    participant DB as Database
-    participant SM as Stream Manager
-    participant Cam as Hall A12 Cameras
-
-    Note over Inv: Invigilator opens session for Hall A12
-    Inv->>API: POST /sessions/{id}/halls/{hall_id}/monitoring/start
-    API->>DB: Verify: invigilator assigned to this hall
-    API->>DB: Set assignment.monitoring_started_at = now()
-    API->>SM: start_hall_monitoring([hall_id])
-    SM->>Cam: Start pipeline threads for Hall A12 cameras ONLY
-    API-->>Inv: { status: "active", hall: "A12" }
-
-    Note over Inv: Meanwhile, Hall B07 stays idle (different invigilator)
-
-    Note over Inv: Exam ends in Hall A12
-    Inv->>API: POST /sessions/{id}/halls/{hall_id}/monitoring/stop
-    API->>DB: Set assignment.monitoring_ended_at = now()
-    API->>SM: stop_hall_monitoring([hall_id])
-    SM->>Cam: Stop Hall A12 cameras
-    API-->>Inv: { status: "stopped" }
-
-    Note over Ref: Fallback: Referee can also start/stop any hall
-    Ref->>API: POST /sessions/{id}/halls/{hall_id}/monitoring/start
-    API->>DB: Verify: user is admin or referee
-    API->>SM: start_hall_monitoring([hall_id])
-```
-
-### Key Design Details
-
-**Per-hall, not per-session:**
-- Each hall is independently startable/stoppable
-- The exam session itself transitions to `active` when **any** hall starts, and to `completed` when **all** halls have stopped
-- This allows Hall A12 to start 5 minutes before Hall B07 if needed
-
-**Tracking monitoring state:**
-Add two fields to `Assignment`:
-```python
-monitoring_started_at: Mapped[Optional[datetime]]  # When this hall's monitoring began
-monitoring_ended_at: Mapped[Optional[datetime]]     # When it ended
-```
-
-This gives per-hall audit trail: "Hall A12 monitoring ran from 10:02 AM to 12:05 PM."
-
-**Session-level state derivation:**
-```python
-# Session status is derived from its halls:
-# - 'scheduled' → no halls have started
-# - 'active'    → at least one hall has started and not all have stopped
-# - 'completed' → all halls have stopped
-# - 'cancelled' → manually cancelled
-```
-
-The `ExamSession.actual_start` = earliest `assignment.monitoring_started_at` across all halls.
-The `ExamSession.actual_end` = latest `assignment.monitoring_ended_at` across all halls.
-
----
-
-## 3. Backend Changes — Full Inventory
-
-### A. Schema Migration
-
-#### [MODIFY] `Assignment` model — add 3 columns
+> **Severity: HIGH** — [setup.py L64, L86-88](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/setup.py#L64-L88)
 
 ```python
-# In src/thaqib/db/models/exams.py
-class Assignment(Base, UUIDMixin, TimestampMixin):
-    exam_session_id: ...   # existing
-    invigilator_id: ...    # existing
-    role: ...              # existing
-    
-    hall_id: Mapped[uuid.UUID] = mapped_column(                     # NEW
-        ForeignKey("halls.id", ondelete="CASCADE"), nullable=False
-    )
-    monitoring_started_at: Mapped[Optional[datetime]] = mapped_column(  # NEW
-        DateTime(timezone=True), nullable=True
-    )
-    monitoring_ended_at: Mapped[Optional[datetime]] = mapped_column(    # NEW
-        DateTime(timezone=True), nullable=True
-    )
-    
-    hall: Mapped["Hall"] = relationship("Hall")                     # NEW
-```
-
-#### [MODIFY] `AssignmentCreate` schema — add `hall_id`
-
-```python
-class AssignmentCreate(AssignmentBase):
-    hall_id: uuid.UUID  # NEW — required when assigning
-```
-
-#### [MODIFY] `AssignmentResponse` schema — add new fields
-
-```python
-class AssignmentResponse(AssignmentBase):
-    id: uuid.UUID
-    exam_session_id: uuid.UUID
-    hall_id: uuid.UUID                                # NEW
-    monitoring_started_at: Optional[datetime] = None  # NEW
-    monitoring_ended_at: Optional[datetime] = None    # NEW
-```
-
----
-
-### B. New Stream Manager Functions (stream.py)
-
-```python
-def start_hall_monitoring(hall_ids: list[str]) -> dict:
-    """Start camera pipelines for specific halls only."""
-    # Query devices for these halls
-    # Create CameraRuntime + thread for each camera
-    # Skip cameras already running
-    # Returns {"started_cameras": [...]}
-
-def stop_hall_monitoring(hall_ids: list[str]) -> dict:
-    """Stop camera pipelines for specific halls."""
-    # Find runtimes where runtime.hall_id in hall_ids
-    # Stop each thread
-    # Remove from _camera_states
-    # Returns {"stopped_cameras": [...]}
-
-def resume_active_sessions() -> None:
-    """On server restart, resume monitoring only for halls with active assignments."""
-    # Query assignments where monitoring_started_at IS NOT NULL 
-    #   AND monitoring_ended_at IS NULL
-    # Extract hall_ids
-    # Call start_hall_monitoring(hall_ids)
-```
-
----
-
-### C. New API Endpoints (exams.py)
-
-#### `GET /api/sessions/my` — Invigilator's schedule
-
-```python
-@router.get("/my", response_model=List[MySessionResponse])
-def my_sessions(
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
-):
-    """Get exam sessions assigned to the current invigilator."""
-    assignments = (
-        db.query(Assignment)
-        .filter(Assignment.invigilator_id == current_user.id)
-        .options(
-            selectinload(Assignment.exam_session),
-            selectinload(Assignment.hall).selectinload(Hall.devices),
-        )
-        .all()
-    )
-    # Transform to response with session + hall + device status
-```
-
-Response includes:
-```json
-[
-  {
-    "assignment_id": "...",
-    "session": { "exam_name": "Physics Final", "scheduled_start": "...", "status": "scheduled" },
-    "hall": { "name": "A12", "building": "Science", "device_count": 6, "devices_online": 6 },
-    "monitoring_started_at": null,
-    "monitoring_ended_at": null
-  }
-]
-```
-
-#### `POST /api/sessions/{id}/halls/{hall_id}/monitoring/start`
-
-```python
-@router.post("/{session_id}/halls/{hall_id}/monitoring/start")
-def start_hall_monitoring_endpoint(
-    session_id: uuid.UUID,
-    hall_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
-):
-    """
-    Start monitoring for a specific hall in a session.
-    
-    Auth: Assigned invigilator for this hall, OR admin/referee.
-    
-    Validates:
-    1. Session exists, not cancelled/completed
-    2. Hall is linked to this session
-    3. User is authorized (assigned invigilator or admin/referee)
-    4. Monitoring not already started for this hall
-    
-    Side effects:
-    1. Sets assignment.monitoring_started_at = now()
-    2. Updates session.status to 'active' if first hall to start
-    3. Updates session.actual_start if first hall to start
-    4. Starts camera pipelines for this hall
-    """
-```
-
-#### `POST /api/sessions/{id}/halls/{hall_id}/monitoring/stop`
-
-```python
-@router.post("/{session_id}/halls/{hall_id}/monitoring/stop")
-def stop_hall_monitoring_endpoint(
-    session_id: uuid.UUID,
-    hall_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
-):
-    """
-    Stop monitoring for a specific hall.
-    
-    Side effects:
-    1. Sets assignment.monitoring_ended_at = now()
-    2. Stops camera pipelines for this hall
-    3. If ALL halls in this session have stopped → 
-       set session.status = 'completed', session.actual_end = now()
-    """
-```
-
-#### `GET /api/sessions/{id}/halls/{hall_id}/status`
-
-Lightweight polling endpoint for the invigilator PWA:
-```json
-{
-  "monitoring_active": true,
-  "started_at": "2026-05-15T10:02:00Z",
-  "cameras_online": 6,
-  "cameras_total": 6,
-  "alert_count": 3,
-  "elapsed_seconds": 2712
+default_password = "Admin_Password123!"
+# ...
+return {
+    "generated_credentials": {
+        "username": generated_username,
+        "password": default_password  # ← plaintext in HTTP response
+    }
 }
 ```
 
----
+**Fix:** Either (a) require the password in the setup payload, or (b) don't return it in the response — show it once in the UI only.
 
-### D. Modify Existing Endpoints
+### S2. CSRF token not validated on mutating endpoints
 
-#### [MODIFY] `assign_invigilator` (exams.py)
+The frontend sends `X-CSRF-Token` header via [api.ts L23-25](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/config/api.ts#L23-L25), but the **backend never validates it**. No middleware or dependency checks `X-CSRF-Token` against the cookie. The double-submit cookie pattern is half-implemented.
 
-Currently doesn't accept `hall_id`. Must:
-1. Accept `hall_id` in the request body
-2. Validate that `hall_id` is linked to the session (via `exam_session_halls`)
-3. Validate no duplicate primary assignment to the same hall
+### S3. Setup endpoint re-entrancy — incomplete guard
 
-#### [MODIFY] `startup_stream_manager` → `resume_active_sessions` (main.py)
+[setup.py L46](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/setup.py#L46): `if inst_count > 0 or user_count > 0` — this means if an institution exists but no user (e.g., partial failure), setup is blocked forever. Should use a transaction + idempotency check.
 
-```python
-# BEFORE:
-if settings.stream_manager_enabled:
-    stream.startup_stream_manager()  # Starts ALL cameras
+### S4. Seed script creates users with weak passwords
 
-# AFTER:
-if settings.stream_manager_enabled:
-    stream.resume_active_sessions()  # Only resume halls with active monitoring
-```
+[scripts/seed_demo.py L242](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/scripts/seed_demo.py#L242): `password_hash=get_password_hash("password123")`. Acceptable for dev, but should be documented or guarded behind an env flag.
 
 ---
 
-### E. New `get_current_user` Dependency
+## 🟡 Functionality Gaps
 
-Currently only `RequireRole` exists (validates role but doesn't return the user object). Need:
+### F1. No admin dashboard layout wrapper — no logout mechanism
 
-```python
-# In src/thaqib/api/dependencies.py
-async def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
-    """Extract and return the authenticated User from the JWT cookie."""
-    token = request.cookies.get(settings.access_cookie_name)
-    if not token:
-        raise HTTPException(401, "Not authenticated")
-    payload = decode_jwt(token)
-    user = db.query(User).filter(User.id == payload["sub"]).first()
-    if not user:
-        raise HTTPException(401, "User not found")
-    return user
-```
+> [!IMPORTANT]
+> The admin role has **no `AdminLayout` component** with sidebar, header, or logout button.
 
----
+[App.tsx L99-103](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/App.tsx#L99-L103): Admin routes render `<DashboardPage />` directly — no layout wrapping. The `handleLogout` function exists but is **never passed** to DashboardPage. Admin users have **no way to log out** from the UI.
 
-## 4. Frontend — Invigilator PWA
+### F2. Referee role not supported in frontend routing
 
-### Route Structure
+[App.tsx L104](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/App.tsx#L104): Only `admin` and `invigilator` roles are routed. A `referee` user sees the "unauthorized" screen despite being a valid role in the backend.
 
-```
-/login                                  → LoginPage (shared, mobile-optimized)
-/invigilator                            → SchedulePage (My Schedule — home)
-/invigilator/session/:sessionId/:hallId → SessionPage (detail + monitoring control)
-```
+### F3. Hall selector in dashboard is non-functional
 
-### Pages
+[DashboardPage.tsx L503-508](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/pages/DashboardPage.tsx#L503-L508): The "القاعة" (Hall) dropdown is a static `<div>` with no click handler or state management — purely decorative.
 
-#### SchedulePage (Home)
+### F4. Alerts Tab type mismatch
 
-```
-┌─────────────────────────────┐
-│  ثاقب        [🔔] [⚙️]     │
-├─────────────────────────────┤
-│                             │
-│  مرحباً، أحمد 👋            │
-│                             │
-│  ── اليوم ──────────────── │
-│  ┌───────────────────────┐ │
-│  │ 📋 فيزياء — نصف فصلي   │ │
-│  │ 🏛️ قاعة A12            │ │  ← Hall name (not session-level)
-│  │ ⏰ 10:00 ص — 12:00 م   │ │
-│  │ ⏱️ يبدأ بعد: 1س 23د    │ │
-│  │ 🟢 الأجهزة: 6/6 متصلة  │ │  ← This hall's devices only
-│  │              [عرض ←]    │ │
-│  └───────────────────────┘ │
-│                             │
-│  ── القادم ─────────────── │
-│  ┌───────────────────────┐ │
-│  │ 📋 كيمياء — اختبار     │ │
-│  │ 🏛️ قاعة B07            │ │
-│  │ 📅 15 فبراير 2:00 م    │ │
-│  └───────────────────────┘ │
-│                             │
-├─────────────────────────────┤
-│  [📅 جدولي]  [🎤 اتصال]   │
-└─────────────────────────────┘
-```
+The [DashboardPage](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/pages/DashboardPage.tsx#L30-L46) `Alert` interface expects `{type, message, timestamp}` for rendering, but the backend returns `{event_type, severity, timestamp}` — field names don't match.
 
-#### SessionPage — Pre-Monitoring State
+In [HallMonitoringPage.tsx L343](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/pages/invigilator/HallMonitoringPage.tsx#L343): `alert.type` and `alert.message` are rendered but the backend's hall status response returns `{event_type, severity, timestamp, confidence_score}` — missing `type` and `message` fields entirely.
 
-```
-┌─────────────────────────────┐
-│  ← رجوع    فيزياء — A12    │
-├─────────────────────────────┤
-│                             │
-│  معلومات الجلسة             │
-│  📋 فيزياء — نصف فصلي       │
-│  🏛️ قاعة A12 — مبنى العلوم  │
-│  ⏰ 10:00 ص — 12:00 م       │
-│  👥 45 طالب                 │
-│                             │
-│  ── حالة الأجهزة ────────── │
-│  📷 كاميرا 1     🟢 متصلة  │
-│  📷 كاميرا 2     🟢 متصلة  │
-│  📷 كاميرا 3     🟢 متصلة  │
-│  📷 كاميرا 4     🟡 بطيئة   │
-│  📷 كاميرا 5     🟢 متصلة  │
-│  📷 كاميرا 6     🟢 متصلة  │
-│  🎤 ميكروفون 1   🟢 متصل   │
-│  🎤 ميكروفون 2   🟢 متصل   │
-│                             │
-│  ┌───────────────────────┐ │
-│  │                       │ │
-│  │   ▶ بدء المراقبة      │ │  ← Big green START button
-│  │   Start Monitoring    │ │
-│  │                       │ │
-│  └───────────────────────┘ │
-│                             │
-│  ⚠️ تأكد من جاهزية جميع   │
-│  الطلاب قبل بدء المراقبة   │
-│                             │
-├─────────────────────────────┤
-│  [📅 جدولي]  [🎤 اتصال]   │
-└─────────────────────────────┘
-```
+### F5. Session status lifecycle has gaps
 
-#### SessionPage — Active Monitoring State
+- `start_monitoring` in [stream.py L706](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/stream.py#L706) auto-transitions from `scheduled` → `active`, but there's no `paused` state.
+- `stop_monitoring` [L778](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/stream.py#L778) auto-transitions to `completed` when all halls stop, but if an admin stops one hall out of four, the session is still marked `completed`.
 
-```
-┌─────────────────────────────┐
-│  قاعة A12    ⏱️ 00:45:12    │
-│  🟢 المراقبة نشطة           │
-├─────────────────────────────┤
-│                             │
-│  ── التنبيهات ───────────── │
-│  ┌───────────────────────┐ │
-│  │ 🔴 حدث تعاوني         │ │
-│  │ صف 3، مقعد 7-8        │ │
-│  │ منذ 23 ثانية          │ │
-│  │ 📞 تعليمات: "تحقق من   │ │  ← Referee's PTT instruction
-│  │    المقعدين 7 و 8"     │ │
-│  └───────────────────────┘ │
-│                             │
-│  ┌───────────────────────┐ │
-│  │ 🟡 وضع الرأس          │ │
-│  │ صف 5، مقعد 12         │ │
-│  │ منذ 2 دقيقة           │ │
-│  └───────────────────────┘ │
-│                             │
-│  ┌───────────────────────┐ │
-│  │                       │ │
-│  │   🎤 اضغط للتحدث     │ │  ← PTT button
-│  │   مع غرفة التحكم     │ │
-│  │                       │ │
-│  └───────────────────────┘ │
-│                             │
-│  ┌───────────────────────┐ │
-│  │   ⏹ إنهاء المراقبة    │ │  ← Red STOP button
-│  └───────────────────────┘ │
-│                             │
-├─────────────────────────────┤
-│  [📅 جدولي]  [🎤 الجلسة]  │
-└─────────────────────────────┘
-```
+### F6. No error recovery for pipeline crashes
+
+[stream.py L629](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/stream.py#L629): If the pipeline throws an exception, `is_running` is set to `False` but there's **no automatic retry**. The camera stays in a dead state until manual refresh.
+
+### F7. Reports page — no frontend route for viewing them
+
+The backend has a [session report endpoint](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/exams.py#L530) (`GET /sessions/{id}/report`) but there's **no Reports page** in the frontend. `NAV_ITEMS` includes only `home`, `halls`, `exams`, `supervisors`, `settings`.
+
+### F8. Two competing seed scripts
+
+- [seed_demo.py (root)](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/seed_demo.py) — simpler, no streaming URLs
+- [scripts/seed_demo.py](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/scripts/seed_demo.py) — full version with CLI args
+
+The root one doesn't set `stream_url` on devices, so cameras are created without stream sources. Confusing for new developers.
 
 ---
 
-### Referee Dashboard Addition
+## 🟢 UX / Flow Issues
 
-The existing `DashboardPage.tsx` gets a small addition — a monitoring control panel per hall:
+### U1. No "force password change" after first setup
 
-```
-┌─ Hall A12 ─────────────────────────┐
-│ 📷 6 cameras  🟢 Active            │
-│ 👤 Invigilator: Ahmed (started)    │
-│ ⏱️ Running: 00:45:12               │
-│ [⏹ Stop Monitoring]               │  ← Fallback stop button
-└─────────────────────────────────────┘
+After running the setup wizard, the admin account uses `Admin_Password123!` — but the UI never prompts the user to change it.
 
-┌─ Hall B07 ─────────────────────────┐
-│ 📷 4 cameras  ⚪ Idle              │
-│ 👤 Invigilator: Sara (not started) │
-│ [▶ Start Monitoring]              │  ← Fallback start button
-└─────────────────────────────────────┘
-```
+### U2. Schedule page doesn't filter by date
 
----
+[SchedulePage.tsx L85](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/pages/invigilator/SchedulePage.tsx#L85): Section header says "اليوم" (Today) but all assignments are shown regardless of date. Past, future, and today's sessions are all mixed together.
 
-## 5. Updated Wave Plan
+### U3. No loading skeleton / shimmer effects
 
-### Wave 1: Core MVP + Start/Stop Monitoring (~5-7 days)
+All pages show a centered spinner. For a production system, skeleton screens would feel more polished and reduce perceived latency.
 
-#### Backend Tasks
-```
-├── [B1] Schema migration: Add hall_id, monitoring_started_at, 
-│        monitoring_ended_at to Assignment
-├── [B2] Update AssignmentCreate/Response schemas
-├── [B3] Update assign_invigilator endpoint (validate hall_id)
-├── [B4] Create get_current_user dependency
-├── [B5] Add start_hall_monitoring() to stream.py
-├── [B6] Add stop_hall_monitoring() to stream.py
-├── [B7] Add resume_active_sessions() to stream.py
-├── [B8] Modify main.py startup → resume_active_sessions()
-├── [B9] Add GET /api/sessions/my (invigilator schedule)
-├── [B10] Add POST /api/sessions/{id}/halls/{hall_id}/monitoring/start
-├── [B11] Add POST /api/sessions/{id}/halls/{hall_id}/monitoring/stop
-├── [B12] Add GET /api/sessions/{id}/halls/{hall_id}/status
-└── [B13] Session status auto-derivation (active/completed from halls)
-```
+### U4. Bell notification badge in InvigilatorLayout is hardcoded
 
-#### Frontend Tasks
-```
-├── [F1] Role-based routing in App.tsx (invigilator → /invigilator)
-├── [F2] InvigilatorLayout.tsx (mobile shell + bottom nav)
-├── [F3] SchedulePage.tsx (fetches GET /api/sessions/my)
-├── [F4] SessionPage.tsx (pre-monitoring + active monitoring states)
-│   ├── Pre-monitoring: device pre-flight + START button
-│   ├── Active: timer + PTT + alert feed + STOP button
-│   └── Confirmation dialogs for start/stop
-├── [F5] Integrate useInvigilatorPtt hook
-├── [F6] Alert feed component (WebSocket listener, filtered to hall)
-├── [F7] Mobile CSS (touch-friendly, RTL, min 44×44px touch targets)
-└── [F8] Referee dashboard: add monitoring start/stop controls per hall
-```
+[InvigilatorLayout.tsx L57](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/layouts/InvigilatorLayout.tsx#L57): The red dot badge is always visible — not connected to actual notification count.
 
-### Wave 2: Alert Details + PWA (~3-4 days)
-```
-├── Alert detail view (snapshot image + metadata)
-├── PWA manifest.json (installability, icons, theme)
-├── Service worker (offline shell caching)
-├── Vibration on alert (navigator.vibrate — Android)
-├── Backend: forward alert metadata to invigilator WebSocket 
-│            when referee claims alert
-└── Install prompt UI ("Add to Home Screen" banner)
-```
+### U5. "عرض الكل" (View All) alerts button is non-functional
 
-### Wave 3: Polish (~2-3 days)
-```
-├── Language toggle (AR ↔ EN)
-├── Session summary page (post-exam stats, read-only)
-├── Page transitions + micro-animations
-├── PTT button pulse animation while speaking
-├── Accessibility audit (ARIA labels, contrast, screen reader)
-└── Testing on Android + iOS real devices
-```
+[HallMonitoringPage.tsx L331](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/pages/invigilator/HallMonitoringPage.tsx#L331): Shows a "View All" label but it's a `<span>` — not a link or button.
+
+### U6. Settings page is a placeholder
+
+[App.tsx L109](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/App.tsx#L109): Invigilator settings page renders `"قريباً..."` (Coming soon).
 
 ---
 
-## 6. Architecture Diagram
+## 🔵 Code Quality & Consistency Issues
 
-```mermaid
-graph TB
-    subgraph "Invigilator Phone — PWA"
-        INV_PWA["Schedule + Session Page"]
-        INV_PTT["PTT Hook (WebSocket)"]
-        INV_ALERT["Alert Feed (WebSocket)"]
-    end
+### C1. Duplicate cleanup effect in DashboardPage
 
-    subgraph "Referee Desktop — Dashboard"
-        REF_DASH["DashboardPage.tsx"]
-        REF_CTRL["Hall Monitoring Controls"]
-        REF_PTT["PTT to Invigilator"]
-    end
+[DashboardPage.tsx L189-196 and L283-287](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/pages/DashboardPage.tsx#L189-L196): Two separate `useEffect` hooks both clean up the same interval refs. The first runs on unmount but the second also runs on unmount. The first is redundant.
 
-    subgraph "FastAPI Backend"
-        AUTH["Auth + get_current_user"]
-        SESS_API["/api/sessions/*"]
-        MON_API["/api/sessions/{id}/halls/{hall_id}/monitoring/*"]
-        STREAM_API["/api/stream/*"]
-        PTT_WS["/api/v1/ptt/ws"]
-        SM["Stream Manager"]
-    end
+### C2. Import inside hot loop
 
-    subgraph "Database"
-        ES[(ExamSession)]
-        ASGN[(Assignment + hall_id)]
-        HALL[(Hall)]
-        DEV[(Device)]
-    end
+[ptt.py L88](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/ptt.py#L88): `import json` is inside the WebSocket message loop. Should be at module level.
 
-    subgraph "Video Pipeline"
-        CAM_A["Hall A12 Cameras"]
-        CAM_B["Hall B07 Cameras"]
-        ALERTS_MEM["In-Memory Alerts"]
-    end
+### C3. Lazy import of pipeline in thread
 
-    INV_PWA -->|"GET /sessions/my"| SESS_API
-    INV_PWA -->|"POST .../monitoring/start"| MON_API
-    INV_PWA -->|"POST .../monitoring/stop"| MON_API
-    REF_CTRL -->|"POST .../monitoring/start\|stop"| MON_API
-    
-    MON_API --> AUTH
-    MON_API --> SM
-    SM -->|"start_hall_monitoring"| CAM_A
-    SM -->|"start_hall_monitoring"| CAM_B
-    
-    CAM_A --> ALERTS_MEM
-    CAM_B --> ALERTS_MEM
-    
-    INV_PTT <-->|WebSocket| PTT_WS
-    REF_PTT <-->|WebSocket| PTT_WS
-    INV_ALERT <-->|WebSocket| STREAM_API
-    REF_DASH -->|Polling| STREAM_API
-    
-    SESS_API --> ES
-    SESS_API --> ASGN
-    MON_API --> ASGN
-    SM --> HALL
-    SM --> DEV
-```
+[stream.py L474](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/stream.py#L474): `from thaqib.video.pipeline import VideoPipeline` — This uses a different import path (`thaqib.video.pipeline`) than the rest of the codebase (`src.thaqib.*`). Likely relies on PYTHONPATH being set correctly or will fail with `ModuleNotFoundError`.
+
+### C4. Mixed `datetime.now()` usage — naive vs aware
+
+- [stream.py L700](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/stream.py#L700): `datetime.now()` (naive)
+- [auth.py L29](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/auth.py#L29): `datetime.now(timezone.utc)` (aware)
+- [exams.py L594](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/exams.py#L594): `datetime.now()` (naive)
+
+Mixing naive and timezone-aware datetimes will cause `TypeError` when comparing or subtracting them.
+
+### C5. `init_db.py` and setup wizard redundancy
+
+Both [init_db.py](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/db/init_db.py) (CLI) and [setup.py](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/setup.py) (API) create the initial institution + admin, but they use different fields. `init_db.py` asks for `code` and `contact_email` which the API setup doesn't. They can conflict if both are used.
+
+### C6. `user.role` not included in `HallMonitoringStatus` alerts
+
+The frontend [types/exams.ts L30-34](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/frontend/src/types/exams.ts#L30-L34) expects `alerts[].type` and `alerts[].message`, but the backend's hall status endpoint [exams.py L316-325](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/exams.py#L316-L325) returns `event_type`, `severity`, `timestamp`, `confidence_score` — no `type` or `message` field at all.
 
 ---
 
-## 7. Verification Plan
+## 🏗️ Architecture Concerns
 
-### Automated Tests
-- Schema migration: verify `hall_id`, `monitoring_started_at`, `monitoring_ended_at` columns exist
-- `GET /api/sessions/my`: returns only sessions assigned to the authenticated invigilator
-- `POST .../monitoring/start`: rejects non-assigned users, rejects already-active halls
-- `POST .../monitoring/stop`: correctly sets `monitoring_ended_at`, derives session status
-- `resume_active_sessions()`: on restart, only resumes halls with active monitoring
-- Assignment creation: validates `hall_id` belongs to session
+### A1. Single-threaded WebSocket manager
 
-### Manual Verification
-- Android Chrome: install PWA → schedule view → start monitoring → PTT → stop monitoring
-- iOS Safari: same flow, verify PTT works in foreground
-- Referee dashboard: start/stop monitoring for a hall as fallback
-- Verify cameras ONLY start when "Start Monitoring" is pressed
-- Verify cameras STOP when "Stop Monitoring" is pressed
-- Kill server during active session → restart → verify cameras auto-resume for active halls only
+[ws_manager.py](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/ws_manager.py): The `ConnectionManager` stores only **one WebSocket per user_id**. If an admin opens two tabs, the second connection replaces the first silently. No multi-device support.
+
+### A2. Video pipeline threads vs async mismatch
+
+The video pipeline runs in daemon `threading.Thread`s, but FastAPI is async. The `_camera_states` dict is protected by a `threading.Lock`, which is correct, but the `_alerts` list is accessed from both sync threads and async route handlers — potential race condition since `asyncio` coroutines can be preempted between `_alerts_lock` acquire and release.
+
+### A3. No database migrations tool
+
+The project uses `Base.metadata.create_all()` directly. No Alembic migration files found. Schema changes require dropping and recreating the database.
+
+### A4. Simulator and backend share no Docker network
+
+[docker-compose.yml](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/docker-compose.yml) and [docker-compose.simulator.yml](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/simulator/docker-compose.simulator.yml) use separate networks. The backend container can't reach the simulator container by service name — they must communicate via host-published ports.
+
+---
+
+## Proposed Fix Priority
+
+| Priority | Issue | Impact |
+|----------|-------|--------|
+| 🔴 P0 | Bug 1: Simulator video_exists path | Blocks demo entirely |
+| 🔴 P0 | Bug 2: PTT not working (multi-factor) | Core feature broken |
+| 🔴 P0 | S1: Plaintext password in API response | Security vulnerability |
+| 🟠 P1 | F1: Admin has no logout | Usability blocker |
+| 🟠 P1 | F2: Referee role not routed | Feature gap |
+| 🟠 P1 | C4: Naive vs aware datetime | Runtime crashes |
+| 🟠 P1 | F4/C6: Alert type mismatch FE↔BE | UI shows undefined |
+| 🟡 P2 | S2: CSRF not validated | Security gap |
+| 🟡 P2 | F6: No pipeline crash recovery | Reliability |
+| 🟡 P2 | U2: Schedule not filtered by date | UX confusion |
+| 🟡 P2 | C3: Wrong import path for pipeline | Deploy failure |
+| 🟢 P3 | A3: No Alembic migrations | Maintainability |
+| 🟢 P3 | U3/U4/U5: UX polish items | Quality of life |
+| 🟢 P3 | F7/F8: Missing pages, duplicate scripts | Completeness |
+
+---
+
+## Open Questions
+
+> [!IMPORTANT]
+> 1. **Are you running the simulator inside Docker or directly on Windows?** This determines the exact fix for Bug 1.
+> 2. **Does `public/ptt-playback-processor.js` exist in your frontend build?** This is likely the root cause for Bug 2's audio silence.
+> 3. **Which issues do you want me to fix first?** I recommend starting with P0 (video_exists + PTT + security), then P1.
+> 4. **Is the `referee` role intended to use the admin dashboard or the invigilator interface?** This affects how we route it.

@@ -119,7 +119,13 @@ Place video files in `simulator/test_videos/` (e.g., `cam1.mp4`, `cam2.mp4`), th
 docker-compose -f simulator/docker-compose.simulator.yml up -d
 ```
 
-Verify the simulator is running: open `http://localhost:8000/info` in your browser.
+Verify the simulator can see the mounted videos before starting an exam:
+
+```bash
+curl http://localhost:8000/cameras
+```
+
+For the seeded Hall 101 demo, `hall101_cam_front`, `hall101_cam_back`, and `hall101_cam_side` should show `"video_exists": true`. If they show `false`, the dashboard will display the simulator fallback frame instead of real video. The simulator container mounts `simulator/test_videos` at `/app/videos`, so configured video paths should look like `/app/videos/cam1.mp4`.
 
 #### 3. Apply Database Migrations
 
@@ -155,6 +161,14 @@ npm run dev -- --host
 ```
 
 Open `http://localhost:5173` in your browser. The Vite dev server proxies `/api` requests to the backend.
+
+For phone PTT testing, do not use plain LAN HTTP such as `http://192.168.1.12:5173` for microphone transmission. Mobile browsers require a secure context for microphone access, so use an HTTPS Vite dev URL with a trusted local certificate or a trusted tunnel. Receive-only PTT can connect over HTTP, but pressing PTT to transmit will be blocked by the browser.
+
+If you bypass the Vite proxy or call the backend directly from another device, keep `APP_ENV=development` and include your LAN frontend URL in `CORS_ORIGINS`, for example:
+
+```env
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://192.168.1.12:5173
+```
 
 ### Running the Demo (Standalone Video)
 
