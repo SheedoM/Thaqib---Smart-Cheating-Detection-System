@@ -36,7 +36,6 @@ ENV_KEY_MAP: dict[str, str] = {
     "detection_confidence":           "DETECTION_CONFIDENCE",
     "detection_imgsz":                "DETECTION_IMGSZ",
     "tools_confidence":               "TOOLS_CONFIDENCE",
-    "object_detection_enabled":       "OBJECT_DETECTION_ENABLED",
     # Tracking
     "tracking_max_distance":          "TRACKING_MAX_DISTANCE",
     "tracking_max_age":               "TRACKING_MAX_AGE",
@@ -44,7 +43,6 @@ ENV_KEY_MAP: dict[str, str] = {
     # Gaze / cheating evaluation
     "risk_angle_tolerance":           "RISK_ANGLE_TOLERANCE",
     "suspicious_duration_threshold":  "SUSPICIOUS_DURATION_THRESHOLD",
-    "suspicious_match_ratio":         "SUSPICIOUS_MATCH_RATIO",
     # Re-ID & performance
     "reid_match_threshold":           "REID_MATCH_THRESHOLD",
     "face_mesh_workers":              "FACE_MESH_WORKERS",
@@ -78,7 +76,6 @@ class SystemSettings(BaseModel):
     detection_confidence: float = Field(0.15, ge=0.01, le=1.0)
     detection_imgsz: int = Field(640)
     tools_confidence: float = Field(0.45, ge=0.01, le=1.0)
-    object_detection_enabled: bool = Field(True)
 
     # ── Tracking ───────────────────────────────────────────────────────────────
     tracking_max_distance: int = Field(100, ge=10, le=500)
@@ -86,7 +83,6 @@ class SystemSettings(BaseModel):
     neighbor_k: int = Field(6, ge=2, le=20)
     risk_angle_tolerance: float = Field(25.0, ge=5.0, le=60.0)
     suspicious_duration_threshold: float = Field(2.0, ge=0.5, le=30.0)
-    suspicious_match_ratio: float = Field(0.7, ge=0.1, le=1.0)
     reid_match_threshold: float = Field(0.80, ge=0.5, le=1.0)
     face_mesh_workers: int = Field(4, ge=1, le=16)
 
@@ -164,13 +160,11 @@ def _build_current_settings() -> SystemSettings:
         detection_confidence=s.detection_confidence,
         detection_imgsz=s.detection_imgsz,
         tools_confidence=s.tools_confidence,
-        object_detection_enabled=getattr(s, 'object_detection_enabled', True),
         tracking_max_distance=s.tracking_max_distance,
         tracking_max_age=s.tracking_max_age,
         neighbor_k=s.neighbor_k,
         risk_angle_tolerance=s.risk_angle_tolerance,
         suspicious_duration_threshold=s.suspicious_duration_threshold,
-        suspicious_match_ratio=s.suspicious_match_ratio,
         reid_match_threshold=s.reid_match_threshold,
         face_mesh_workers=s.face_mesh_workers,
         audio_whisper_model=s.audio_whisper_model,

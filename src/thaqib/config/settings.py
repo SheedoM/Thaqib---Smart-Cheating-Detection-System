@@ -49,7 +49,6 @@ class Settings(BaseSettings):
     # Cheating Evaluation
     risk_angle_tolerance: float = 25.0           # Max gaze-to-paper angle (degrees)
     suspicious_duration_threshold: float = 2.0   # Seconds of sustained gaze to flag
-    suspicious_match_ratio: float = 0.7
 
     # Re-Identification
     reid_match_threshold: float = 0.80   # Cosine similarity threshold for face re-ID

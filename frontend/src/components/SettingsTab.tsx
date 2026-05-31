@@ -13,11 +13,11 @@ interface SystemSettings {
   video_quality: number; alert_max_height: number; archive_mode: string;
   // Detection
   detection_interval: number; detection_confidence: number;
-  detection_imgsz: number; tools_confidence: number; object_detection_enabled: boolean;
+  detection_imgsz: number; tools_confidence: number;
   // Tracking & Detection engine
   tracking_max_distance: number; tracking_max_age: number; neighbor_k: number;
   risk_angle_tolerance: number; suspicious_duration_threshold: number;
-  suspicious_match_ratio: number; reid_match_threshold: number; face_mesh_workers: number;
+  reid_match_threshold: number; face_mesh_workers: number;
   // Audio
   audio_whisper_model: string; audio_strict_mode: boolean;
   audio_vad_threshold: number; audio_silence_threshold: number;
@@ -31,10 +31,10 @@ interface SystemSettings {
 const DEFAULT: SystemSettings = {
   video_quality: 75, alert_max_height: 720, archive_mode: 'raw',
   detection_interval: 1.0, detection_confidence: 0.15,
-  detection_imgsz: 640, tools_confidence: 0.45, object_detection_enabled: true,
+  detection_imgsz: 640, tools_confidence: 0.45,
   tracking_max_distance: 100, tracking_max_age: 30, neighbor_k: 6,
   risk_angle_tolerance: 25.0, suspicious_duration_threshold: 2.0,
-  suspicious_match_ratio: 0.7, reid_match_threshold: 0.80, face_mesh_workers: 4,
+  reid_match_threshold: 0.80, face_mesh_workers: 4,
   audio_whisper_model: 'tiny', audio_strict_mode: true,
   audio_vad_threshold: 0.5, audio_silence_threshold: 0.01,
   audio_speech_buffer_sec: 2.5, audio_noise_reduction: true,
@@ -316,13 +316,9 @@ export default function SettingsTab() {
             value={sys.detection_imgsz}
             options={[{ label: '320 — سريع جداً', value: 320 }, { label: '640 — متوازن', value: 640 }, { label: '1280 — دقيق', value: 1280 }]}
             onChange={v => set('detection_imgsz', Number(v))} />
-          <Toggle label="كشف الأجسام المحظورة" hint="هواتف، ورقات الغش، إلخ."
-            value={sys.object_detection_enabled} onChange={v => set('object_detection_enabled', v)} />
-          {sys.object_detection_enabled && (
-            <SliderRow label="حد ثقة كشف الأدوات" unit="%" value={Math.round(sys.tools_confidence * 100)} min={10} max={95} step={5}
-              leftLabel="حساس" rightLabel="صارم"
-              onChange={v => set('tools_confidence', v / 100)} />
-          )}
+          <SliderRow label="حد ثقة كشف الأدوات" unit="%" value={Math.round(sys.tools_confidence * 100)} min={10} max={95} step={5}
+            leftLabel="حساس" rightLabel="صارم"
+            onChange={v => set('tools_confidence', v / 100)} />
         </FieldGroup>
         <SaveButton saving={sysSaving} saved={sysSaved} onClick={saveSys} />
       </>}
@@ -355,10 +351,6 @@ export default function SettingsTab() {
             hint="ثواني يجب أن يستمر فيها النظر المشبوه قبل إطلاق التنبيه"
             leftLabel="0.5s (حساس)" rightLabel="10s (متساهل)"
             onChange={v => set('suspicious_duration_threshold', v)} />
-          <SliderRow label="نسبة الإطارات المشبوهة" unit="%" value={Math.round(sys.suspicious_match_ratio * 100)} min={10} max={100} step={5}
-            hint="% الإطارات التي يجب أن تُظهر نظرة مشبوهة لإطلاق التنبيه"
-            leftLabel="10% (حساس)" rightLabel="100% (صارم)"
-            onChange={v => set('suspicious_match_ratio', v / 100)} />
         </FieldGroup>
         <FieldGroup title="Re-ID والأداء">
           <SliderRow label="حد تطابق Re-ID" unit="%" value={Math.round(sys.reid_match_threshold * 100)} min={50} max={99} step={1}
