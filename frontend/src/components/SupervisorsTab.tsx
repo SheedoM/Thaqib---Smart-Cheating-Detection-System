@@ -149,7 +149,7 @@ function SupervisorModal({ supervisor, onClose, onSuccess }: { supervisor: Super
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const imagePreviewSrc = image ? (image.startsWith('data:') ? image : apiUrl(image)) : null;
+  const imagePreviewSrc = image ? (image.startsWith('data:') || image.startsWith('http') ? image : apiUrl(image)) : null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -254,21 +254,15 @@ function SupervisorModal({ supervisor, onClose, onSuccess }: { supervisor: Super
             if (f) { setImageFile(f); const r = new FileReader(); r.onload = ev => setImage(ev.target?.result as string); r.readAsDataURL(f); }
           }} />
           <div onClick={() => fileRef.current?.click()} className="w-full h-24 bg-gray-50 border-2 border-dashed border-gray-200 rounded-2xl flex flex-col items-center justify-center cursor-pointer hover:border-[#44006E] hover:bg-purple-50 transition-all group relative overflow-hidden">
-<<<<<<< HEAD
             {imagePreviewSrc ? (
-              <><img src={imagePreviewSrc} className="absolute inset-0 w-full h-full object-cover" alt="preview" />
-                <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-white font-black text-xs">تغيير الصورة</span></div></>
-=======
-            {image ? (
               <>
                 <img 
-                  src={image.startsWith('data:') || image.startsWith('http') ? image : apiUrl(image)} 
+                  src={imagePreviewSrc} 
                   className="absolute inset-0 w-full h-full object-cover" 
                   alt="preview" 
                 />
                 <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-white font-black text-xs">تغيير الصورة</span></div>
               </>
->>>>>>> 5917366 (Standardize UI buttons, add advanced exam filters, and fix supervisor image support on backend/frontend)
             ) : (
               <><div className="w-9 h-9 bg-gray-200 group-hover:bg-purple-100 rounded-xl flex items-center justify-center mb-1.5 transition-colors">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9351bb" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>

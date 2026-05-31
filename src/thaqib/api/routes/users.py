@@ -98,7 +98,6 @@ def create_user(
         username=user.username,
         full_name=user.full_name,
         email=user.email,
-        image=getattr(user, "image", None),
         role=user.role,
         password_hash=get_password_hash(user.password),
         image=user.image
