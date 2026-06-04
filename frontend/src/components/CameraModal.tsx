@@ -171,8 +171,8 @@ function CameraView({
       <div className="modal-header">
         <h2>{camera?.name || 'الكاميرا'}</h2>
         <div className="modal-header-badge">
-          <span className="camera-status-dot active" style={{ marginLeft: '6px' }}></span>
-          بث مباشر
+          <span className={`camera-status-dot ${stats?.is_running ? 'active' : 'inactive'}`} style={{ marginLeft: '6px' }}></span>
+          {stats?.is_running ? 'بث مباشر' : 'غير متصل'}
         </div>
       </div>
 
