@@ -925,10 +925,18 @@
   gap: 6px;
   padding: 6px 14px;
   border-radius: 8px;
-  background: rgba(0, 201, 80, 0.1);
-  color: #00c950;
   font-size: 13px;
   font-weight: 600;
+}
+
+.modal-header-badge.active {
+  background: rgba(0, 201, 80, 0.1);
+  color: #00c950;
+}
+
+.modal-header-badge.inactive {
+  background: rgba(113, 113, 123, 0.1);
+  color: #71717b;
 }
 
 .modal-header-badge.danger {

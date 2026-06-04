@@ -170,7 +170,7 @@ function CameraView({
       {/* Header */}
       <div className="modal-header">
         <h2>{camera?.name || 'الكاميرا'}</h2>
-        <div className="modal-header-badge">
+        <div className={`modal-header-badge ${stats?.is_running ? 'active' : 'inactive'}`}>
           <span className={`camera-status-dot ${stats?.is_running ? 'active' : 'inactive'}`} style={{ marginLeft: '6px' }}></span>
           {stats?.is_running ? 'بث مباشر' : 'غير متصل'}
         </div>
@@ -202,30 +202,8 @@ function CameraView({
       {/* Live controls */}
       {deviceId && (
         <div style={{ padding: '8px 0 4px', direction: 'ltr' }}>
-          {/* Row 1: status + shortcut toggle */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {selectedCount !== null && trackedCount !== null && (
-                <span style={{ fontSize: 11, fontWeight: 900, color: '#6b7280', padding: '2px 8px', background: '#f3f4f6', borderRadius: 6 }}>
-                  المراقبة: {selectedCount}/{trackedCount}
-                </span>
-              )}
-              {archiveMode && (
-                <span style={{ fontSize: 11, fontWeight: 900, color: '#44006E', padding: '2px 8px', background: '#f3e8ff', borderRadius: 6 }}>
-                  أرشيف: {archiveMode}
-                </span>
-              )}
-              {qualityLabel && (
-                <span style={{ fontSize: 11, fontWeight: 900, color: '#047857', padding: '2px 8px', background: '#ecfdf5', borderRadius: 6 }}>
-                  الجودة: {qualityLabel}
-                </span>
-              )}
-              {resolution && (
-                <span style={{ fontSize: 11, fontWeight: 900, color: '#0369a1', padding: '2px 8px', background: '#f0f9ff', borderRadius: 6 }}>
-                  الدقة: {resolution}
-                </span>
-              )}
-            </div>
+          {/* Row 1: shortcut toggle */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: 6 }}>
             <button onClick={() => setShowShortcuts(s => !s)}
               style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '4px 10px', cursor: 'pointer', fontSize: '12px', color: '#6b7280', fontWeight: 700 }}>
               ⌨ اختصارات {showShortcuts ? '▲' : '▼'}
