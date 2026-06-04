@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { pttWebSocketUrl } from '../config/api';
+import { pttHallWebSocketUrl, pttWebSocketUrl } from '../config/api';
 
 export type PttConnectionState = 'idle' | 'connecting' | 'connected' | 'error';
 export type PttMicState = 'idle' | 'requesting' | 'ready' | 'blocked' | 'error';
@@ -19,8 +19,19 @@ export type PttIncidentCard = {
 type Options = {
   clientId?: string;
   defaultTargetId?: string;
+  hallId?: string;
   /** If true, connect as soon as identity is resolved */
   autoConnect?: boolean;
+};
+
+type ConnectOptions = {
+  prepareMic?: boolean;
+};
+
+type TransmissionOptions = {
+  targetId?: string;
+  alertId?: string;
+  clipType?: 'normal' | 'incident';
 };
 
 /**
@@ -138,7 +149,14 @@ export function useInvigilatorPtt(options: Options = {}) {
     ws.onmessage = async (event) => {
       if (typeof event.data === 'string') {
         try {
-          const data = JSON.parse(event.data as string) as { type?: string; sender_id?: string };
+          const data = JSON.parse(event.data as string) as {
+            type?: string;
+            sender_id?: string;
+            control_connected?: boolean;
+            invigilator_connected?: boolean;
+            control_mic_state?: PttMicState;
+            invigilator_mic_state?: PttMicState;
+          };
           if (data.type === 'pong') return;
           if (data.type === 'incident_card') {
             const { type: _type, ...incident } = data as PttIncidentCard & { type: string };
@@ -149,6 +167,14 @@ export function useInvigilatorPtt(options: Options = {}) {
             setStatusText(`المتحدث: ${data.sender_id ?? '—'}`);
           } else if (data.type === 'stop_speak') {
             setStatusText('متصل — اضغط مع الاستمرار للتحدث');
+          } else if (data.type === 'presence') {
+            if (data.control_connected && data.invigilator_connected) {
+              setStatusText('القناة الصوتية جاهزة للطرفين');
+            } else if (data.control_connected || data.invigilator_connected) {
+              setStatusText('بانتظار اتصال الطرف الآخر');
+            } else {
+              setStatusText('متصل بالقناة الصوتية');
+            }
           }
         } catch { /* ignore */ }
       } else if (event.data instanceof ArrayBuffer) {
@@ -204,15 +230,18 @@ export function useInvigilatorPtt(options: Options = {}) {
       };
 
       setMicState('ready');
+      ws.send(JSON.stringify({ type: 'mic_status', mic_state: 'ready' }));
       setStatusText('الميكروفون جاهز — جاري الإرسال');
       return true;
     } catch (error) {
       cleanupAudioGraph();
       if (isLikelySecureContextBlocked(error)) {
         setMicState('blocked');
+        ws.send(JSON.stringify({ type: 'mic_status', mic_state: 'blocked' }));
         setStatusText(getMobileMicBlockedText());
       } else {
         setMicState('error');
+        ws.send(JSON.stringify({ type: 'mic_status', mic_state: 'error' }));
         setStatusText('تعذر الوصول للميكروفون — تحقق من صلاحيات الميكروفون');
       }
       return false;
@@ -252,7 +281,7 @@ export function useInvigilatorPtt(options: Options = {}) {
   }, [disconnect]);
 
   // ── connect ───────────────────────────────────────────────────────────────
-  const connect = useCallback(async (): Promise<boolean> => {
+  const connect = useCallback(async (connectOptions: ConnectOptions = {}): Promise<boolean> => {
     if (unmountedRef.current) return false;
 
     // Wait for identity to be resolved first
@@ -267,7 +296,7 @@ export function useInvigilatorPtt(options: Options = {}) {
     setStatusText('جاري الاتصال…');
 
     const clientId = clientIdRef.current;
-    let wsUrl = pttWebSocketUrl(clientId);
+    let wsUrl = options.hallId ? pttHallWebSocketUrl(options.hallId) : pttWebSocketUrl(clientId);
 
     // Append cookie token for cross-origin WS (Vite dev proxy strips cookies)
     try {
@@ -329,10 +358,13 @@ export function useInvigilatorPtt(options: Options = {}) {
     retryCountRef.current = 0; // reset on successful connect
     setState('connected');
     setStatusText('متصل — اضغط مع الاستمرار للتحدث');
+    if (connectOptions.prepareMic) {
+      await ensureAudioGraph(ws);
+    }
     return true;
   // connect is intentionally not in deps — it reads from refs
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attachSocketMessageHandlers, cleanupAudioGraph, stopPing, stopRetry, options.autoConnect]);
+  }, [attachSocketMessageHandlers, cleanupAudioGraph, ensureAudioGraph, stopPing, stopRetry, options.autoConnect, options.hallId]);
 
   // Auto-connect once identity is ready
   useEffect(() => {
@@ -345,7 +377,7 @@ export function useInvigilatorPtt(options: Options = {}) {
   }, [options.autoConnect]);
 
   // ── startTransmission ─────────────────────────────────────────────────────
-  const startTransmission = useCallback(async (targetId?: string) => {
+  const startTransmission = useCallback(async (targetOrOptions?: string | TransmissionOptions) => {
     pttActiveRef.current = true;
     setIsTransmitting(true);
     let ws = wsRef.current;
@@ -369,10 +401,17 @@ export function useInvigilatorPtt(options: Options = {}) {
       return;
     }
 
-    const tid = targetId ?? targetIdRef.current;
-    ws.send(JSON.stringify({ type: 'start_speak', target_id: tid }));
+    const transmissionOptions: TransmissionOptions =
+      typeof targetOrOptions === 'string' ? { targetId: targetOrOptions } : (targetOrOptions ?? {});
+    const tid = transmissionOptions.targetId ?? targetIdRef.current;
+    ws.send(JSON.stringify({
+      type: 'start_speak',
+      target_id: options.hallId ? undefined : tid,
+      clip_type: transmissionOptions.alertId ? 'incident' : (transmissionOptions.clipType ?? 'normal'),
+      alert_id: transmissionOptions.alertId,
+    }));
     void audioContextRef.current?.resume();
-  }, [connect, ensureAudioGraph]);
+  }, [connect, ensureAudioGraph, options.hallId]);
 
   // ── stopTransmission ──────────────────────────────────────────────────────
   const stopTransmission = useCallback((targetId?: string) => {

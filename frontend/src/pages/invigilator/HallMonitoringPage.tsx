@@ -36,8 +36,7 @@ export default function HallMonitoringPage() {
   const [showAllAlerts, setShowAllAlerts] = useState(false);
   const navigate = useNavigate();
 
-  // PTT Hook — auto-connect receive-only; mic permission is requested on press.
-  const ptt = useInvigilatorPtt({ autoConnect: true });
+  const ptt = useInvigilatorPtt({ hallId });
   const pttLabel =
     ptt.isTransmitting ? 'يتحدث' :
     ptt.micState === 'blocked' ? 'ميك محجوب' :
@@ -95,6 +94,11 @@ export default function HallMonitoringPage() {
     } finally {
       setIsChecking(false);
     }
+  };
+
+  const connectVoice = async () => {
+    await ptt.connect({ prepareMic: true });
+    await runReadinessCheck();
   };
 
   const handleStartMonitoring = async (force = false) => {
@@ -226,6 +230,14 @@ export default function HallMonitoringPage() {
             >
               {isStarting || isChecking ? <Loader2 size={20} className="animate-spin" /> : <Play size={20} />}
               <span>{isChecking ? 'جاري فحص الأجهزة...' : 'بدء المراقبة الآن'}</span>
+            </button>
+            <button
+              onClick={connectVoice}
+              disabled={ptt.state === 'connecting'}
+              className="mt-3 bg-white/10 hover:bg-white/20 disabled:opacity-50 text-white px-5 py-2 rounded-xl font-bold flex items-center gap-2 transition-all active:scale-95 border border-white/20"
+            >
+              {ptt.state === 'connecting' ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
+              <span>{ptt.micState === 'ready' ? 'الصوت جاهز' : 'الاتصال بالقناة الصوتية'}</span>
             </button>
           </div>
         )}

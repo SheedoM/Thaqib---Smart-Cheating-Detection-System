@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
+from src.thaqib.db.models.exams import Assignment, ExamSession
+from src.thaqib.db.models.infrastructure import Hall
+
 
 def _create_hall(client, headers, institution_id, name):
     response = client.post(
@@ -157,5 +160,44 @@ def test_hall_readiness_returns_device_checks(
     assert readiness_response.status_code == 200
     body = readiness_response.json()
     assert body["overall_status"] == "warning"
-    assert body["failed_count"] == 1
-    assert {device["type"] for device in body["devices"]} == {"camera", "microphone"}
+    assert body["failed_count"] == 2
+    assert {device["type"] for device in body["devices"]} == {"camera", "microphone", "voice"}
+
+
+def test_hall_readiness_accepts_assignment_backed_seed_link(
+    client,
+    db_session,
+    test_institution,
+    invigilator_user,
+    invigilator_token_headers,
+):
+    hall = Hall(
+        institution_id=test_institution.id,
+        name="Legacy Seed Hall",
+        capacity=40,
+        status="ready",
+    )
+    session = ExamSession(
+        exam_name="Midterm Exam 2024",
+        exam_type="Final",
+        scheduled_start=datetime.now(timezone.utc) - timedelta(minutes=30),
+        scheduled_end=datetime.now(timezone.utc) + timedelta(hours=2),
+        status="scheduled",
+        student_count=100,
+    )
+    assignment = Assignment(
+        exam_session=session,
+        hall=hall,
+        invigilator=invigilator_user,
+        role="primary",
+    )
+    db_session.add_all([hall, session, assignment])
+    db_session.commit()
+
+    response = client.get(
+        f"/api/sessions/{session.id}/halls/{hall.id}/readiness",
+        headers=invigilator_token_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["hall_id"] == str(hall.id)

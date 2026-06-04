@@ -21,6 +21,7 @@ from .base import Base, SoftDeleteMixin, TimestampMixin, UUIDMixin
 if TYPE_CHECKING:
     from .infrastructure import Institution
     from .exams import Assignment
+    from .ptt import PttClip
 
 
 class User(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
@@ -49,6 +50,7 @@ class User(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     refresh_tokens: Mapped[List["RefreshToken"]] = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
+    ptt_clips: Mapped[List["PttClip"]] = relationship("PttClip", back_populates="speaker")
 
 
 class RefreshToken(Base, UUIDMixin, TimestampMixin):

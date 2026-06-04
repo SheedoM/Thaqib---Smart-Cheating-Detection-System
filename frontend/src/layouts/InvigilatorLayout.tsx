@@ -1,6 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Calendar, Mic, Bell, Settings, LogOut } from 'lucide-react';
-import { useInvigilatorPtt } from '../hooks/useInvigilatorPtt';
+import { Calendar, Bell, Settings, LogOut } from 'lucide-react';
 import { isInsecureLanContext } from '../lib/secureContext';
 
 interface InvigilatorLayoutProps {
@@ -8,15 +7,6 @@ interface InvigilatorLayoutProps {
 }
 
 export default function InvigilatorLayout({ onLogout }: InvigilatorLayoutProps) {
-  // Auto-connect receive-only PTT; mic permission is requested only on press.
-  const ptt = useInvigilatorPtt({ autoConnect: true });
-  const pttLabel =
-    ptt.isTransmitting ? 'PTT إرسال' :
-    ptt.micState === 'blocked' ? 'الميكروفون محجوب' :
-    ptt.state === 'connected' ? 'PTT متصل' :
-    ptt.state === 'connecting' ? 'جاري الاتصال' :
-    ptt.state === 'error' ? 'خطأ PTT' : 'PTT غير متصل';
-
   return (
     <div className="flex flex-col min-h-screen bg-[#F5F5F7]" dir="rtl">
       {/* Header */}
@@ -26,27 +16,6 @@ export default function InvigilatorLayout({ onLogout }: InvigilatorLayoutProps) 
           <span className="font-black text-[#44006E] text-lg">Thaqib</span>
         </div>
         <div className="flex items-center gap-4">
-          {/* PTT connection status badge */}
-          <div title={ptt.statusText} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold ${
-            ptt.state === 'connected'
-              ? 'bg-green-50 text-green-600'
-              : ptt.state === 'connecting'
-              ? 'bg-yellow-50 text-yellow-600'
-              : ptt.state === 'error'
-              ? 'bg-red-50 text-red-500'
-              : 'bg-gray-50 text-gray-400'
-          }`}>
-            <div className={`w-1.5 h-1.5 rounded-full ${
-              ptt.state === 'connected'
-                ? 'bg-green-500 animate-pulse'
-                : ptt.state === 'connecting'
-                ? 'bg-yellow-500 animate-pulse'
-                : ptt.state === 'error'
-                ? 'bg-red-500'
-                : 'bg-gray-400'
-            }`} />
-            {pttLabel}
-          </div>
           {isInsecureLanContext() && (
             <div className="hidden sm:block px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 text-[10px] font-bold">
               HTTPS مطلوب للميكروفون
@@ -54,9 +23,6 @@ export default function InvigilatorLayout({ onLogout }: InvigilatorLayoutProps) 
           )}
           <button className="p-2 text-gray-500 hover:bg-gray-100 rounded-full relative">
             <Bell size={22} />
-            {ptt.incidentCards.length > 0 && (
-              <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
-            )}
           </button>
           <button
             onClick={onLogout}
@@ -83,21 +49,6 @@ export default function InvigilatorLayout({ onLogout }: InvigilatorLayoutProps) 
         >
           <Calendar size={24} />
           <span className="text-[11px] font-medium">جدولي</span>
-        </NavLink>
-
-        <NavLink
-          to="/invigilator/ptt"
-          className={({ isActive }) =>
-            `flex flex-col items-center gap-1 transition-colors ${isActive ? 'text-thaqib-primary' : 'text-gray-400'}`
-          }
-        >
-          <div className="relative">
-            <Mic size={24} />
-            {ptt.state === 'connected' && (
-              <span className="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full" />
-            )}
-          </div>
-          <span className="text-[11px] font-medium">اتصال</span>
         </NavLink>
 
         <NavLink

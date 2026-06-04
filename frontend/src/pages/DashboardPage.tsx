@@ -123,6 +123,94 @@ function timeSince(isoString: string): string {
   }
 }
 
+function HallPttControl({
+  hallId,
+  alertId,
+  compact = false,
+}: {
+  hallId: string;
+  alertId?: string;
+  compact?: boolean;
+}) {
+  const ptt = useInvigilatorPtt({ hallId });
+  const [isPreparing, setIsPreparing] = useState(false);
+
+  const connectVoice = async () => {
+    setIsPreparing(true);
+    try {
+      await ptt.connect({ prepareMic: true });
+    } finally {
+      setIsPreparing(false);
+    }
+  };
+
+  const start = () => {
+    void ptt.startTransmission(alertId ? { alertId } : undefined);
+  };
+
+  const statusLabel =
+    ptt.isTransmitting ? 'إرسال' :
+    ptt.micState === 'blocked' ? 'الميكروفون محجوب' :
+    ptt.micState === 'ready' && ptt.isConnected ? 'الصوت جاهز' :
+    ptt.isConnected ? 'متصل' :
+    ptt.state === 'connecting' ? 'يتصل' : 'غير متصل';
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }} title={ptt.statusText}>
+      <button
+        type="button"
+        className="alert-btn-green"
+        onClick={(e) => {
+          e.stopPropagation();
+          void connectVoice();
+        }}
+        disabled={isPreparing || ptt.isConnected}
+        style={compact ? { paddingInline: 10 } : undefined}
+      >
+        <span
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 999,
+            background: ptt.isConnected ? '#10b981' : '#a1a1aa',
+            display: 'inline-block',
+          }}
+        />
+        {isPreparing ? 'فحص الصوت...' : statusLabel}
+      </button>
+      <button
+        type="button"
+        className="alert-btn-green"
+        disabled={!ptt.isConnected || ptt.micState === 'blocked'}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          start();
+        }}
+        onPointerUp={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          ptt.stopTransmission();
+        }}
+        onPointerCancel={() => ptt.stopTransmission()}
+        onMouseLeave={() => ptt.stopTransmission()}
+        style={{
+          background: ptt.isTransmitting ? '#ef4444' : undefined,
+          paddingInline: compact ? 10 : undefined,
+        }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+        {alertId ? 'PTT الحالة' : 'PTT القاعة'}
+      </button>
+    </div>
+  );
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
@@ -541,9 +629,6 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
             <CasesTab
               alerts={visibleAlerts}
               onViewAlert={openAlertModal}
-              onPttStart={startPtt}
-              onPttStop={stopPtt}
-              pttStatusText={ptt.statusText}
             />
           ) : (
               <CamerasTab
@@ -553,9 +638,6 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
                 onClickCamera={openCameraModal}
                 recentAlertByCameraId={recentAlertByCameraId}
                 onViewAlert={openAlertModal}
-                onPttStart={startPtt}
-                onPttStop={stopPtt}
-                pttStatusText={ptt.statusText}
               />
           )
         ) : activeNav === 'halls' ? (
@@ -603,15 +685,9 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
 function CasesTab({
   alerts,
   onViewAlert,
-  onPttStart,
-  onPttStop,
-  pttStatusText,
 }: {
   alerts: Alert[];
   onViewAlert: (alert: Alert) => void;
-  onPttStart: () => void | Promise<void>;
-  onPttStop: () => void;
-  pttStatusText: string;
 }) {
   if (alerts.length === 0) {
     return (
@@ -637,9 +713,6 @@ function CasesTab({
             key={alert.id}
             alert={alert}
             onViewAlert={onViewAlert}
-            onPttStart={onPttStart}
-            onPttStop={onPttStop}
-            pttStatusText={pttStatusText}
           />
         ))}
       </div>
@@ -650,15 +723,9 @@ function CasesTab({
 function AlertCard({
   alert,
   onViewAlert,
-  onPttStart,
-  onPttStop,
-  pttStatusText,
 }: {
   alert: Alert;
   onViewAlert: (alert: Alert) => void;
-  onPttStart: () => void | Promise<void>;
-  onPttStop: () => void;
-  pttStatusText: string;
 }) {
   const isHighPriority = alert.severity === 'high';
 
@@ -723,33 +790,7 @@ function AlertCard({
           </svg>
           عرض الحالة
         </button>
-        <button
-          className="alert-btn-green"
-          title={pttStatusText}
-          onPointerDown={(e) => {
-            e.preventDefault();
-            void onPttStart();
-          }}
-          onPointerUp={(e) => {
-            e.preventDefault();
-            onPttStop();
-          }}
-          onPointerCancel={() => onPttStop()}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            void onPttStart();
-          }}
-          onMouseUp={(e) => {
-            e.preventDefault();
-            onPttStop();
-          }}
-          onMouseLeave={() => onPttStop()}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
-          </svg>
-          الاتصال بالمراقب
-        </button>
+        <HallPttControl hallId={alert.hall_id} alertId={alert.id} compact />
       </div>
     </div>
   );
@@ -765,9 +806,6 @@ function CamerasTab({
   onClickCamera,
   recentAlertByCameraId,
   onViewAlert,
-  onPttStart,
-  onPttStop,
-  pttStatusText,
 }: {
   halls: HallItem[];
   hallsLoaded: boolean;
@@ -775,9 +813,6 @@ function CamerasTab({
   onClickCamera: (camera: CameraItem, hallName: string) => void;
   recentAlertByCameraId: Record<string, Alert | null>;
   onViewAlert: (alert: Alert) => void;
-  onPttStart: () => void | Promise<void>;
-  onPttStop: () => void;
-  pttStatusText: string;
 }) {
   if (!hallsLoaded) {
     return (
@@ -817,34 +852,9 @@ function CamerasTab({
                 <span className="hall-monitoring-badge inactive">في انتظار البدء</span>
               )}
             </div>
-            <button
-              className="alert-btn-green"
-              style={{ marginRight: 'auto', marginLeft: 0 }}
-              title={pttStatusText}
-              onPointerDown={(e) => {
-                e.preventDefault();
-                void onPttStart();
-              }}
-              onPointerUp={(e) => {
-                e.preventDefault();
-                onPttStop();
-              }}
-              onPointerCancel={() => onPttStop()}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                void onPttStart();
-              }}
-              onMouseUp={(e) => {
-                e.preventDefault();
-                onPttStop();
-              }}
-              onMouseLeave={() => onPttStop()}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
-              </svg>
-              الاتصال بالمراقب
-            </button>
+            <div style={{ marginRight: 'auto', marginLeft: 0 }}>
+              <HallPttControl hallId={hall.id} />
+            </div>
           </div>
           {hall.cameras.length === 0 ? (
             <div className="dashboard-empty-state" style={{ minHeight: '200px', backgroundColor: 'rgba(255,255,255,0.5)', borderRadius: '14px' }}>

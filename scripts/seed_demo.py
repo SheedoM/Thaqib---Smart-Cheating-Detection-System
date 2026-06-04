@@ -276,6 +276,11 @@ def upsert_exam_session(db, exam_name: str) -> ExamSession:
 
 
 def upsert_assignment(db, session: ExamSession, user: User, hall: Hall) -> None:
+    changed = False
+    if all(linked_hall.id != hall.id for linked_hall in session.halls):
+        session.halls.append(hall)
+        changed = True
+
     assignment = (
         db.query(Assignment)
         .filter(
@@ -293,6 +298,10 @@ def upsert_assignment(db, session: ExamSession, user: User, hall: Hall) -> None:
             role="primary",
         )
         db.add(assignment)
+        changed = True
+
+    if changed:
+        db.add(session)
         db.commit()
 
 

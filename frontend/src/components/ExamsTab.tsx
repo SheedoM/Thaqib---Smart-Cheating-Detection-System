@@ -52,10 +52,8 @@ export default function ExamsTab() {
   const [editingExam, setEditingExam] = useState<ExamItem | null>(null);
   const [deletingExam, setDeletingExam] = useState<ExamItem | null>(null);
   const [viewingReport, setViewingReport] = useState<ExamItem | null>(null);
-<<<<<<< HEAD
   const [startingExam, setStartingExam] = useState<ExamItem | null>(null);
   const [users, setUsers] = useState<UserSimple[]>([]);
-=======
   const [search, setSearch] = useState('');
   
   // Advanced filters state
@@ -64,7 +62,6 @@ export default function ExamsTab() {
   const [dateFilter, setDateFilter] = useState('');
   const [timeFilter, setTimeFilter] = useState('');
   const [activeStatus, setActiveStatus] = useState<'upcoming' | 'past' | 'all'>('all');
->>>>>>> 5917366 (Standardize UI buttons, add advanced exam filters, and fix supervisor image support on backend/frontend)
 
   const fetchExams = async () => {
     try {
@@ -90,7 +87,6 @@ export default function ExamsTab() {
     } catch (err) { console.error('Delete failed', err); }
   };
 
-<<<<<<< HEAD
   const fetchUsers = async () => {
     try {
       const res = await authFetch('/api/users/');
@@ -100,20 +96,11 @@ export default function ExamsTab() {
     }
   };
 
-  useEffect(() => {
-    fetchExams();
-    fetchUsers();
-    // Poll every 10 s so running-state cards update automatically (Phase 2)
-    const interval = setInterval(fetchExams, 10_000);
-    return () => clearInterval(interval);
-  }, []);
-
   const userById = users.reduce<Record<string, UserSimple>>((acc, user) => {
     acc[user.id] = user;
     return acc;
   }, {});
 
-=======
   const fetchHallsList = async () => {
     try {
       const res = await authFetch('/api/halls/');
@@ -121,12 +108,15 @@ export default function ExamsTab() {
     } catch (err) { console.error('Failed to fetch halls list', err); }
   };
 
-  useEffect(() => { 
-    fetchExams(); 
+  useEffect(() => {
+    fetchExams();
+    fetchUsers();
     fetchHallsList();
+    // Poll every 10 s so running-state cards update automatically.
+    const interval = setInterval(fetchExams, 10_000);
+    return () => clearInterval(interval);
   }, []);
   
->>>>>>> 5917366 (Standardize UI buttons, add advanced exam filters, and fix supervisor image support on backend/frontend)
   if (viewingReport) {
     return <ReportsTab initialReport={viewingReport as any} onBack={() => setViewingReport(null)} />;
   }

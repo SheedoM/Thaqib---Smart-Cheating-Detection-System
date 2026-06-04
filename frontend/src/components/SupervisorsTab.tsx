@@ -93,7 +93,6 @@ export default function SupervisorsTab() {
 function SupervisorCard({ s, onEdit, onDelete }: { s: Supervisor, onEdit: () => void, onDelete: () => void }) {
   const available = s.status !== 'inactive';
   const initials = s.full_name.split(' ').map((n: string) => n[0]).slice(0, 2).join('');
-  const imageSrc = s.image ? apiUrl(s.image) : null;
 
   return (
     <div className="bg-[#F4F2FA] rounded-3xl overflow-hidden border border-gray-100 hover:shadow-lg transition-all duration-300 group">

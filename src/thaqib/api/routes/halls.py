@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
-from src.thaqib.db.models.infrastructure import Hall, Institution
+from src.thaqib.db.models.infrastructure import Hall, HallVoiceChannel, Institution
 from src.thaqib.schemas.infrastructure import HallCreate, HallResponse, HallUpdate
 from src.thaqib.api.dependencies import RequireRole
 from src.thaqib.core.limiter import limiter
@@ -53,6 +53,14 @@ def create_hall(
         status=hall.status
     )
     db.add(new_hall)
+    db.flush()
+    db.add(
+        HallVoiceChannel(
+            hall_id=new_hall.id,
+            channel_key=f"hall:{new_hall.id}",
+            status="active",
+        )
+    )
     db.commit()
     db.refresh(new_hall)
     return new_hall

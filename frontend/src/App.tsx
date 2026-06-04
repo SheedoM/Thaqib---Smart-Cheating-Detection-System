@@ -8,7 +8,6 @@ import DashboardPage from './pages/DashboardPage';
 import InvigilatorLayout from './layouts/InvigilatorLayout';
 import SchedulePage from './pages/invigilator/SchedulePage';
 import HallMonitoringPage from './pages/invigilator/HallMonitoringPage';
-import PttPage from './pages/invigilator/PttPage';
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -105,7 +104,6 @@ export default function App() {
           <Route path="/invigilator" element={<InvigilatorLayout onLogout={handleLogout} />}>
             <Route index element={<SchedulePage />} />
             <Route path="session/:sessionId/:hallId" element={<HallMonitoringPage />} />
-            <Route path="ptt" element={<PttPage />} />
             <Route path="settings" element={<div className="p-8 text-center text-gray-500">قريباً...</div>} />
             <Route path="*" element={<Navigate to="/invigilator" replace />} />
           </Route>

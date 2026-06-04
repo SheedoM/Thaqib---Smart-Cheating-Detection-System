@@ -49,4 +49,8 @@ export function pttWebSocketUrl(clientId: string): string {
   return `${wsOrigin()}/api/v1/ptt/ws/${encodeURIComponent(clientId)}`;
 }
 
+export function pttHallWebSocketUrl(hallId: string): string {
+  return `${wsOrigin()}/api/v1/ptt/ws/halls/${encodeURIComponent(hallId)}`;
+}
+
 export const STREAM_BASE = '/api/stream';
