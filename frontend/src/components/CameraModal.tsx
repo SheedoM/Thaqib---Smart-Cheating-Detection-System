@@ -215,38 +215,20 @@ function CameraView({
                   أرشيف: {archiveMode}
                 </span>
               )}
+              {qualityLabel && (
+                <span style={{ fontSize: 11, fontWeight: 900, color: '#047857', padding: '2px 8px', background: '#ecfdf5', borderRadius: 6 }}>
+                  الجودة: {qualityLabel}
+                </span>
+              )}
+              {resolution && (
+                <span style={{ fontSize: 11, fontWeight: 900, color: '#0369a1', padding: '2px 8px', background: '#f0f9ff', borderRadius: 6 }}>
+                  الدقة: {resolution}
+                </span>
+              )}
             </div>
             <button onClick={() => setShowShortcuts(s => !s)}
               style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '4px 10px', cursor: 'pointer', fontSize: '12px', color: '#6b7280', fontWeight: 700 }}>
               ⌨ اختصارات {showShortcuts ? '▲' : '▼'}
-            </button>
-          </div>
-          {/* Row 2: action buttons */}
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <button onClick={() => void post('/quality')} disabled={toggling}
-              style={{ background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: '8px', padding: '4px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#374151' }}>
-              🎬 Quality: <span style={{ color: '#44006E' }}>{qualityLabel}</span>
-              <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[V]</span>
-            </button>
-            <button onClick={() => void post('/resolution')} disabled={toggling}
-              style={{ background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: '8px', padding: '4px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#374151' }}>
-              📀 Res: <span style={{ color: '#44006E' }}>{resolution ?? '—'}</span>
-              <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[G]</span>
-            </button>
-            <button onClick={() => void post('/archive')} disabled={toggling}
-              style={{ background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: '8px', padding: '4px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#374151' }}>
-              💾 Archive: <span style={{ color: '#44006E' }}>{archiveMode ?? '—'}</span>
-              <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[R]</span>
-            </button>
-            <button onClick={() => void post('/select-all')} disabled={toggling}
-              style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '4px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#166534' }}>
-              راقب الكل
-              <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[S]</span>
-            </button>
-            <button onClick={() => void post('/clear-selection')} disabled={toggling}
-              style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', padding: '4px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 900, color: '#991b1b' }}>
-              إلغاء المراقبة
-              <span style={{ color: '#9ca3af', marginLeft: 4, fontSize: 10 }}>[C]</span>
             </button>
           </div>
         </div>
