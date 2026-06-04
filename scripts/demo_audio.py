@@ -494,6 +494,7 @@ def main():
     print(f"  Silent chunks:     {stats['silent_chunks']}")
     print(f"  Global chunks:     {stats['global_chunks']}")
     print(f"  Local chunks:      {stats['local_chunks']}")
+    print(f"  Two-pass rescored: {stats.get('two_pass_rescored', 0)}  <- GLOBAL->LOCAL (noise-masked whispers recovered)")
     print(f"  Dropped chunks:    {stats.get('dropped_chunks', 0)}")
     print(f"  Speech detected:   {stats['speech_detected']}")
     print(f"  Alerts triggered:  {stats['alerts_triggered']}")

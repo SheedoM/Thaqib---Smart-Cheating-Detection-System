@@ -254,7 +254,7 @@ All settings are loaded from `.env` (environment variables). CLI flags override 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUDIO_VAD_THRESHOLD` | `0.3` | Initial VAD threshold (overridden by adaptive) |
+| `AUDIO_VAD_THRESHOLD` | `0.5` | Initial VAD threshold (overridden by adaptive) |
 | `AUDIO_ADAPTIVE_VAD` | `true` | Auto-calibrate VAD threshold to room noise |
 | `AUDIO_VAD_CALIBRATION_CHUNKS` | `50` | Chunks per adaptive calibration cycle |
 | `AUDIO_SPEECH_BUFFER_SEC` | `2.5` | Seconds of speech to accumulate before Whisper |

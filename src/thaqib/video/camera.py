@@ -279,3 +279,16 @@ class CameraStream:
     def frame_count(self) -> int:
         """Get number of frames read so far."""
         return self._frame_index
+
+    @property
+    def actual_fps(self) -> float:
+        """Measured FPS as reported by the capture device after open().
+
+        Falls back to target_fps (or 30.0) when the device has not been
+        opened yet or reports an invalid value.
+        """
+        if self._cap is not None:
+            fps = self._cap.get(cv2.CAP_PROP_FPS)
+            if fps > 0:
+                return fps
+        return float(self.target_fps or 30)

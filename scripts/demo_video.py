@@ -223,6 +223,11 @@ def main():
                     state = "ON" if visualizer.show_timestamp else "OFF"
                     logger.info(f"Live timestamp: {state} (archive/alert recordings unaffected)")
 
+                elif key == ord("k"):
+                    # Toggle face mesh landmark dots (display only — detection still runs)
+                    visualizer.toggle_face_mesh()
+                    logger.info(f"Face map points: {'ON' if visualizer.show_face_mesh else 'OFF'} (detection unaffected)")
+
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
 
