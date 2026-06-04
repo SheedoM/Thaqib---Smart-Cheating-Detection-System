@@ -7,6 +7,18 @@ export type VoiceMicState = 'idle' | 'requesting' | 'ready' | 'blocked' | 'error
 
 export type VoiceParticipant = { id: string; role: string; name: string };
 
+export type VoiceIncidentCard = {
+  alert_id: string;
+  exam_session_id?: string;
+  event_type?: string;
+  severity?: string;
+  timestamp?: string | null;
+  student_position?: unknown;
+  video_clip_path?: string | null;
+  audio_clip_path?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
 type Options = {
   hallId?: string;
   autoConnect?: boolean;
@@ -33,6 +45,7 @@ export function useHallVoice(options: Options = {}) {
   const [isTransmitting, setIsTransmitting] = useState(false);
   const [participants, setParticipants] = useState<VoiceParticipant[]>([]);
   const [remoteTalking, setRemoteTalking] = useState<VoiceParticipant | null>(null);
+  const [incidentCards, setIncidentCards] = useState<VoiceIncidentCard[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -42,6 +55,9 @@ export function useHallVoice(options: Options = {}) {
   const talkingRef = useRef(false);
   const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const unmountedRef = useRef(false);
+  const manualCloseRef = useRef(false);
+  const retryCountRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const getAudioCtx = useCallback((): AudioContext | null => {
     const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -79,10 +95,16 @@ export function useHallVoice(options: Options = {}) {
     if (pingTimerRef.current) { clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
   }, []);
 
+  const stopReconnect = useCallback(() => {
+    if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
+  }, []);
+
   const disconnect = useCallback(() => {
+    manualCloseRef.current = true;
     talkingRef.current = false;
     setIsTransmitting(false);
     stopPing();
+    stopReconnect();
     cleanupMic();
     setMicState('idle');
     setParticipants([]);
@@ -91,12 +113,14 @@ export function useHallVoice(options: Options = {}) {
     wsRef.current = null;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) ws.close();
     setState('idle');
-  }, [cleanupMic, stopPing]);
+  }, [cleanupMic, stopPing, stopReconnect]);
 
   const connect = useCallback(async (): Promise<boolean> => {
     if (!hallId || unmountedRef.current) return false;
     if (wsRef.current?.readyState === WebSocket.OPEN) return true;
 
+    manualCloseRef.current = false;
+    stopReconnect();
     setState('connecting');
     setError(null);
     const ws = new WebSocket(voiceWebSocketUrl(hallId));
@@ -118,6 +142,7 @@ export function useHallVoice(options: Options = {}) {
     }
 
     wsRef.current = ws;
+    retryCountRef.current = 0;
     setState('connected');
     setError(null);
 
@@ -128,7 +153,11 @@ export function useHallVoice(options: Options = {}) {
 
     ws.onmessage = (event) => {
       if (typeof event.data === 'string') {
-        let data: { type?: string; participants?: VoiceParticipant[]; id?: string; name?: string; role?: string };
+        let data: {
+          type?: string;
+          participants?: VoiceParticipant[];
+          id?: string; name?: string; role?: string;
+        } & Partial<VoiceIncidentCard>;
         try { data = JSON.parse(event.data); } catch { return; }
         if (data.type === 'presence') {
           setParticipants(data.participants ?? []);
@@ -136,6 +165,10 @@ export function useHallVoice(options: Options = {}) {
           setRemoteTalking({ id: data.id ?? '', name: data.name ?? '', role: data.role ?? '' });
         } else if (data.type === 'talk_stop') {
           setRemoteTalking(null);
+        } else if (data.type === 'incident_card') {
+          const { type: _type, ...card } = data;
+          void _type;
+          setIncidentCards((prev) => [card as VoiceIncidentCard, ...prev].slice(0, 10));
         }
       } else if (event.data instanceof ArrayBuffer) {
         playPcm(event.data);
@@ -149,14 +182,23 @@ export function useHallVoice(options: Options = {}) {
       setIsTransmitting(false);
       setRemoteTalking(null);
       if (wsRef.current === ws) wsRef.current = null;
-      if (!unmountedRef.current) {
+      if (unmountedRef.current || manualCloseRef.current) return;
+      // Unexpected drop — try to reconnect with backoff.
+      if (retryCountRef.current < 5) {
+        retryCountRef.current += 1;
+        const delay = Math.min(2000 * retryCountRef.current, 10000);
+        setState('connecting');
+        setError(`انقطع الاتصال — إعادة المحاولة خلال ${Math.round(delay / 1000)} ث…`);
+        stopReconnect();
+        reconnectTimerRef.current = setTimeout(() => { void connect(); }, delay);
+      } else {
         setState('error');
         setError('انقطع الاتصال بالقناة الصوتية');
       }
     };
 
     return true;
-  }, [hallId, cleanupMic, playPcm, stopPing]);
+  }, [hallId, cleanupMic, playPcm, stopPing, stopReconnect]);
 
   const ensureMic = useCallback(async (ws: WebSocket): Promise<boolean> => {
     if (mediaStreamRef.current && scriptNodeRef.current) { setMicState('ready'); return true; }
@@ -254,6 +296,8 @@ export function useHallVoice(options: Options = {}) {
     isTransmitting,
     participants,
     remoteTalking,
+    incidentCards,
+    clearIncidentCards: () => setIncidentCards([]),
     error,
     statusText,
     connect,

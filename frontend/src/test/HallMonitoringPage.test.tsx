@@ -11,6 +11,8 @@ const mockVoice = {
   isTransmitting: false,
   participants: [] as VoiceParticipant[],
   remoteTalking: null as VoiceParticipant | null,
+  incidentCards: [] as { alert_id: string; event_type?: string; severity?: string; timestamp?: string | null }[],
+  clearIncidentCards: vi.fn(),
   error: null as string | null,
   statusText: 'متصل بالقناة الصوتية',
   connect: vi.fn().mockResolvedValue(true),
@@ -63,6 +65,7 @@ describe('HallMonitoringPage voice channel status', () => {
     mockVoice.isTransmitting = false;
     mockVoice.participants = [];
     mockVoice.remoteTalking = null;
+    mockVoice.incidentCards = [];
     mockVoice.error = null;
     mockVoice.statusText = 'متصل بالقناة الصوتية';
     mockVoice.connect.mockResolvedValue(true);

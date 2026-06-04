@@ -15,7 +15,7 @@ function readCookie(name: string): string | null {
   return value ? decodeURIComponent(value.split('=').slice(1).join('=')) : null;
 }
 
-export async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
+function rawFetch(path: string, init: RequestInit): Promise<Response> {
   const method = (init.method ?? 'GET').toUpperCase();
   const headers = new Headers(init.headers);
 
@@ -36,7 +36,50 @@ export async function authFetch(path: string, init: RequestInit = {}): Promise<R
   });
 }
 
-/** WebSocket origin for PTT (same-origin Vite proxy to backend :8001 in dev). */
+// Single-flight refresh: many polling requests can 401 at once when the access
+// token expires; we want exactly one POST /api/auth/refresh to rotate the tokens
+// (the endpoint is rate-limited to 5/min), with the rest awaiting that result.
+let refreshPromise: Promise<boolean> | null = null;
+
+function refreshSession(): Promise<boolean> {
+  if (!refreshPromise) {
+    const promise = rawFetch('/api/auth/refresh', { method: 'POST' })
+      .then((res) => res.ok)
+      .catch(() => false);
+    refreshPromise = promise;
+    void promise.finally(() => {
+      if (refreshPromise === promise) refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+}
+
+/**
+ * fetch wrapper that sends cookies + CSRF and, on a 401, transparently refreshes
+ * the access token once and retries. If the refresh itself fails (dead session),
+ * it emits a `thaqib:unauthorized` event so the app can drop to the login screen.
+ */
+export async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const response = await rawFetch(path, init);
+
+  if (
+    response.status !== 401 ||
+    path.startsWith('/api/auth/refresh') ||
+    path.startsWith('/api/auth/login')
+  ) {
+    return response;
+  }
+
+  const refreshed = await refreshSession();
+  if (!refreshed) {
+    window.dispatchEvent(new CustomEvent('thaqib:unauthorized'));
+    return response;
+  }
+
+  return rawFetch(path, init);
+}
+
+/** WebSocket origin for the voice channel (same-origin Vite proxy to backend :8001 in dev). */
 export function wsOrigin(): string {
   const o = import.meta.env.VITE_WS_ORIGIN;
   if (typeof o === 'string' && o.length > 0) return o.replace(/\/$/, '');

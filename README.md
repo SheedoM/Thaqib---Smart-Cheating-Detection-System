@@ -111,11 +111,19 @@ The system has 3 components: **Camera Simulator**, **Backend**, and **Frontend**
 docker-compose up -d db
 ```
 
-#### 2. Start the Camera Simulator (for testing with pre-recorded videos)
+#### 2. Start the Camera Simulator (required for camera feeds)
 
-Place video files in `simulator/test_videos/` (e.g., `cam1.mp4`, `cam2.mp4`), then:
+Camera feeds will **not** open unless the simulator is running on port **8000** — the
+seeded `Device.stream_url` values point at `http://localhost:8000/camera/<id>/feed`
+(API runs on 8001, simulator on 8000; the backend resolves feeds server-side). Place
+video files in `simulator/test_videos/` (e.g., `cam1.mp4`, `cam2.mp4`), then start it
+either natively or via Docker:
 
 ```bash
+# Native (no Docker) — uses the project venv
+./venv/Scripts/python.exe -m uvicorn simulator.main:app --host 0.0.0.0 --port 8000
+
+# OR Docker
 docker-compose -f simulator/docker-compose.simulator.yml up -d
 ```
 
@@ -160,9 +168,19 @@ cd frontend
 npm run dev -- --host
 ```
 
-Open `http://localhost:5173` in your browser. The Vite dev server proxies `/api` HTTP requests and PTT WebSockets to the backend on `127.0.0.1:8001`.
+Open `http://localhost:5173` in your browser. The Vite dev server proxies `/api` HTTP requests and the hall voice WebSocket to the backend on `127.0.0.1:8001`.
 
-For phone PTT testing, do not use plain LAN HTTP such as `http://192.168.1.12:5173` for microphone transmission. Mobile browsers require a secure context for microphone access, so use an HTTPS Vite dev URL with a trusted local certificate or a trusted tunnel. Receive-only PTT can connect over HTTP, but pressing PTT to transmit will be blocked by the browser.
+#### 7. (Phone testing) Serve over HTTPS with a Cloudflare tunnel
+
+The hall voice channel lets the control room and invigilators talk. Microphone capture only works in a **secure context** (HTTPS or `localhost`), so a phone on plain LAN HTTP such as `http://192.168.1.12:5173` cannot transmit. Expose the app over HTTPS with a Cloudflare quick tunnel:
+
+```bash
+cloudflared tunnel --url http://localhost:5173
+```
+
+Open the printed `https://<random>.trycloudflare.com` URL on **both** the laptop and the phone, then log in. The voice channel connects over `wss://` through the tunnel and the phone will grant the microphone. (`vite.config.ts` already sets `allowedHosts: true`; everything is same-origin through the tunnel, so no CORS change is needed.)
+
+**Startup order:** database/migrations → seed → simulator (:8000) → backend (:8001) → frontend (5173) → *(phone testing only)* cloudflared tunnel.
 
 If you bypass the Vite proxy or call the backend directly from another device, keep `APP_ENV=development` and include your LAN frontend URL in `CORS_ORIGINS`, for example:
 

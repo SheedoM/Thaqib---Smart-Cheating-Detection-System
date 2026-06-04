@@ -318,6 +318,29 @@ export default function HallMonitoringPage() {
             القناة الصوتية متصلة. بانتظار اتصال الإدارة من غرفة التحكم.
           </div>
         )}
+        {voice.incidentCards.length > 0 && (
+          <div className="mb-6 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-bold text-red-700">حالات مؤكدة من غرفة التحكم</p>
+              <button onClick={voice.clearIncidentCards} className="text-[10px] font-bold text-gray-400">مسح</button>
+            </div>
+            {voice.incidentCards.map((card) => (
+              <div key={card.alert_id} className="bg-red-50 border border-red-100 text-red-700 px-4 py-3 rounded-xl text-xs flex items-start gap-2">
+                <AlertTriangle size={16} className="shrink-0" />
+                <div>
+                  <p className="font-bold">
+                    {card.event_type || 'حالة مؤكدة'}{card.severity ? ` — ${card.severity}` : ''}
+                  </p>
+                  {card.timestamp && (
+                    <p className="mt-0.5 text-[10px] text-red-500">
+                      {new Date(card.timestamp).toLocaleTimeString('en-US', { hour12: false })}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
         {isInsecureLanContext() && (
           <div className="bg-amber-50 border border-amber-100 text-amber-800 px-4 py-3 rounded-xl mb-6 text-xs font-bold">
             Microphone requires HTTPS on mobile. القناة الصوتية ستبقى متصلة للاستقبال، لكن الإرسال يحتاج فتح التطبيق عبر رابط https.

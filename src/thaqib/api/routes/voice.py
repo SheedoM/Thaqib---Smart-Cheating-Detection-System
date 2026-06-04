@@ -87,6 +87,12 @@ async def _broadcast_bytes(hall_id: str, data: bytes, exclude: str | None = None
         _rooms.get(hall_id, {}).pop(uid, None)
 
 
+async def notify_hall(hall_id: str, message: dict[str, Any]) -> None:
+    """Push a JSON message (e.g. a confirmed-incident card) to everyone connected
+    to a hall's voice channel. Safe to call when nobody is connected — it's a no-op."""
+    await _broadcast(hall_id, message)
+
+
 @router.websocket("/ws/{hall_id}")
 async def voice_ws(websocket: WebSocket, hall_id: str):
     user = await _authenticate(websocket)

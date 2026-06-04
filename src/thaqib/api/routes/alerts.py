@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from src.thaqib.api.dependencies import RequireRole
+from src.thaqib.api.routes import voice
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.events import Alert
 from src.thaqib.db.models.users import User
@@ -41,7 +42,7 @@ def _alert_response(alert: Alert) -> dict[str, Any]:
 
 
 @router.post("/{alert_id}/confirm")
-def confirm_alert(
+async def confirm_alert(
     alert_id: uuid.UUID,
     payload: AlertReviewRequest | None = None,
     db: Session = Depends(get_db),
@@ -60,6 +61,28 @@ def confirm_alert(
     db.add(alert)
     db.commit()
     db.refresh(alert)
+
+    # Notify the hall's voice channel so the invigilator's device shows the
+    # confirmed incident (replaces the old PTT incident-card push).
+    event = alert.detection_event
+    device = event.device if event else None
+    hall_id = device.hall_id if device else None
+    if event and hall_id is not None:
+        await voice.notify_hall(
+            str(hall_id),
+            {
+                "type": "incident_card",
+                "alert_id": str(alert.id),
+                "exam_session_id": str(alert.exam_session_id),
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "timestamp": event.timestamp.isoformat() if event.timestamp else None,
+                "student_position": event.student_position,
+                "video_clip_path": event.video_clip_path,
+                "audio_clip_path": event.audio_clip_path,
+                "metadata": event.metadata_json or {},
+            },
+        )
 
     return _alert_response(alert)
 

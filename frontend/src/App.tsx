@@ -45,6 +45,13 @@ export default function App() {
     checkStatus();
   }, []);
 
+  // When authFetch exhausts a token refresh (dead session), drop to the login screen.
+  useEffect(() => {
+    const onUnauthorized = () => setUser(null);
+    window.addEventListener('thaqib:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('thaqib:unauthorized', onUnauthorized);
+  }, []);
+
   const handleLoginSuccess = () => {
     checkStatus();
   };
