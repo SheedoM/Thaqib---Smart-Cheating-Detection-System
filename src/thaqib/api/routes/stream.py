@@ -1121,6 +1121,12 @@ async def toggle_panel(device_id: str, _=Depends(require_stream_user)) -> JSONRe
     return _vis_toggle(device_id, "toggle_control_panel", "show_control_panel")
 
 
+@router.post("/cameras/{device_id}/toggle/facemesh")
+async def toggle_facemesh(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+    """[K] Toggle face mesh overlay points on/off."""
+    return _vis_toggle(device_id, "toggle_face_mesh", "show_face_mesh")
+
+
 # GET controls — read current state of all toggles
 @router.get("/cameras/{device_id}/controls")
 async def get_camera_controls(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
@@ -1145,6 +1151,7 @@ async def get_camera_controls(device_id: str, _=Depends(require_stream_user)) ->
             "show_gaze_lines": viz.show_gaze_lines,
             "show_timestamp": viz.show_timestamp,
             "show_control_panel": viz.show_control_panel,
+            "show_face_mesh": viz.show_face_mesh,
         }
     tracker = getattr(pipeline, "_tracker", None)
     return JSONResponse({

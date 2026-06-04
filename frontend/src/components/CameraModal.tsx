@@ -151,6 +151,7 @@ function CameraView({
         case 'd': path = '/toggle/papers'; break;
         case 'f': path = '/toggle/phones'; break;
         case 'l': path = '/toggle/gaze-lines'; break;
+        case 'k': path = '/toggle/facemesh'; break;
         case 'w': path = '/toggle/timestamp'; break;
         case 'p': path = '/toggle/panel'; break;
       }
@@ -266,6 +267,7 @@ function CameraView({
               ['D', 'تبديل عرض إطارات الورق ON/OFF'],
               ['F', 'تبديل عرض إطارات الهاتف ON/OFF'],
               ['L', 'تبديل خطوط النظرة→ورق ON/OFF'],
+              ['K', 'تبديل عرض نقاط خريطة الوجه ON/OFF'],
               ['W', 'تبديل التوقيت المرئي ON/OFF'],
               ['P', 'إخفاء/إظهار لوحة التحكم'],
               ['Esc', 'إغلاق النافذة'],
