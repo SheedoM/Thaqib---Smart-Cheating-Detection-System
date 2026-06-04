@@ -26,9 +26,6 @@ describe('CameraModal keyboard controls', () => {
         alert={null}
         camera={{ id: 'camera-1', name: 'Camera 1', hallName: 'Hall 1', feedPath: '/feed' }}
         stats={null}
-        pttStatusText="connected"
-        onPttStart={vi.fn()}
-        onPttStop={vi.fn()}
         onClose={vi.fn()}
       />,
     );

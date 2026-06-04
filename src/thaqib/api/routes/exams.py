@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session, selectinload
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.exams import ExamSession, Assignment
 from src.thaqib.db.models.infrastructure import Device, Hall
-from src.thaqib.db.models.ptt import PttClip
 from src.thaqib.db.models.users import User
 from src.thaqib.db.models.events import Alert, DetectionEvent
 from src.thaqib.schemas.exams import (
@@ -18,8 +17,6 @@ from src.thaqib.schemas.exams import (
 from src.thaqib.api.dependencies import RequireRole, get_current_user
 from src.thaqib.core.limiter import limiter
 from src.thaqib.api.routes import stream
-from src.thaqib.api.routes.ptt import _ensure_hall_channel
-from src.thaqib.api.ws_manager import manager
 
 router = APIRouter()
 require_admin = RequireRole(["admin"])
@@ -227,22 +224,6 @@ def get_hall_readiness(
             "message": "No microphones are registered for this hall.",
         })
 
-    failed_count = sum(1 for result in results if result["status"] != "passed")
-    channel = _ensure_hall_channel(db, hall.id)
-    voice_presence = manager.get_channel_presence(str(channel.id))
-    voice_ready = voice_presence["control_connected"] and voice_presence["invigilator_connected"]
-    results.append({
-        "id": str(channel.id),
-        "type": "voice",
-        "identifier": channel.channel_key,
-        "name": "Hall voice channel",
-        "status": "passed" if voice_ready else "failed",
-        "message": (
-            "Control room and invigilator are connected."
-            if voice_ready
-            else "Voice channel is not fully connected."
-        ),
-    })
     failed_count = sum(1 for result in results if result["status"] != "passed")
     return {
         "session_id": str(session.id),
@@ -662,30 +643,6 @@ def get_session_report(
             "device_id": str(e.device_id) if e.device_id else None,
         })
 
-    ptt_clips = (
-        db.query(PttClip)
-        .filter(PttClip.exam_session_id == session_id)
-        .order_by(PttClip.started_at.asc())
-        .all()
-    )
-    ptt_clip_rows = [
-        {
-            "id": str(clip.id),
-            "hall_id": str(clip.hall_id),
-            "hall_name": clip.hall.name if clip.hall else None,
-            "speaker_id": str(clip.speaker_id),
-            "speaker_name": clip.speaker_name,
-            "speaker_role": clip.speaker_role,
-            "clip_type": clip.clip_type,
-            "alert_id": str(clip.alert_id) if clip.alert_id else None,
-            "started_at": clip.started_at.isoformat(),
-            "ended_at": clip.ended_at.isoformat(),
-            "duration_ms": clip.duration_ms,
-            "audio_file_path": clip.audio_file_path,
-        }
-        for clip in ptt_clips
-    ]
-
     return {
         "session_id": str(session.id),
         "exam_name": session.exam_name,
@@ -707,5 +664,4 @@ def get_session_report(
         },
         "halls": hall_summaries,
         "timeline": timeline,
-        "ptt_clips": ptt_clip_rows,
     }

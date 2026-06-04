@@ -10,7 +10,7 @@ from src.thaqib.core.limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from src.thaqib.api.routes import alerts, ptt, auth, institutions, halls, setup, devices, users, exams, events, stream, settings as settings_router
+from src.thaqib.api.routes import alerts, voice, auth, institutions, halls, setup, devices, users, exams, events, stream, settings as settings_router
 from src.thaqib.config.settings import get_settings
 
 settings = get_settings()
@@ -85,7 +85,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(ptt.router, prefix="/api/v1/ptt")
+app.include_router(voice.router, prefix="/api/v1/voice")
 app.include_router(setup.router, prefix="/api/setup", tags=["Setup"])
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(institutions.router, prefix="/api/institutions", tags=["Institutions"])

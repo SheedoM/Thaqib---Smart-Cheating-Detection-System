@@ -5,7 +5,7 @@ import ExamsTab from '../components/ExamsTab';
 import SupervisorsTab from '../components/SupervisorsTab';
 import SettingsTab from '../components/SettingsTab';
 import { apiUrl, authFetch, STREAM_BASE } from '../config/api';
-import { useInvigilatorPtt } from '../hooks/useInvigilatorPtt';
+import { useHallVoice } from '../hooks/useHallVoice';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -123,81 +123,77 @@ function timeSince(isoString: string): string {
   }
 }
 
-function HallPttControl({
+function HallVoiceControl({
   hallId,
-  alertId,
-  compact = false,
+  hallName,
 }: {
   hallId: string;
-  alertId?: string;
-  compact?: boolean;
+  hallName: string;
 }) {
-  const ptt = useInvigilatorPtt({ hallId });
-  const [isPreparing, setIsPreparing] = useState(false);
-
-  const connectVoice = async () => {
-    setIsPreparing(true);
-    try {
-      await ptt.connect({ prepareMic: true });
-    } finally {
-      setIsPreparing(false);
-    }
-  };
-
-  const start = () => {
-    void ptt.startTransmission(alertId ? { alertId } : undefined);
-  };
+  const voice = useHallVoice({ hallId, autoConnect: true });
+  const others = voice.participants.filter((p) => p.role === 'invigilator');
+  const invigilatorConnected = others.length > 0;
+  const isError = voice.state === 'error';
 
   const statusLabel =
-    ptt.isTransmitting ? 'إرسال' :
-    ptt.micState === 'blocked' ? 'الميكروفون محجوب' :
-    ptt.micState === 'ready' && ptt.isConnected ? 'الصوت جاهز' :
-    ptt.isConnected ? 'متصل' :
-    ptt.state === 'connecting' ? 'يتصل' : 'غير متصل';
+    voice.isTransmitting ? 'إرسال' :
+    voice.remoteTalking ? `يتحدث: ${voice.remoteTalking.name}` :
+    isError ? 'فشل الاتصال الصوتي' :
+    voice.micBlocked ? 'الميكروفون محجوب' :
+    voice.isConnected ? 'متصل' :
+    voice.state === 'connecting' ? 'يتصل' : 'غير متصل';
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }} title={ptt.statusText}>
-      <button
-        type="button"
-        className="alert-btn-green"
-        onClick={(e) => {
-          e.stopPropagation();
-          void connectVoice();
-        }}
-        disabled={isPreparing || ptt.isConnected}
-        style={compact ? { paddingInline: 10 } : undefined}
-      >
-        <span
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: 999,
-            background: ptt.isConnected ? '#10b981' : '#a1a1aa',
-            display: 'inline-block',
-          }}
-        />
-        {isPreparing ? 'فحص الصوت...' : statusLabel}
-      </button>
-      <button
-        type="button"
-        className="alert-btn-green"
-        disabled={!ptt.isConnected || ptt.micState === 'blocked'}
-        onPointerDown={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          start();
-        }}
-        onPointerUp={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          ptt.stopTransmission();
-        }}
-        onPointerCancel={() => ptt.stopTransmission()}
-        onMouseLeave={() => ptt.stopTransmission()}
+    <div
+      style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}
+      title={voice.statusText}
+      aria-label={`صوت ${hallName}`}
+    >
+      <span
         style={{
-          background: ptt.isTransmitting ? '#ef4444' : undefined,
-          paddingInline: compact ? 10 : undefined,
+          display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 34, padding: '7px 10px',
+          borderRadius: 8,
+          background: isError ? '#fef2f2' : voice.isConnected ? '#ecfdf5' : '#f4f4f5',
+          color: isError ? '#b91c1c' : voice.isConnected ? '#047857' : '#71717a',
+          fontSize: 12, fontWeight: 800, whiteSpace: 'nowrap',
         }}
+      >
+        <span style={{
+          width: 8, height: 8, borderRadius: 999, display: 'inline-block',
+          background: voice.isTransmitting ? '#ef4444' : isError ? '#ef4444' : voice.isConnected ? '#10b981' : '#a1a1aa',
+        }} />
+        {statusLabel}
+      </span>
+      <span
+        style={{
+          minHeight: 34, display: 'inline-flex', alignItems: 'center', padding: '7px 10px', borderRadius: 8,
+          background: invigilatorConnected ? '#eef2ff' : '#f4f4f5',
+          color: invigilatorConnected ? '#3730a3' : '#71717a',
+          fontSize: 12, fontWeight: 800, whiteSpace: 'nowrap',
+        }}
+      >
+        {invigilatorConnected ? 'المراقب متصل' : 'المراقب غير متصل'}
+      </span>
+      {isError && (
+        <button
+          type="button"
+          className="alert-btn-primary"
+          style={{ background: '#6b7280', paddingInline: 10 }}
+          onClick={(e) => { e.stopPropagation(); void voice.connect(); }}
+        >
+          إعادة الاتصال
+        </button>
+      )}
+      <button
+        type="button"
+        className="alert-btn-green"
+        disabled={voice.micBlocked}
+        title={voice.statusText}
+        onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); void voice.startTalking(); }}
+        onPointerUp={(e) => { e.preventDefault(); e.stopPropagation(); voice.stopTalking(); }}
+        onPointerCancel={() => voice.stopTalking()}
+        onMouseLeave={() => voice.stopTalking()}
+        style={{ background: voice.isTransmitting ? '#ef4444' : undefined, paddingInline: 12 }}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
@@ -205,7 +201,7 @@ function HallPttControl({
           <line x1="12" y1="19" x2="12" y2="23"/>
           <line x1="8" y1="23" x2="16" y2="23"/>
         </svg>
-        {alertId ? 'PTT الحالة' : 'PTT القاعة'}
+        تحدث مع القاعة
       </button>
     </div>
   );
@@ -238,32 +234,13 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
   const lastSeenAlertIdByCameraRef = useRef<Record<string, string>>({});
   const clearTimersRef = useRef<Record<string, number>>({});
   const notifWrapRef = useRef<HTMLDivElement | null>(null);
-  const pttPressedRef = useRef(false);
-
-  const ptt = useInvigilatorPtt();
-
-  const startPtt = async (targetId?: string) => {
-    pttPressedRef.current = true;
-    // If not connected, connect first (startSpeak will be queued inside the hook)
-    if (ptt.state !== 'connected') {
-      await ptt.connect();
-    }
-    if (!pttPressedRef.current) return; // user released before connection completed
-    await ptt.startSpeak(targetId);
-  };
-
-  const stopPtt = () => {
-    pttPressedRef.current = false;
-    ptt.stopSpeak();
-  };
 
   const confirmAlert = async (alert: Alert) => {
     const res = await authFetch(`/api/alerts/${alert.id}/confirm`, { method: 'POST' });
     if (!res.ok) return;
-    const data = await res.json().catch(() => null);
+    await res.json().catch(() => null);
     setAlerts(prev => prev.map(item => item.id === alert.id ? { ...item, status: 'confirmed' } : item));
     setSelectedAlert(prev => prev && prev.id === alert.id ? { ...prev, status: 'confirmed' } : prev);
-    await startPtt(data?.ptt_target_id);
   };
 
   const cancelAlert = async (alert: Alert) => {
@@ -455,31 +432,6 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
                   <polyline points="21 3 21 9 15 9"/>
                 </svg>
               </button>
-              <div
-                title={ptt.statusText}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '7px 10px',
-                  borderRadius: 999,
-                  background: ptt.micState === 'blocked' ? '#fff7ed' : ptt.state === 'connected' ? '#ecfdf5' : '#f4f4f5',
-                  color: ptt.micState === 'blocked' ? '#c2410c' : ptt.state === 'connected' ? '#047857' : '#71717a',
-                  fontSize: 11,
-                  fontWeight: 800,
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                <span
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: 999,
-                    background: ptt.isTransmitting ? '#ef4444' : ptt.micState === 'blocked' ? '#f97316' : ptt.state === 'connected' ? '#10b981' : '#a1a1aa',
-                  }}
-                />
-                {ptt.isTransmitting ? 'PTT إرسال' : ptt.micState === 'blocked' ? 'الميكروفون محجوب' : ptt.state === 'connected' ? 'PTT متصل' : ptt.state === 'connecting' ? 'PTT يتصل' : 'PTT غير متصل'}
-              </div>
               {/* Notification bell */}
               <button
                 className="dashboard-icon-btn"
@@ -663,9 +615,6 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
           alert={selectedAlert}
           camera={selectedCamera}
           stats={selectedCamera ? statsByCamera[selectedCamera.id] ?? null : null}
-          pttStatusText={ptt.statusText}
-          onPttStart={startPtt}
-          onPttStop={stopPtt}
           onConfirmAlert={confirmAlert}
           onCancelAlert={cancelAlert}
           onClose={closeModal}
@@ -790,7 +739,6 @@ function AlertCard({
           </svg>
           عرض الحالة
         </button>
-        <HallPttControl hallId={alert.hall_id} alertId={alert.id} compact />
       </div>
     </div>
   );
@@ -853,7 +801,7 @@ function CamerasTab({
               )}
             </div>
             <div style={{ marginRight: 'auto', marginLeft: 0 }}>
-              <HallPttControl hallId={hall.id} />
+              <HallVoiceControl hallId={hall.id} hallName={hall.name} />
             </div>
           </div>
           {hall.cameras.length === 0 ? (

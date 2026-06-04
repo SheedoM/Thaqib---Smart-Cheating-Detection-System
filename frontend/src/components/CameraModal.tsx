@@ -57,15 +57,12 @@ interface CameraModalProps {
     feedPath: string | null;
   } | null;
   stats: CameraStats | null;
-  pttStatusText: string;
-  onPttStart: () => void | Promise<void>;
-  onPttStop: () => void;
   onConfirmAlert?: (alert: Alert) => void | Promise<void>;
   onCancelAlert?: (alert: Alert) => void | Promise<void>;
   onClose: () => void;
 }
 
-export default function CameraModal({ mode, alert, camera, stats, pttStatusText, onPttStart, onPttStop, onConfirmAlert, onCancelAlert, onClose }: CameraModalProps) {
+export default function CameraModal({ mode, alert, camera, stats, onConfirmAlert, onCancelAlert, onClose }: CameraModalProps) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-container" onClick={(e) => e.stopPropagation()}>
@@ -80,7 +77,7 @@ export default function CameraModal({ mode, alert, camera, stats, pttStatusText,
         {mode === 'camera' ? (
           <CameraView camera={camera} stats={stats} />
         ) : (
-          <AlertView alert={alert} pttStatusText={pttStatusText} onPttStart={onPttStart} onPttStop={onPttStop} onConfirmAlert={onConfirmAlert} onCancelAlert={onCancelAlert} />
+          <AlertView alert={alert} onConfirmAlert={onConfirmAlert} onCancelAlert={onCancelAlert} />
         )}
       </div>
     </div>
@@ -98,39 +95,23 @@ function CameraView({
   stats: CameraStats | null;
 }) {
   const deviceId = camera?.id ?? null;
-  const [controls, setControls] = useState<Record<string, unknown>>({});
-  const [toggling, setToggling] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const inFlightPathsRef = useRef<Set<string>>(new Set());
-
-  const quality = typeof controls.quality === 'number' ? controls.quality : null;
-  const resolution = typeof controls.resolution === 'string' ? controls.resolution : null;
-  const archiveMode = typeof controls.archive_mode === 'string' ? controls.archive_mode : null;
-  const selectedCount = typeof controls.selected_count === 'number' ? controls.selected_count : null;
-  const trackedCount = typeof controls.tracked_count === 'number' ? controls.tracked_count : null;
 
   // Load current controls state on open
   useEffect(() => {
     if (!deviceId) return;
     authFetch(`/api/stream/cameras/${deviceId}/controls`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) setControls(d); })
       .catch(() => {});
   }, [deviceId]);
 
   const post = useCallback(async (path: string) => {
     if (!deviceId || inFlightPathsRef.current.has(path)) return;
     inFlightPathsRef.current.add(path);
-    setToggling(true);
     try {
-      const r = await authFetch(`/api/stream/cameras/${deviceId}${path}`, { method: 'POST' });
-      if (r.ok) {
-        const d = await r.json();
-        setControls(prev => ({ ...prev, ...d }));
-      }
+      await authFetch(`/api/stream/cameras/${deviceId}${path}`, { method: 'POST' });
     } finally {
       inFlightPathsRef.current.delete(path);
-      setToggling(inFlightPathsRef.current.size > 0);
     }
   }, [deviceId]);
 
@@ -162,8 +143,6 @@ function CameraView({
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [post]);
-
-  const qualityLabel = quality === 50 ? 'LOW' : quality === 75 ? 'MED' : quality === 90 ? 'HIGH' : quality != null ? `${quality}%` : '—';
 
   return (
     <div className="modal-content" dir="rtl">
@@ -281,16 +260,10 @@ function CameraView({
 
 function AlertView({
   alert,
-  pttStatusText,
-  onPttStart,
-  onPttStop,
   onConfirmAlert,
   onCancelAlert,
 }: {
   alert: Alert | null;
-  pttStatusText: string;
-  onPttStart: () => void | Promise<void>;
-  onPttStop: () => void;
   onConfirmAlert?: (alert: Alert) => void | Promise<void>;
   onCancelAlert?: (alert: Alert) => void | Promise<void>;
 }) {
@@ -412,22 +385,6 @@ function AlertView({
             <polyline points="7 3 7 8 15 8"/>
           </svg>
           حفظ التقرير
-        </button>
-        <button
-          className="alert-btn-green"
-          style={{ flex: 1 }}
-          title={pttStatusText}
-          onPointerDown={(e) => { e.preventDefault(); void onPttStart(); }}
-          onPointerUp={(e) => { e.preventDefault(); onPttStop(); }}
-          onPointerCancel={() => onPttStop()}
-          onMouseDown={(e) => { e.preventDefault(); void onPttStart(); }}
-          onMouseUp={(e) => { e.preventDefault(); onPttStop(); }}
-          onMouseLeave={() => onPttStop()}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
-          </svg>
-          الاتصال بالمراقب
         </button>
       </div>
     </div>

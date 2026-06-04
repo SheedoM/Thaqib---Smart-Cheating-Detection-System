@@ -36,7 +36,7 @@ export async function authFetch(path: string, init: RequestInit = {}): Promise<R
   });
 }
 
-/** WebSocket origin for PTT (FastAPI on :8000 in dev). */
+/** WebSocket origin for PTT (same-origin Vite proxy to backend :8001 in dev). */
 export function wsOrigin(): string {
   const o = import.meta.env.VITE_WS_ORIGIN;
   if (typeof o === 'string' && o.length > 0) return o.replace(/\/$/, '');
@@ -45,12 +45,9 @@ export function wsOrigin(): string {
   return `${proto}//${window.location.host}`;
 }
 
-export function pttWebSocketUrl(clientId: string): string {
-  return `${wsOrigin()}/api/v1/ptt/ws/${encodeURIComponent(clientId)}`;
-}
-
-export function pttHallWebSocketUrl(hallId: string): string {
-  return `${wsOrigin()}/api/v1/ptt/ws/halls/${encodeURIComponent(hallId)}`;
+/** WebSocket URL for a hall's voice channel. */
+export function voiceWebSocketUrl(hallId: string): string {
+  return `${wsOrigin()}/api/v1/voice/ws/${encodeURIComponent(hallId)}`;
 }
 
 export const STREAM_BASE = '/api/stream';

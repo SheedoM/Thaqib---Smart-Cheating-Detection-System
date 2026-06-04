@@ -21,7 +21,6 @@ from .base import Base, SoftDeleteMixin, TimestampMixin, UUIDMixin
 if TYPE_CHECKING:
     from .infrastructure import Institution
     from .exams import Assignment
-    from .ptt import PttClip
 
 
 class User(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
@@ -38,7 +37,6 @@ class User(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     # 'admin', 'referee', 'invigilator' — SRS §2.1
-    ptt_id: Mapped[Optional[str]] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="active")
     image: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
@@ -50,7 +48,6 @@ class User(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     refresh_tokens: Mapped[List["RefreshToken"]] = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
-    ptt_clips: Mapped[List["PttClip"]] = relationship("PttClip", back_populates="speaker")
 
 
 class RefreshToken(Base, UUIDMixin, TimestampMixin):

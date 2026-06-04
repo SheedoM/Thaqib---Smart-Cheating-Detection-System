@@ -65,7 +65,6 @@ def test_confirm_alert_records_reviewer_and_report_status(client, db_session, te
     data = response.json()
     assert data["status"] == "confirmed"
     assert data["confirmed_by"] == str(admin_user.id)
-    assert data["ptt_target_id"] == invigilator_user.username
 
     report = client.get(f"/api/sessions/{alert.exam_session_id}/report").json()
     assert report["kpis"]["total_events"] == 1

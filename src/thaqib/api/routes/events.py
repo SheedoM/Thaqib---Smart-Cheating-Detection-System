@@ -8,7 +8,6 @@ from src.thaqib.db.models.events import DetectionEvent
 from src.thaqib.db.models.exams import ExamSession
 from src.thaqib.schemas.events import DetectionEventCreate, DetectionEventResponse
 from src.thaqib.api.dependencies import RequireRole, require_internal_event_token
-from src.thaqib.api.ws_manager import manager
 from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
@@ -47,23 +46,7 @@ async def ingest_event(
     db.add(new_event)
     db.commit()
     db.refresh(new_event)
-    
-    # Broadcast event via WebSocket
-    event_msg = {
-        "action": "new_detection_event",
-        "data": {
-            "id": str(new_event.id),
-            "exam_session_id": str(new_event.exam_session_id),
-            "device_id": str(new_event.device_id) if new_event.device_id else None,
-            "event_type": new_event.event_type,
-            "severity": new_event.severity,
-            "student_position": new_event.student_position,
-            "timestamp": new_event.timestamp.isoformat(),
-            "confidence_score": float(new_event.confidence_score) if new_event.confidence_score else None
-        }
-    }
-    await manager.broadcast(event_msg)
-    
+
     return new_event
 
 @router.get("/", response_model=List[DetectionEventResponse])

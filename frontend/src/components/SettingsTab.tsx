@@ -290,19 +290,7 @@ export default function SettingsTab() {
   const renderVideo = () => (
     <div className="space-y-5">
       {sysLoading ? <div className="h-40 bg-gray-100 rounded-2xl animate-pulse" /> : <>
-        <FieldGroup title="جودة الفيديو">
-          <SliderRow label="جودة JPEG لبث البث المباشر وملفات التنبيه" unit="%" value={sys.video_quality} min={30} max={100} step={5}
-            leftLabel="30% (صغير)" rightLabel="100% (أعلى جودة)"
-            onChange={v => set('video_quality', v)} />
-          <SliderRow label="الحد الأقصى لارتفاع مقاطع التنبيه المحفوظة" unit="px" value={sys.alert_max_height} min={0} max={2160} step={360}
-            hint="0 = بدون تصغير (الدقة الأصلية)"
-            leftLabel="0 (أصلي)" rightLabel="2160 (4K)"
-            onChange={v => set('alert_max_height', v)} />
-          <SelectRow label="وضع الأرشفة" hint="raw = تسجيل نظيف · annotated = مع صناديق التتبع"
-            value={sys.archive_mode}
-            options={[{ label: 'raw — نظيف', value: 'raw' }, { label: 'annotated — مع التعليقات', value: 'annotated' }]}
-            onChange={v => set('archive_mode', v)} />
-        </FieldGroup>
+
         <FieldGroup title="كشف الأشخاص (YOLO)">
           <SliderRow label="فترة الكشف" unit="s" value={sys.detection_interval} min={0.1} max={5} step={0.1}
             hint="الفاصل الزمني بين تشغيلات YOLO — أعلى = FPS أسرع وكشف أقل"

@@ -160,7 +160,7 @@ cd frontend
 npm run dev -- --host
 ```
 
-Open `http://localhost:5173` in your browser. The Vite dev server proxies `/api` requests to the backend.
+Open `http://localhost:5173` in your browser. The Vite dev server proxies `/api` HTTP requests and PTT WebSockets to the backend on `127.0.0.1:8001`.
 
 For phone PTT testing, do not use plain LAN HTTP such as `http://192.168.1.12:5173` for microphone transmission. Mobile browsers require a secure context for microphone access, so use an HTTPS Vite dev URL with a trusted local certificate or a trusted tunnel. Receive-only PTT can connect over HTTP, but pressing PTT to transmit will be blocked by the browser.
 

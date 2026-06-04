@@ -160,8 +160,8 @@ def test_hall_readiness_returns_device_checks(
     assert readiness_response.status_code == 200
     body = readiness_response.json()
     assert body["overall_status"] == "warning"
-    assert body["failed_count"] == 2
-    assert {device["type"] for device in body["devices"]} == {"camera", "microphone", "voice"}
+    assert body["failed_count"] == 1
+    assert {device["type"] for device in body["devices"]} == {"camera", "microphone"}
 
 
 def test_hall_readiness_accepts_assignment_backed_seed_link(

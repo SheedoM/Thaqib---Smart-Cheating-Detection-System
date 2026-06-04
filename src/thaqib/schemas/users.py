@@ -31,14 +31,12 @@ class UserUpdate(BaseModel):
     image: Optional[str] = None
     role: Optional[str] = None
     status: Optional[str] = None
-    ptt_id: Optional[str] = None
     password: Optional[str] = Field(None, min_length=8, max_length=72)
 
 class UserResponse(UserBase):
     id: uuid.UUID
     institution_id: uuid.UUID
     status: str
-    ptt_id: Optional[str] = None
     image: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

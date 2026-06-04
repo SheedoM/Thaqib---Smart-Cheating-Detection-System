@@ -232,7 +232,6 @@ def upsert_user(
     username: str,
     full_name: str,
     role: str,
-    ptt_id: str | None = None,
 ) -> User:
     user = db.query(User).filter(User.username == username).first()
     if user is None:
@@ -243,14 +242,8 @@ def upsert_user(
             full_name=full_name,
             email=f"{username}@example.com",
             role=role,
-            ptt_id=ptt_id,
             status="active",
         )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-    else:
-        user.ptt_id = ptt_id
         db.add(user)
         db.commit()
         db.refresh(user)
@@ -342,21 +335,18 @@ def sync_to_db(protocol: str = "http", host: str = "localhost", port: int = 8000
         
         # --- Seed Users and Workflow ---
         invigilator = upsert_user(
-            db, 
-            institution, 
-            username="invigilator", 
-            full_name="Invigilator User", 
+            db,
+            institution,
+            username="invigilator",
+            full_name="Invigilator User",
             role="invigilator",
-            ptt_id="invigilator_demo_1"
         )
-        # Ensure 'shady' admin has a ptt_id for the control room to recognize it if needed
         upsert_user(
             db,
             institution,
             username="shady",
             full_name="Shady Admin",
             role="admin",
-            ptt_id="control_room_1"
         )
         
         exam_session = upsert_exam_session(db, "Midterm Exam 2024")

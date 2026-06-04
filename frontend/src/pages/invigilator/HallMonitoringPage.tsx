@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { authFetch, apiUrl } from '../../config/api';
 import type { HallMonitoringStatus, HallReadiness } from '../../types/exams';
-import { useInvigilatorPtt } from '../../hooks/useInvigilatorPtt';
+import { useHallVoice } from '../../hooks/useHallVoice';
 import { isInsecureLanContext } from '../../lib/secureContext';
 
 interface FeedItem {
@@ -36,12 +36,24 @@ export default function HallMonitoringPage() {
   const [showAllAlerts, setShowAllAlerts] = useState(false);
   const navigate = useNavigate();
 
-  const ptt = useInvigilatorPtt({ hallId });
-  const pttLabel =
-    ptt.isTransmitting ? 'يتحدث' :
-    ptt.micState === 'blocked' ? 'ميك محجوب' :
-    ptt.micState === 'ready' ? 'ميك جاهز' :
-    ptt.state === 'connected' ? 'PTT متصل' : 'غير متصل';
+  const voice = useHallVoice({ hallId, autoConnect: Boolean(hallId) });
+  const controlConnected = voice.participants.some((p) => p.role === 'admin' || p.role === 'referee');
+  const voiceDiagnostic = voice.error || voice.statusText;
+  const voiceBadgeLabel =
+    voice.isTransmitting ? 'يتحدث' :
+    voice.state === 'error' ? 'فشل الصوت' :
+    voice.state === 'connecting' ? 'يتصل' :
+    voice.remoteTalking ? `يتحدث: ${voice.remoteTalking.name}` :
+    voice.micBlocked ? 'ميك محجوب' :
+    voice.micState === 'ready' ? 'ميك جاهز' :
+    voice.isConnected && !controlConnected ? 'بانتظار الإدارة' :
+    voice.state === 'connected' ? 'الصوت متصل' : 'غير متصل';
+  const voiceButtonLabel =
+    voice.state === 'connecting' ? 'جاري الاتصال...' :
+    voice.state === 'error' ? 'إعادة اتصال القناة الصوتية' :
+    voice.micState === 'ready' ? 'الصوت جاهز' :
+    voice.isConnected ? 'القناة الصوتية متصلة' :
+    'الاتصال بالقناة الصوتية';
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -97,7 +109,10 @@ export default function HallMonitoringPage() {
   };
 
   const connectVoice = async () => {
-    await ptt.connect({ prepareMic: true });
+    const ok = await voice.connect();
+    if (!ok) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
     await runReadinessCheck();
   };
 
@@ -174,18 +189,18 @@ export default function HallMonitoringPage() {
         </div>
         <div className="mr-auto flex items-center gap-2">
           {/* PTT connection badge */}
-          <div title={ptt.statusText} className={`flex items-center gap-1 px-2 py-1 rounded-lg ${
-            ptt.micState === 'blocked' ? 'bg-amber-50' : ptt.state === 'connected' ? 'bg-green-50' : 'bg-gray-50'
+          <div title={voice.statusText} className={`flex items-center gap-1 px-2 py-1 rounded-lg ${
+            voice.state === 'error' ? 'bg-red-50' : voice.micBlocked ? 'bg-amber-50' : voice.state === 'connected' ? 'bg-green-50' : 'bg-gray-50'
           }`}>
-            {ptt.state === 'connected' ? (
-              <Wifi size={12} className={ptt.micState === 'blocked' ? 'text-amber-500' : 'text-green-500'} />
+            {voice.state === 'connected' ? (
+              <Wifi size={12} className={voice.micBlocked ? 'text-amber-500' : 'text-green-500'} />
             ) : (
-              <WifiOff size={12} className="text-gray-400" />
+              <WifiOff size={12} className={voice.state === 'error' ? 'text-red-500' : 'text-gray-400'} />
             )}
             <span className={`text-[9px] font-bold uppercase ${
-              ptt.micState === 'blocked' ? 'text-amber-700' : ptt.state === 'connected' ? 'text-green-600' : 'text-gray-400'
+              voice.state === 'error' ? 'text-red-600' : voice.micBlocked ? 'text-amber-700' : voice.state === 'connected' ? 'text-green-600' : 'text-gray-400'
             }`}>
-              {pttLabel}
+              {voiceBadgeLabel}
             </span>
           </div>
           {isMonitoring ? (
@@ -233,12 +248,27 @@ export default function HallMonitoringPage() {
             </button>
             <button
               onClick={connectVoice}
-              disabled={ptt.state === 'connecting'}
+              disabled={voice.state === 'connecting'}
               className="mt-3 bg-white/10 hover:bg-white/20 disabled:opacity-50 text-white px-5 py-2 rounded-xl font-bold flex items-center gap-2 transition-all active:scale-95 border border-white/20"
             >
-              {ptt.state === 'connecting' ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
-              <span>{ptt.micState === 'ready' ? 'الصوت جاهز' : 'الاتصال بالقناة الصوتية'}</span>
+              {voice.state === 'connecting' ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
+              <span>{voiceButtonLabel}</span>
             </button>
+          </div>
+        )}
+
+        {/* PTT status overlays — always visible over the video */}
+        {voice.state === 'error' && (
+          <div className="absolute top-3 left-3 right-3 z-10 bg-red-500/90 backdrop-blur-sm text-white px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-2">
+            <WifiOff size={14} className="shrink-0" />
+            <span className="truncate">{voice.error || 'فشل اتصال القناة الصوتية'}</span>
+            <button onClick={connectVoice} className="mr-auto shrink-0 bg-white/20 hover:bg-white/30 px-2 py-1 rounded-lg text-[11px]">إعادة</button>
+          </div>
+        )}
+        {voice.state === 'connecting' && (
+          <div className="absolute top-3 left-3 right-3 z-10 bg-gray-900/70 backdrop-blur-sm text-white px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-2">
+            <Loader2 size={14} className="shrink-0 animate-spin" />
+            <span>جاري الاتصال بالقناة الصوتية…</span>
           </div>
         )}
 
@@ -246,14 +276,14 @@ export default function HallMonitoringPage() {
         {isMonitoring && (
           <div className="absolute bottom-4 left-4 right-4 flex justify-center pointer-events-none">
             <button
-              onMouseDown={() => ptt.startTransmission()}
-              onMouseUp={() => ptt.stopTransmission()}
-              onTouchStart={(e) => { e.preventDefault(); ptt.startTransmission(); }}
-              onTouchEnd={(e) => { e.preventDefault(); ptt.stopTransmission(); }}
+              onMouseDown={() => voice.startTalking()}
+              onMouseUp={() => voice.stopTalking()}
+              onTouchStart={(e) => { e.preventDefault(); voice.startTalking(); }}
+              onTouchEnd={(e) => { e.preventDefault(); voice.stopTalking(); }}
               className={`pointer-events-auto h-16 w-16 rounded-full flex items-center justify-center transition-all shadow-xl ${
-                ptt.isTransmitting
+                voice.isTransmitting
                   ? 'bg-red-500 scale-110 shadow-red-500/40'
-                  : ptt.state === 'connected'
+                  : voice.state === 'connected'
                   ? 'bg-thaqib-primary shadow-purple-500/40 active:scale-90'
                   : 'bg-gray-500 shadow-gray-500/20 active:scale-90'
               }`}
@@ -274,9 +304,23 @@ export default function HallMonitoringPage() {
             <span>{error}</span>
           </div>
         )}
+        {voice.state === 'error' && (
+          <div className="bg-red-50 border border-red-100 text-red-700 px-4 py-3 rounded-xl mb-6 text-xs flex items-start gap-2">
+            <WifiOff size={16} className="shrink-0" />
+            <div>
+              <p className="font-bold">فشل اتصال القناة الصوتية</p>
+              <p className="mt-1 text-red-600 break-words">{voiceDiagnostic}</p>
+            </div>
+          </div>
+        )}
+        {voice.isConnected && !controlConnected && (
+          <div className="bg-blue-50 border border-blue-100 text-blue-700 px-4 py-3 rounded-xl mb-6 text-xs font-bold">
+            القناة الصوتية متصلة. بانتظار اتصال الإدارة من غرفة التحكم.
+          </div>
+        )}
         {isInsecureLanContext() && (
           <div className="bg-amber-50 border border-amber-100 text-amber-800 px-4 py-3 rounded-xl mb-6 text-xs font-bold">
-            Microphone requires HTTPS on mobile. اتصال PTT سيبقى متصلاً للاستقبال، لكن الإرسال يحتاج HTTPS.
+            Microphone requires HTTPS on mobile. القناة الصوتية ستبقى متصلة للاستقبال، لكن الإرسال يحتاج فتح التطبيق عبر رابط https.
           </div>
         )}
 

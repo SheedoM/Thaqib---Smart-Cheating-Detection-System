@@ -16,7 +16,6 @@ from .base import Base, SoftDeleteMixin, TimestampMixin, UUIDMixin
 if TYPE_CHECKING:
     from .events import Alert, DetectionEvent, GroupEvent
     from .infrastructure import Hall
-    from .ptt import PttClip
     from .users import User
 
 # SRS §5.2: Hall (M) <-> (N) ExamSession — many-to-many junction table
@@ -77,9 +76,6 @@ class ExamSession(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     )
     alerts: Mapped[List["Alert"]] = relationship(
         "Alert", back_populates="exam_session", cascade="all, delete-orphan"
-    )
-    ptt_clips: Mapped[List["PttClip"]] = relationship(
-        "PttClip", back_populates="exam_session", cascade="all, delete-orphan"
     )
 
 

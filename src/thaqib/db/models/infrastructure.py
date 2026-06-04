@@ -15,7 +15,6 @@ from .base import Base, SoftDeleteMixin, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from .exams import ExamSession
-    from .ptt import PttClip
     from .users import User
 
 
@@ -61,23 +60,6 @@ class Hall(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     exam_sessions: Mapped[List["ExamSession"]] = relationship(
         "ExamSession", secondary="exam_session_halls", back_populates="halls"
     )
-    voice_channel: Mapped[Optional["HallVoiceChannel"]] = relationship(
-        "HallVoiceChannel", back_populates="hall", cascade="all, delete-orphan", uselist=False
-    )
-    ptt_clips: Mapped[List["PttClip"]] = relationship("PttClip", back_populates="hall")
-
-
-class HallVoiceChannel(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
-    __tablename__ = "hall_voice_channels"
-
-    hall_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("halls.id", ondelete="CASCADE"), nullable=False, unique=True
-    )
-    channel_key: Mapped[str] = mapped_column(String(150), nullable=False, unique=True)
-    status: Mapped[str] = mapped_column(String(20), default="active")
-
-    hall: Mapped["Hall"] = relationship("Hall", back_populates="voice_channel")
-    ptt_clips: Mapped[List["PttClip"]] = relationship("PttClip", back_populates="channel")
 
 
 class Device(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
