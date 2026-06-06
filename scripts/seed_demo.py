@@ -29,7 +29,7 @@ from src.thaqib.db.models.infrastructure import Device, Hall, Institution
 from src.thaqib.db.models.users import User
 from src.thaqib.db.models.exams import ExamSession, Assignment
 from src.thaqib.core.security import get_password_hash
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 OUT = ROOT / "demo_db.json"
 
@@ -253,7 +253,7 @@ def upsert_user(
 def upsert_exam_session(db, exam_name: str) -> ExamSession:
     session = db.query(ExamSession).filter(ExamSession.exam_name == exam_name).first()
     if session is None:
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         session = ExamSession(
             exam_name=exam_name,
             exam_type="Final",

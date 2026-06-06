@@ -107,8 +107,12 @@ The system has 3 components: **Camera Simulator**, **Backend**, and **Frontend**
 
 #### 1. Start the Database
 
+Development defaults to **SQLite** (no setup needed — a file at `data/thaqib.db`), so you
+can skip this step for local work. Start the PostgreSQL container only when targeting the
+**production database** (see [Database: development vs. production](#database-development-vs-production)):
+
 ```bash
-docker-compose up -d db
+docker compose up -d db
 ```
 
 #### 2. Start the Camera Simulator (required for camera feeds)
@@ -137,11 +141,13 @@ For the seeded Hall 101 demo, `hall101_cam_front`, `hall101_cam_back`, and `hall
 
 #### 3. Apply Database Migrations
 
-The backend uses a local SQLite database (`data/thaqib.db`). Apply all schema migrations before seeding:
+In development the backend uses a local SQLite database (`data/thaqib.db`). Apply all schema migrations before seeding:
 
 ```bash
 python -m alembic upgrade head
 ```
+
+> For the production database, set `DATABASE_URL` first so migrations run against PostgreSQL — see [Database: development vs. production](#database-development-vs-production).
 
 #### 4. Seed the Database with Demo Data
 
@@ -278,10 +284,50 @@ Thaqib---Smart-Cheating-Detection-System/
 
 ---
 
+## Database: development vs. production
+
+The system is database-agnostic via SQLAlchemy + Alembic; the engine is selected entirely
+by the `DATABASE_URL` environment variable — **no code change required**.
+
+| Environment | `DATABASE_URL` | Why |
+| ----------- | -------------- | --- |
+| **Development** (default) | `sqlite:///./data/thaqib.db` | Zero setup. SQLite serializes writes (single writer) — fine for local dev and tests. |
+| **Production / pilot** | `postgresql+psycopg2://USER:PASS@HOST:5432/DB` | PostgreSQL provides true concurrent writes (MVCC), required under live multi-hall detection-event load — SQLite would hit `database is locked` errors. |
+
+`db/database.py` tunes the engine automatically: SQLite gets `check_same_thread=False`;
+PostgreSQL gets connection pooling (`pool_pre_ping`, `pool_size`, `max_overflow`,
+`pool_recycle`).
+
+**Switch to PostgreSQL for production:**
+
+```bash
+# 1. Start Postgres (docker-compose.yml provides Postgres 15 + PgAdmin)
+docker compose up -d db
+
+# 2. Point the app at it (psycopg2 driver; container maps host port 5433)
+export DATABASE_URL="postgresql+psycopg2://thaqib_admin:development_password@localhost:5433/thaqib_production"
+#   PowerShell: $env:DATABASE_URL = "postgresql+psycopg2://thaqib_admin:development_password@localhost:5433/thaqib_production"
+
+# 3. Apply migrations against Postgres
+python -m alembic upgrade head
+```
+
+> **Before a real deployment:** change `development_password` (in `docker-compose.yml` and
+> the connection string) to a strong secret, and set `APP_ENV=production` (the settings
+> validator then enforces a non-default `SECRET_KEY`, a configured `INTERNAL_EVENT_TOKEN`,
+> and non-wildcard CORS).
+>
+> **Timezone note:** on PostgreSQL all timestamp columns are real `timestamptz`, so all
+> DB-written datetimes are UTC-aware. Keep using `datetime.now(timezone.utc)` (never naive
+> `datetime.now()`) for any new code that writes timestamps.
+
+---
+
 ## Configuration (`.env`)
 
 | Variable                        | Default | Description                                   |
 | ------------------------------- | ------- | --------------------------------------------- |
+| `DATABASE_URL`                  | `sqlite:///./data/thaqib.db` | DB connection string (SQLite dev / PostgreSQL prod) |
 | `CAMERA_SOURCE`                 | `0`     | Webcam index or RTSP URL or video file path   |
 | `CAMERA_WIDTH`                  | `1280`  | Capture width (pixels)                        |
 | `CAMERA_HEIGHT`                 | `720`   | Capture height (pixels)                       |

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from sqlalchemy.orm import Session
 
@@ -36,7 +36,7 @@ def seed_demo_data():
         exam_name = "اختبار نهائي - مقدمة في علوم الحاسب"
         session = db.query(ExamSession).filter(ExamSession.exam_name == exam_name).first()
         
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         start_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
         end_time = now.replace(hour=12, minute=0, second=0, microsecond=0)
         

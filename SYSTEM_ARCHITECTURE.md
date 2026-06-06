@@ -1,1857 +1,652 @@
-# THIS IS AN OUTDATED DOC, THIS SHOULD NOT BE USED AS A REFERENCE, PLEASE REVIEW "SRS" FOR REFERENCE.
+# Thaqib — System Architecture (Source of Truth)
 
-# Thaqib System Architecture Documentation
+> **Status:** This document reflects the **as-built** system as of June 2026, plus one
+> clearly-marked **planned** subsystem (RF Device Detection). Where a feature is
+> designed but not yet implemented, it is tagged **[PLANNED]**. Everything else is
+> implemented in the codebase.
+>
+> This file supersedes all earlier architecture notes. When code and this document
+> disagree, fix one of them — do not let them drift.
+
+---
 
 ## Table of Contents
-1. [User Flows](#user-flows)
-2. [Entity Relationship Diagram (ERD)](#entity-relationship-diagram)
-3. [Activity Diagrams](#activity-diagrams)
-4. [Alert Processing Flow](#alert-processing-flow)
-5. [Implementation Notes](#implementation-notes)
-   - [5.1 System Installation & Initialization](#system-installation--initialization)
-   - [5.2 Technology Stack Recommendations](#technology-stack-recommendations)
-   - [5.3 Performance Considerations](#performance-considerations)
-   - [5.4 Security Measures](#security-measures)
-   - [5.5 Testing Strategy](#testing-strategy)
+
+1. [What Thaqib Is](#1-what-thaqib-is)
+2. [User Roles](#2-user-roles)
+3. [High-Level Architecture](#3-high-level-architecture)
+4. [Technology Stack (Actual)](#4-technology-stack-actual)
+5. [Video Detection Pipeline](#5-video-detection-pipeline)
+6. [Audio Detection Pipeline](#6-audio-detection-pipeline)
+7. [Spatial Neighbor Modeling](#7-spatial-neighbor-modeling)
+8. [Alert Processing Framework](#8-alert-processing-framework)
+9. [Hall Voice Channel Subsystem](#9-hall-voice-channel-subsystem)
+10. [Video Streaming](#10-video-streaming)
+11. [Data Model](#11-data-model)
+12. [Backend API Surface](#12-backend-api-surface)
+13. [Frontend Application](#13-frontend-application)
+14. [Security](#14-security)
+15. [Anti-Cheating Signal Strategy](#15-anti-cheating-signal-strategy)
+16. [RF Device Detection Subsystem — PLANNED](#16-rf-device-detection-subsystem--planned)
+17. [Deployment & Running the System](#17-deployment--running-the-system)
+18. [Configuration Reference](#18-configuration-reference)
+19. [Evidence & Forensics](#19-evidence--forensics)
 
 ---
 
-## 1. User Flows
+## 1. What Thaqib Is
 
-### 1.1 Admin/Control Referee Complete Flow
+Thaqib (ثاقب, "sharp-sighted") is an **AI-powered real-time exam monitoring system** that
+assists human invigilators in detecting cheating during **in-person** academic
+examinations. It is explicitly a **decision-support / human-in-the-loop** tool: the AI
+surfaces likely incidents, but **no disciplinary action is ever taken automatically** —
+every alert requires human review.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ADMIN USER JOURNEY                            │
-└─────────────────────────────────────────────────────────────────┘
+It detects three primary behavior classes:
 
-PHASE 1: Authentication & Context Selection
-═══════════════════════════════════════════
-┌──────────────┐
-│ Login Screen │
-└──────┬───────┘
-       │
-       ▼
-┌────────────────────────┐
-│ Select Institution/    │  ◄── Multi-tenancy support
-│ Faculty Context        │      Each admin can manage
-└──────┬─────────────────┘      multiple institutions
-       │
-       ▼
-┌────────────────────────┐
-│ Admin Dashboard Home   │
-└────────────────────────┘
+1. **Gaze cheating** — a student sustaining their gaze toward a neighbor's paper.
+2. **Coordinated neighbor events** — two adjacent students exhibiting suspicious gaze
+   within a short window (potential collaboration).
+3. **Audio anomalies** — whispered exchanges and talking during a silent exam.
 
+A fourth class — **unauthorized objects** (phones, cheat sheets) — is detected by a
+dedicated object model.
 
-PHASE 2: Infrastructure Setup
-══════════════════════════════
+---
 
-A. HALL MANAGEMENT
-──────────────────
-┌──────────────────┐
-│ Navigate to      │
-│ "Halls" Section  │
-└────┬─────────────┘
-     │
-     ▼
-┌──────────────────┐
-│ Click "Add Hall" │
-└────┬─────────────┘
-     │
-     ▼
-┌───────────────────────────────┐
-│ Enter Hall Details:           │
-│ • Name/Number (e.g., "A12")   │
-│ • Building                    │
-│ • Floor                       │
-│ • Max Capacity (students)     │
-│ • Upload Floor Plan (optional)│
-└────┬──────────────────────────┘
-     │
-     ▼
-┌──────────────────┐
-│ Save Hall        │
-│ Status: "Not     │
-│ Ready" (no       │
-│ devices yet)     │
-└──────────────────┘
+## 2. User Roles
 
+| Role | Responsibilities |
+|---|---|
+| **admin** | System setup, institutions, halls, devices, users, exam scheduling, global settings. |
+| **referee** (control room) | Schedules exams, monitors the control-room dashboard, reviews/handles escalated alerts, talks to invigilators over the hall voice channel. |
+| **invigilator** | Physically present in the hall. Starts/stops monitoring, receives alerts on a tablet, walks to flagged seats, communicates with the control room over the hall voice channel (hold-to-talk). |
 
-B. DEVICE REGISTRATION
-──────────────────────
-┌──────────────────────┐
-│ Select Hall          │
-│ Click "Add Devices"  │
-└────┬─────────────────┘
-     │
-     ├──────────────────────────┐
-     │                          │
-     ▼                          ▼
-┌─────────────────┐    ┌─────────────────┐
-│ Add IP Camera   │    │ Add Microphone  │
-└────┬────────────┘    └────┬────────────┘
-     │                      │
-     │ Enter:               │ Enter:
-     │ • Device Type        │ • Device Type
-     │ • IP Address         │ • IP Address
-     │ • RTSP URL           │ • Audio Stream URL
-     │ • Position Label     │ • Coverage Zone
-     │   (e.g., "Front-     │   (e.g., "Zone 1")
-     │   Left")             │
-     │                      │
-     └──────┬───────────────┘
-            │
-            ▼
-     ┌─────────────────────────┐
-     │ AUTOMATED HEALTH CHECK  │
-     │ ═══════════════════════ │
-     │ System pings RTSP/      │
-     │ Audio stream URL        │
-     └──────┬──────────────────┘
-            │
-            ├─────────────┬─────────────┐
-            ▼             ▼             ▼
-     ┌──────────┐  ┌──────────┐  ┌──────────┐
-     │ Success  │  │ Timeout  │  │ Auth     │
-     │ 🟢 Online│  │ 🔴 Offline│ │ Error    │
-     └──────────┘  └──────────┘  └──────────┘
-            │
-            ▼
-     ┌──────────────────────────┐
-     │ Update Hall Status       │
-     │ ══════════════════════   │
-     │ If ALL devices online:   │
-     │   Status → "✅ Ready"   │
-     │ If ANY device offline:   │
-     │   Status → "⚠️ Not Ready"│
-     └──────────────────────────┘
+Roles are enforced server-side via a `RequireRole` dependency and JWT claims.
 
+---
 
-C. USER MANAGEMENT
-──────────────────
-┌──────────────────┐
-│ Navigate to      │
-│ "Staff" Tab      │
-└────┬─────────────┘
-     │
-     ▼
-┌─────────────────────┐
-│ Click "Add          │
-│ Invigilator"        │
-└────┬────────────────┘
-     │
-     ▼
-┌──────────────────────────┐
-│ Enter Details:           │
-│ • Username               │
-│ • Full Name              │
-│ • Email                  │
-│ • Phone (for PTT)        │
-│ • Role: Invigilator      │
-└────┬─────────────────────┘
-     │
-     ▼
-┌──────────────────────────┐
-│ System Generates:        │
-│ • Temporary Password     │
-│ • Login Credentials      │
-│ • PTT ID                 │
-└────┬─────────────────────┘
-     │
-     ▼
-┌──────────────────────────┐
-│ Send Credentials via     │
-│ Email/SMS                │
-└──────────────────────────┘
+## 3. High-Level Architecture
 
-
-PHASE 3: Exam Scheduling
-═════════════════════════
-
-┌──────────────────────┐
-│ Click "Create New    │
-│ Exam Session"        │
-└────┬─────────────────┘
-     │
-     ▼
-┌──────────────────────────────────┐
-│ STEP 1: Basic Details            │
-│ • Course Name                    │
-│ • Exam Type (Midterm/Final/etc)  │
-│ • Date                           │
-│ • Start Time                     │
-│ • End Time                       │
-└────┬─────────────────────────────┘
-     │
-     ▼
-┌──────────────────────────────────┐
-│ STEP 2: Select Hall              │
-│ • Show only "Ready" halls        │
-│ • Filter by capacity             │
-│ • Check availability (no         │
-│   conflicting sessions)          │
-└────┬─────────────────────────────┘
-     │
-     ▼
-┌──────────────────────────────────┐
-│ STEP 3: Assign Invigilator       │
-│ • Show available invigilators    │
-│ • Check their schedule           │
-│ • Assign role (Primary/Backup)   │
-└────┬─────────────────────────────┘
-     │
-     ▼
-┌──────────────────────────────────┐
-│ STEP 4: Configure Thresholds     │
-│ (Optional - use defaults)        │
-│ • Detection sensitivity          │
-│ • Alert tier thresholds          │
-│ • Neighbor distance threshold    │
-└────┬─────────────────────────────┘
-     │
-     ▼
-┌──────────────────────────────────┐
-│ Review & Confirm                 │
-└────┬─────────────────────────────┘
-     │
-     ▼
-┌──────────────────────────────────┐
-│ SYSTEM ACTIONS:                  │
-│ 1. Create ExamSession record     │
-│ 2. Create Assignment record      │
-│ 3. Reserve hall (block other     │
-│    bookings)                     │
-│ 4. Start countdown timer         │
-│ 5. Send notification to          │
-│    invigilator                   │
-└──────────────────────────────────┘
-
-
-PHASE 4: Active Monitoring (Control Room)
-═══════════════════════════════════════
-
-┌──────────────────────────────────┐
-│ Control Room Dashboard           │
-│ ════════════════════════════════ │
-│                                  │
-│  HALL GRID VIEW                  │
-│  ┌────┬────┬────┬────┐          │
-│  │A12 │B07 │C03 │D15 │          │
-│  │🟢  │🟢  │⚠️  │🔴  │          │
-│  │3🔔 │0   │1🔔 │OFF │          │
-│  └────┴────┴────┴────┘          │
-│                                  │
-│  PRIORITY ALERT STACK            │
-│  ┌──────────────────────────┐   │
-│  │ 🔴 HIGH | Hall A12       │   │
-│  │   Neighbor Event         │   │
-│  │   Row 3, Seats 7-8       │   │
-│  │   [REVIEW] [CALL]        │   │
-│  ├──────────────────────────┤   │
-│  │ 🟡 MEDIUM | Hall C03     │   │
-│  │   Head Pose              │   │
-│  │   Row 2, Seat 5          │   │
-│  │   [REVIEW]               │   │
-│  └──────────────────────────┘   │
-└──────────────────────────────────┘
-     │
-     │ Click on Hall or Alert
-     ▼
-┌──────────────────────────────────┐
-│ Individual Hall Monitoring Page  │
-│ ════════════════════════════════ │
-│                                  │
-│  LIVE CAMERA FEEDS (Grid)        │
-│  ┌─────┬─────┬─────┐            │
-│  │ Cam │ Cam │ Cam │            │
-│  │  1  │  2  │  3  │            │
-│  ├─────┼─────┼─────┤            │
-│  │ Cam │ Cam │ Cam │            │
-│  │  4  │  5  │  6  │            │
-│  └─────┴─────┴─────┘            │
-│                                  │
-│  EVENT TIMELINE (Right Panel)    │
-│  ═══════════════════════════════ │
-│  07:22:15 - Row 3, Seat 7-8      │
-│    Neighbor Event (ACTIVE)       │
-│    [VIDEO CLIP] [CALL]           │
-│  ─────────────────────────────── │
-│  07:19:43 - Row 5, Seat 12       │
-│    Audio Spike (PENDING)         │
-│    [REVIEW] [DISMISS]            │
-│                                  │
-│  PTT CONTROLS                    │
-│  [🎤 Talk to Invigilator]        │
-└──────────────────────────────────┘
-
-
-PHASE 5: History & Auditing
-════════════════════════════
-
-┌──────────────────────────────────┐
-│ History Dashboard                │
-│ ════════════════════════════════ │
-│                                  │
-│  Filters:                        │
-│  [Hall: All ▼] [Date: Last 30▼] │
-│                                  │
-│  EXAM SESSIONS TABLE             │
-│  ┌───────────────────────────┐  │
-│  │Date   Hall  Course  Alerts│  │
-│  ├───────────────────────────┤  │
-│  │Feb 10 A12   Physics   7   │  │
-│  │Feb 08 B07   Chem      2   │  │
-│  │Feb 05 C03   Math      12  │  │
-│  └───────────────────────────┘  │
-│                                  │
-│  Click session → Detailed Report │
-└──────────────────────────────────┘
-     │
-     ▼
-┌──────────────────────────────────┐
-│ Session Detail Report            │
-│ ════════════════════════════════ │
-│ Session: Physics Midterm         │
-│ Hall: A12 | Date: Feb 10, 2026   │
-│ Duration: 2h 15m                 │
-│ Invigilator: John Smith          │
-│                                  │
-│ STATISTICS                       │
-│ • Total Alerts: 7                │
-│ • Confirmed Incidents: 3         │
-│ • False Positives: 4             │
-│ • Avg Response Time: 18s         │
-│                                  │
-│ INCIDENT TIMELINE                │
-│ ┌────────────────────────────┐  │
-│ │07:15 - Head Pose (FALSE)   │  │
-│ │07:22 - Neighbor (CONFIRMED)│  │
-│ │07:35 - Audio Spike (FALSE) │  │
-│ └────────────────────────────┘  │
-│                                  │
-│ [Download Video] [Export PDF]    │
-└──────────────────────────────────┘
-```
-
-### 1.2 Invigilator Complete Flow
+Thaqib has four logical layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                  INVIGILATOR USER JOURNEY                        │
-└─────────────────────────────────────────────────────────────────┘
-
-PHASE 1: Pre-Exam (Scheduled State)
-════════════════════════════════════
-
-┌──────────────────┐
-│ Login to System  │
-└────┬─────────────┘
-     │
-     ▼
-┌──────────────────────────────────┐
-│ "My Schedule" Dashboard          │
-│ ════════════════════════════════ │
-│                                  │
-│  TODAY'S ASSIGNMENTS             │
-│  ┌────────────────────────────┐ │
-│  │ 📅 Physics Midterm         │ │
-│  │ Hall: A12                  │ │
-│  │ Time: 10:00 AM - 12:00 PM  │ │
-│  │ ⏱️ Starts in: 1h 23m       │ │
-│  │                            │ │
-│  │ PRE-FLIGHT CHECK:          │ │
-│  │ ✅ 6/6 Cameras Online      │ │
-│  │ ✅ 4/4 Mics Online         │ │
-│  │ ✅ Hall Status: Ready      │ │
-│  │                            │ │
-│  │ [VIEW DETAILS]             │ │
-│  └────────────────────────────┘ │
-│                                  │
-│  UPCOMING                        │
-│  ┌────────────────────────────┐ │
-│  │ 📅 Chemistry Quiz          │ │
-│  │ Hall: A12                  │ │
-│  │ Feb 15, 2026 - 2:00 PM     │ │
-│  └────────────────────────────┘ │
-└──────────────────────────────────┘
-     │
-     │ Click "VIEW DETAILS"
-     ▼
-┌──────────────────────────────────┐
-│ Exam Session Details             │
-│ ════════════════════════════════ │
-│                                  │
-│ Course: Physics Midterm          │
-│ Expected Students: 48            │
-│ Duration: 2 hours                │
-│                                  │
-│ HALL LAYOUT                      │
-│ [Floor plan with seat positions] │
-│                                  │
-│ CAMERA COVERAGE                  │
-│ • Front: Cameras 1-2             │
-│ • Middle: Cameras 3-4            │
-│ • Back: Cameras 5-6              │
-│                                  │
-│ AUDIO ZONES                      │
-│ • Zone 1-4 (Mics 1-4)            │
-│                                  │
-│ [⬅️ BACK TO SCHEDULE]            │
-└──────────────────────────────────┘
-
-
-PHASE 2: Active Exam (Monitoring State)
-════════════════════════════════════════
-
-┌──────────────────────────────────┐
-│ At exam start time OR earlier:  │
-│ Invigilator clicks               │
-│ [▶️ START MONITORING SESSION]    │
-└────┬─────────────────────────────┘
-     │
-     ▼
-┌──────────────────────────────────────────────────────────┐
-│ INDIVIDUAL MONITORING PAGE                               │
-│ ════════════════════════════════════════════════════════ │
-│                                                          │
-│  HEADER BAR                                              │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │ Hall A12 - Physics Midterm | ⏱️ 00:23:15 elapsed   │ │
-│  │ Status: 🟢 ACTIVE | Students: 48                   │ │
-│  │ [CONTACT CONTROL] [END SESSION]                    │ │
-│  └────────────────────────────────────────────────────┘ │
-│                                                          │
-│  LEFT/CENTER: LIVE FEED GRID (70% width)                 │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │ ┌─────────┬─────────┬─────────┐                  │   │
-│  │ │ Camera 1│Camera 2 │Camera 3 │                  │   │
-│  │ │         │         │         │                  │   │
-│  │ ├─────────┼─────────┼─────────┤                  │   │
-│  │ │ Camera 4│Camera 5 │Camera 6 │                  │   │
-│  │ │         │         │         │                  │   │
-│  │ └─────────┴─────────┴─────────┘                  │   │
-│  │                                                   │   │
-│  │ Auto-Focus Feature:                              │   │
-│  │ When alert triggered → camera zooms/highlights   │   │
-│  └──────────────────────────────────────────────────┘   │
-│                                                          │
-│  RIGHT PANEL: EVENT TIMELINE (30% width)                 │
-│  ┌────────────────────────────────────────┐             │
-│  │ ACTIVE ALERTS (2)                      │             │
-│  │ ┌────────────────────────────────────┐ │             │
-│  │ │ 🔴 NEIGHBOR EVENT                  │ │             │
-│  │ │ Row 3, Seats 7-8                   │ │             │
-│  │ │ Ongoing: 23 seconds                │ │             │
-│  │ │ [REVIEW VIDEO] [ESCALATE]          │ │             │
-│  │ └────────────────────────────────────┘ │             │
-│  │ ┌────────────────────────────────────┐ │             │
-│  │ │ 🟡 HEAD POSE                       │ │             │
-│  │ │ Row 5, Seat 12                     │ │             │
-│  │ │ 2 min ago                          │ │             │
-│  │ │ [REVIEW] [DISMISS] [FALSE POS]     │ │             │
-│  │ └────────────────────────────────────┘ │             │
-│  │                                        │             │
-│  │ ═══ RESOLVED (5) ═══                  │             │
-│  │ 07:19 Row 2, Seat 4 [✅ Resolved]     │             │
-│  │ 07:15 Row 7, Seat 20 [❌ False Pos]   │             │
-│  └────────────────────────────────────────┘             │
-│                                                          │
-│  BOTTOM BAR: COMMUNICATIONS                              │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │ [🎤 PUSH TO TALK - Hold to speak to Control]       │ │
-│  └────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────┘
-
-
-ALERT RECEPTION METHODS (Multi-Channel)
-════════════════════════════════════════
-
-Method 1: DASHBOARD (Primary Visual)
-──────────────────────────────────────
-• New alert appears in timeline
-• Auto-scrolls to top if not visible
-• Camera feed auto-highlights suspect area
-• Visual: Red/Yellow border around alert
-• Timestamp and location prominently displayed
-
-Method 2: SMARTWATCH HAPTIC (Silent, Immediate)
-────────────────────────────────────────────────
-Tier 1 Alert:
-  • 1 short buzz (200ms)
-  
-Tier 2 Alert:
-  • 3 long pulses (500ms each)
-  • More urgent pattern
-
-Method 3: AUDIO CUE (Configurable)
-───────────────────────────────────
-• Subtle tone in earbud
-• Different tones for Tier 1 vs Tier 2
-• Volume adjustable in settings
-• Can be disabled if distracting
-
-Method 4: PTT FROM CONTROL (For escalations)
-─────────────────────────────────────────────
-• Incoming voice call notification
-• Control referee provides context
-• Invigilator can respond immediately
-
-
-ALERT RESPONSE WORKFLOW
-════════════════════════
-
-┌──────────────────┐
-│ Alert Received   │
-└────┬─────────────┘
-     │
-     ▼
-┌────────────────────────────────┐
-│ Invigilator Actions:           │
-│                                │
-│ 1️⃣ [REVIEW VIDEO]              │
-│    • View 10-sec clip           │
-│    • See highlighted behavior   │
-│    • Check context              │
-│                                │
-│ 2️⃣ Physical Assessment          │
-│    • Walk toward area           │
-│    • Observe students           │
-│    • Make presence known        │
-│                                │
-│ 3️⃣ Decision:                    │
-│    ├─ [RESOLVE]                 │
-│    │  "I handled it"            │
-│    │                            │
-│    ├─ [FALSE POSITIVE]          │
-│    │  "Not actually cheating"   │
-│    │                            │
-│    ├─ [DISMISS]                 │
-│    │  "Acknowledged, monitoring"│
-│    │                            │
-│    └─ [ESCALATE]                │
-│       "Need Control support"    │
-│       → Opens PTT channel       │
-│       → Adds notes              │
-└────────────────────────────────┘
-
-
-PHASE 3: Post-Exam
-══════════════════
-
-┌──────────────────────────────────┐
-│ SESSION END                      │
-│ ════════════════════════════════ │
-│                                  │
-│ Automatic at scheduled end time  │
-│ OR Manual: Click [END SESSION]   │
-└────┬─────────────────────────────┘
-     │
-     ▼
-┌──────────────────────────────────┐
-│ Session Summary Screen           │
-│ ════════════════════════════════ │
-│                                  │
-│ Duration: 2h 15m                 │
-│ Alerts Received: 7               │
-│ • Resolved: 3                    │
-│ • False Positives: 4             │
-│                                  │
-│ FLAGGED INCIDENTS (Require       │
-│ Review):                         │
-│ ┌────────────────────────────┐  │
-│ │ 07:22 - Neighbor Event     │  │
-│ │ Row 3, Seats 7-8           │  │
-│ │ Status: ESCALATED          │  │
-│ │ [ADD NOTES]                │  │
-│ └────────────────────────────┘  │
-│                                  │
-│ FINAL NOTES (Optional):          │
-│ ┌────────────────────────────┐  │
-│ │ [Text area for comments]   │  │
-│ └────────────────────────────┘  │
-│                                  │
-│ [SUBMIT REPORT]                  │
-└────┬─────────────────────────────┘
-     │
-     ▼
-┌──────────────────────────────────┐
-│ SYSTEM ACTIONS:                  │
-│ 1. Finalize recording            │
-│ 2. Update session status         │
-│ 3. Generate report               │
-│ 4. Archive to storage tier       │
-│ 5. Send summary to admin         │
-└──────────────────────────────────┘
-     │
-     ▼
-┌──────────────────────────────────┐
-│ Return to "My Schedule"          │
-│ Session moved to history         │
-└──────────────────────────────────┘
+│  1. DATA ACQUISITION                                              │
+│     IP cameras (RTSP)   USB/IP microphones   [PLANNED: RF nodes]  │
+└───────────────┬─────────────────────────────────────────────────┘
+                │
+┌───────────────▼─────────────────────────────────────────────────┐
+│  2. DETECTION ENGINE (Python)                                     │
+│     Video pipeline (YOLOv11 + BoT-SORT + MediaPipe + OSNet)       │
+│     Audio pipeline (energy discriminator + Silero VAD + Whisper)  │
+│     → emits DetectionEvents                                       │
+└───────────────┬─────────────────────────────────────────────────┘
+                │
+┌───────────────▼─────────────────────────────────────────────────┐
+│  3. BACKEND (FastAPI + SQLAlchemy)                                │
+│     Event aggregation → GroupEvents → Alerts (tiered)             │
+│     REST API · WebSocket alerts · WebSocket voice · MJPEG streams │
+│     SQLite (dev) / PostgreSQL (prod)                              │
+└───────────────┬─────────────────────────────────────────────────┘
+                │
+┌───────────────▼─────────────────────────────────────────────────┐
+│  4. DASHBOARD (React 19 + TypeScript + Tailwind, RTL/Arabic)      │
+│     Admin/referee control room · Invigilator hall monitoring      │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Entity Relationship Diagram (ERD)
+## 4. Technology Stack (Actual)
 
-### 2.1 Complete Database Schema
+> ⚠️ Earlier drafts mentioned Redis, RabbitMQ, Socket.IO, WebRTC/GStreamer, Kubernetes,
+> and smartwatch haptics. **None of these are in the current system.** The accurate
+> stack is below.
 
-```sql
--- ═══════════════════════════════════════════════════════════════
--- CORE INFRASTRUCTURE ENTITIES
--- ═══════════════════════════════════════════════════════════════
+**Detection Engine**
+- Python 3.10+
+- PyTorch
+- Ultralytics **YOLOv11** (`models/yolo11m.pt`) — person detection
+- Ultralytics **YOLOv8** custom (`models/best.pt`) — papers/phones/objects
+- **BoT-SORT** via `boxmot` — multi-object tracking
+- **MediaPipe Face Landmarker** (`models/face_landmarker.task`) — 478 3D landmarks
+- **OSNet** (`osnet_x0_25_msmt17.pt`) — face/person re-identification
+- **Silero VAD** — voice activity detection
+- **Faster-Whisper** — speech-to-text (Arabic by default)
 
--- Institutions (Multi-tenancy support)
-CREATE TABLE institutions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(255) NOT NULL,
-    code VARCHAR(50) UNIQUE NOT NULL,
-    address TEXT,
-    contact_email VARCHAR(255),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+**Backend**
+- FastAPI
+- SQLAlchemy ORM + Alembic migrations
+- Pydantic v2 settings
+- SQLite (development) / PostgreSQL (production)
+- `slowapi` rate limiting
+- WebSockets (native FastAPI) for alerts and the hall voice channel
+- MJPEG over HTTP for live video
 
--- Halls (Static Infrastructure)
-CREATE TABLE halls (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    institution_id UUID REFERENCES institutions(id) ON DELETE CASCADE,
-    name VARCHAR(100) NOT NULL,
-    building VARCHAR(100),
-    floor VARCHAR(20),
-    capacity INT NOT NULL CHECK (capacity > 0),
-    layout_map JSONB,  -- Seat positions, dimensions
-    status VARCHAR(20) DEFAULT 'not_ready' 
-        CHECK (status IN ('ready', 'not_ready', 'maintenance', 'inactive')),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(institution_id, name)
-);
+**Frontend**
+- React 19 + TypeScript
+- Vite
+- Tailwind CSS 4
+- React Router
+- Full RTL / Arabic interface
 
--- Devices (Cameras & Microphones)
-CREATE TABLE devices (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    hall_id UUID REFERENCES halls(id) ON DELETE CASCADE,
-    type VARCHAR(20) NOT NULL CHECK (type IN ('camera', 'microphone')),
-    identifier VARCHAR(100) NOT NULL,  -- MAC address or device ID
-    ip_address INET,
-    stream_url VARCHAR(500) NOT NULL,
-    position JSONB NOT NULL,  -- {x, y, z, label: "Front-Left"}
-    coverage_area JSONB,  -- For cameras: FOV, viewing angle
-    status VARCHAR(20) DEFAULT 'offline' 
-        CHECK (status IN ('online', 'offline', 'error', 'maintenance')),
-    last_health_check TIMESTAMP,
-    metadata JSONB,  -- Additional device-specific info
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Index for quick device lookups by hall
-CREATE INDEX idx_devices_hall ON devices(hall_id);
-CREATE INDEX idx_devices_status ON devices(status);
-
-
--- ═══════════════════════════════════════════════════════════════
--- USER MANAGEMENT
--- ═══════════════════════════════════════════════════════════════
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    institution_id UUID REFERENCES institutions(id) ON DELETE CASCADE,
-    username VARCHAR(100) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    full_name VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL,
-    phone VARCHAR(50),
-    role VARCHAR(20) NOT NULL 
-        CHECK (role IN ('admin', 'referee', 'invigilator')),
-    ptt_id VARCHAR(100),  -- Push-to-talk identifier
-    status VARCHAR(20) DEFAULT 'active' 
-        CHECK (status IN ('active', 'inactive', 'on_duty', 'unavailable')),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_login TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX idx_users_role ON users(role);
-CREATE INDEX idx_users_institution ON users(institution_id);
-
-
--- ═══════════════════════════════════════════════════════════════
--- EXAM SESSION MANAGEMENT
--- ═══════════════════════════════════════════════════════════════
-
-CREATE TABLE exam_sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    hall_id UUID REFERENCES halls(id) ON DELETE RESTRICT,
-    exam_name VARCHAR(255) NOT NULL,
-    exam_type VARCHAR(50),  -- Midterm, Final, Quiz, etc.
-    scheduled_start TIMESTAMP NOT NULL,
-    scheduled_end TIMESTAMP NOT NULL,
-    actual_start TIMESTAMP,
-    actual_end TIMESTAMP,
-    status VARCHAR(20) DEFAULT 'scheduled' 
-        CHECK (status IN ('scheduled', 'active', 'completed', 'cancelled')),
-    student_count INT,
-    configuration JSONB,  -- Detection thresholds, settings
-    created_by UUID REFERENCES users(id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Constraints
-    CHECK (scheduled_end > scheduled_start),
-    CHECK (actual_end IS NULL OR actual_end >= actual_start)
-);
-
-CREATE INDEX idx_sessions_hall ON exam_sessions(hall_id);
-CREATE INDEX idx_sessions_status ON exam_sessions(status);
-CREATE INDEX idx_sessions_schedule ON exam_sessions(scheduled_start, scheduled_end);
-
-
--- Assignments (Invigilator → Exam Session)
-CREATE TABLE assignments (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_session_id UUID REFERENCES exam_sessions(id) ON DELETE CASCADE,
-    invigilator_id UUID REFERENCES users(id) ON DELETE RESTRICT,
-    role VARCHAR(20) DEFAULT 'primary' 
-        CHECK (role IN ('primary', 'backup')),
-    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    notified_at TIMESTAMP,
-    
-    UNIQUE(exam_session_id, invigilator_id)
-);
-
-CREATE INDEX idx_assignments_session ON assignments(exam_session_id);
-CREATE INDEX idx_assignments_invigilator ON assignments(invigilator_id);
-
-
--- ═══════════════════════════════════════════════════════════════
--- DETECTION & ALERT ENTITIES
--- ═══════════════════════════════════════════════════════════════
-
--- Individual Detection Events
-CREATE TABLE detection_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_session_id UUID REFERENCES exam_sessions(id) ON DELETE CASCADE,
-    device_id UUID REFERENCES devices(id),
-    event_type VARCHAR(50) NOT NULL 
-        CHECK (event_type IN ('head_pose', 'audio_spike', 'movement', 
-                              'object_detection', 'prolonged_absence')),
-    severity VARCHAR(20) NOT NULL 
-        CHECK (severity IN ('low', 'medium', 'high')),
-    student_position JSONB NOT NULL,  -- {row, seat, x, y}
-    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    confidence_score DECIMAL(3, 2) CHECK (confidence_score BETWEEN 0 AND 1),
-    metadata JSONB,  -- Event-specific data (angles, decibels, etc.)
-    group_id UUID,  -- FK to group_events (nullable)
-    
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX idx_detection_session ON detection_events(exam_session_id);
-CREATE INDEX idx_detection_timestamp ON detection_events(timestamp);
-CREATE INDEX idx_detection_group ON detection_events(group_id);
-
-
--- Grouped Events (Coordinated Cheating)
-CREATE TABLE group_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_session_id UUID REFERENCES exam_sessions(id) ON DELETE CASCADE,
-    event_type VARCHAR(50) NOT NULL 
-        CHECK (event_type IN ('neighbor_cheating', 'collaboration', 
-                              'coordinated_movement')),
-    severity VARCHAR(20) NOT NULL CHECK (severity IN ('medium', 'high')),
-    student_positions JSONB NOT NULL,  -- Array of positions
-    participating_event_ids UUID[],  -- Array of detection_event IDs
-    first_detected TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Add FK constraint after table creation
-ALTER TABLE detection_events 
-    ADD CONSTRAINT fk_detection_group 
-    FOREIGN KEY (group_id) REFERENCES group_events(id) ON DELETE SET NULL;
-
-CREATE INDEX idx_group_session ON group_events(exam_session_id);
-
-
--- Alerts (For Invigilators/Referees)
-CREATE TABLE alerts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_session_id UUID REFERENCES exam_sessions(id) ON DELETE CASCADE,
-    
-    -- Polymorphic relationship: Either detection_event OR group_event
-    detection_event_id UUID REFERENCES detection_events(id),
-    group_event_id UUID REFERENCES group_events(id),
-    
-    alert_type VARCHAR(10) NOT NULL CHECK (alert_type IN ('tier_1', 'tier_2')),
-    status VARCHAR(20) DEFAULT 'pending' 
-        CHECK (status IN ('pending', 'acknowledged', 'resolved', 
-                         'false_positive', 'escalated')),
-    assigned_to UUID REFERENCES users(id),  -- Invigilator or Referee
-    
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    acknowledged_at TIMESTAMP,
-    resolved_at TIMESTAMP,
-    resolution_notes TEXT,
-    escalated BOOLEAN DEFAULT FALSE,
-    
-    -- Must reference either detection_event OR group_event, not both
-    CHECK (
-        (detection_event_id IS NOT NULL AND group_event_id IS NULL) OR
-        (detection_event_id IS NULL AND group_event_id IS NOT NULL)
-    )
-);
-
-CREATE INDEX idx_alerts_session ON alerts(exam_session_id);
-CREATE INDEX idx_alerts_status ON alerts(status);
-CREATE INDEX idx_alerts_assigned ON alerts(assigned_to);
-CREATE INDEX idx_alerts_created ON alerts(created_at);
-
-
--- ═══════════════════════════════════════════════════════════════
--- AUDIT & HISTORY
--- ═══════════════════════════════════════════════════════════════
-
-CREATE TABLE audit_logs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES users(id),
-    action VARCHAR(100) NOT NULL,
-    entity_type VARCHAR(50),
-    entity_id UUID,
-    details JSONB,
-    ip_address INET,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX idx_audit_user ON audit_logs(user_id);
-CREATE INDEX idx_audit_timestamp ON audit_logs(created_at);
-
-
--- Recording Metadata (Video/Audio Storage References)
-CREATE TABLE recordings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_session_id UUID REFERENCES exam_sessions(id) ON DELETE CASCADE,
-    device_id UUID REFERENCES devices(id),
-    storage_path VARCHAR(500) NOT NULL,  -- S3/Azure path
-    file_format VARCHAR(20),
-    duration_seconds INT,
-    file_size_bytes BIGINT,
-    storage_tier VARCHAR(20) DEFAULT 'hot' 
-        CHECK (storage_tier IN ('hot', 'warm', 'cold', 'archived')),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    archived_at TIMESTAMP
-);
-
-CREATE INDEX idx_recordings_session ON recordings(exam_session_id);
-```
-
-### 2.2 Relationship Summary
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ENTITY RELATIONSHIPS                          │
-└─────────────────────────────────────────────────────────────────┘
-
-CORE INFRASTRUCTURE HIERARCHY:
-═══════════════════════════════
-
-Institution (1)
-    │
-    ├──> Halls (N)
-    │       │
-    │       └──> Devices (N)  [Camera, Microphone]
-    │
-    └──> Users (N)  [Admin, Referee, Invigilator]
-
-
-EXAM SESSION FLOW:
-══════════════════
-
-Hall (1) ──┐
-           ├──> ExamSession (N)
-           │        │
-User (1) ──┘        ├──> Assignment (N) ──> User (Invigilator)
-                    │
-                    └──> DetectionEvent (N)
-                            │
-                            ├──> GroupEvent (N)
-                            │
-                            └──> Alert (N) ──> User (assigned_to)
-
-
-DETECTION HIERARCHY:
-════════════════════
-
-ExamSession (1)
-    │
-    ├──> DetectionEvent (N)
-    │       │
-    │       └──> [Optional] GroupEvent (1)
-    │
-    └──> Alert (N)
-            │
-            └──> DetectionEvent (1) OR GroupEvent (1)
-
-
-KEY CONSTRAINTS:
-════════════════
-
-1. Hall Status = "Ready" IF ALL devices = "Online"
-2. ExamSession can only be created for "Ready" halls
-3. No overlapping ExamSessions for same hall
-4. Alert must reference EITHER DetectionEvent OR GroupEvent (not both)
-5. GroupEvent aggregates multiple DetectionEvents
-6. Assignment links Invigilator to ExamSession (with role)
-```
+**No external broker, no Redis, no Kubernetes.** State lives in the relational DB;
+real-time delivery is in-process via the WebSocket `ConnectionManager`.
 
 ---
 
-## 3. Activity Diagrams
+## 5. Video Detection Pipeline
 
-### 3.1 Exam Session Creation
+Located in `src/thaqib/video/`. Master orchestration in `pipeline.py`.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│              ACTIVITY: CREATE EXAM SESSION                       │
-└─────────────────────────────────────────────────────────────────┘
-
-ACTORS:
-  👤 Admin
-  🖥️ System
-  📬 Invigilator
-
-
-SWIMLANES:
-══════════
-
-┌──────────────┬────────────────────────┬─────────────────┐
-│     ADMIN    │        SYSTEM          │  INVIGILATOR    │
-├──────────────┼────────────────────────┼─────────────────┤
-│              │                        │                 │
-│ (START)      │                        │                 │
-│    │         │                        │                 │
-│    ▼         │                        │                 │
-│ Click        │                        │                 │
-│ "Create      │                        │                 │
-│ Session"     │                        │                 │
-│    │         │                        │                 │
-│    │────────>│                        │                 │
-│              │ Display                │                 │
-│              │ Creation Form          │                 │
-│              │    │                   │                 │
-│    │<────────│    │                   │                 │
-│    │         │    │                   │                 │
-│    ▼         │    │                   │                 │
-│ Enter:       │    │                   │                 │
-│ • Course     │    │                   │                 │
-│ • Date/Time  │    │                   │                 │
-│ • Duration   │    │                   │                 │
-│    │         │    │                   │                 │
-│    ▼         │    │                   │                 │
-│ Select       │    │                   │                 │
-│ Ready Hall   │    │                   │                 │
-│    │         │    │                   │                 │
-│    │────────>│    │                   │                 │
-│              │ Validate:              │                 │
-│              │ • Hall Ready?          │                 │
-│              │ • No conflicts?        │                 │
-│              │ • Time valid?          │                 │
-│              │    │                   │                 │
-│              │   ◇── Hall Available?  │                 │
-│              │   │                    │                 │
-│              │  YES                   │                 │
-│              │   │                    │                 │
-│    │<────────│   ▼                    │                 │
-│    │         │ Show Available         │                 │
-│    │         │ Halls                  │                 │
-│    │         │                        │                 │
-│    ▼         │                        │                 │
-│ Assign       │                        │                 │
-│ Invigilator  │                        │                 │
-│    │         │                        │                 │
-│    │────────>│                        │                 │
-│              │ Check:                 │                 │
-│              │ • Invigilator          │                 │
-│              │   available?           │                 │
-│              │ • No schedule          │                 │
-│              │   conflict?            │                 │
-│              │    │                   │                 │
-│              │    ▼                   │                 │
-│              │ ┌─────────────────┐   │                 │
-│              │ │ Create Session  │   │                 │
-│              │ │ • ExamSession   │   │                 │
-│              │ │ • Assignment    │   │                 │
-│              │ │ • Reserve Hall  │   │                 │
-│              │ └────────┬────────┘   │                 │
-│              │          │            │                 │
-│              │          ▼            │                 │
-│              │ ┌─────────────────┐   │                 │
-│              │ │ Start Countdown │   │                 │
-│              │ │ Timer           │   │                 │
-│              │ └────────┬────────┘   │                 │
-│              │          │            │                 │
-│              │          │───────────────────────>│     │
-│              │                        │    Receive     │
-│              │                        │    Notification│
-│              │                        │        │       │
-│              │                        │        ▼       │
-│              │                        │    Email/SMS   │
-│              │                        │    • Exam      │
-│              │                        │      Details   │
-│              │                        │    • Login     │
-│              │                        │      Link      │
-│              │                        │                │
-│    │<────────│ Success                │                │
-│    │         │ Confirmation           │                │
-│    │         │                        │                │
-│    ▼         │                        │                │
-│ View Session │                        │                │
-│ on Dashboard │                        │                │
-│              │                        │                │
-│ (END)        │                        │                │
-└──────────────┴────────────────────────┴─────────────────┘
-
-
-DECISION POINTS:
-════════════════
-
-1. Hall Available?
-   YES → Continue
-   NO  → Show error: "Hall not available at this time"
-
-2. Invigilator Available?
-   YES → Create session
-   NO  → Show error: "Invigilator has schedule conflict"
-
-
-SYSTEM ACTIONS (Database Operations):
-══════════════════════════════════════
-
-INSERT INTO exam_sessions (
-    hall_id,
-    exam_name,
-    scheduled_start,
-    scheduled_end,
-    status,
-    created_by
-) VALUES (...);
-
-INSERT INTO assignments (
-    exam_session_id,
-    invigilator_id,
-    role
-) VALUES (...);
-
--- Send notification via queue
-INSERT INTO notifications (
-    user_id,
-    type,
-    message,
-    sent_at
-) VALUES (...);
-```
-
-### 3.2 Alert Processing Flow
+**Flow:**
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│           ACTIVITY: ALERT DETECTION & PROCESSING                 │
-└─────────────────────────────────────────────────────────────────┘
-
-ACTORS:
-  🤖 Detection AI
-  🖥️ System (Backend)
-  👤 Invigilator
-  🎯 Control Referee
-
-
-SWIMLANES:
-══════════
-
-┌────────────┬────────────┬──────────────┬────────────────┐
-│ DETECTION  │  SYSTEM    │ INVIGILATOR  │ CONTROL REFEREE│
-│     AI     │            │              │                │
-├────────────┼────────────┼──────────────┼────────────────┤
-│            │            │              │                │
-│ (START)    │            │              │                │
-│  Analyze   │            │              │                │
-│  Video/    │            │              │                │
-│  Audio     │            │              │                │
-│    │       │            │              │                │
-│    ▼       │            │              │                │
-│ ┌────────┐ │            │              │                │
-│ │Behavior│ │            │              │                │
-│ │Detected│ │            │              │                │
-│ └───┬────┘ │            │              │                │
-│     │      │            │              │                │
-│     │─────────────>│    │              │                │
-│            │ Create     │              │                │
-│            │ Detection  │              │                │
-│            │ Event      │              │                │
-│            │    │       │              │                │
-│            │    ▼       │              │                │
-│            │ ┌─────────────────┐       │                │
-│            │ │ WAIT 5 SECONDS  │       │                │
-│            │ │ (Aggregation    │       │                │
-│            │ │  Window)        │       │                │
-│            │ └────────┬────────┘       │                │
-│            │          │                │                │
-│    │───────────────>│ │                │                │
-│ More       │          │                │                │
-│ Events     │          │                │                │
-│ (if any)   │          │                │                │
-│            │          ▼                │                │
-│            │ ┌─────────────────┐       │                │
-│            │ │ Group Related   │       │                │
-│            │ │ Events          │       │                │
-│            │ │ • Same area     │       │                │
-│            │ │ • Time window   │       │                │
-│            │ │ • Type match    │       │                │
-│            │ └────────┬────────┘       │                │
-│            │          │                │                │
-│            │          ▼                │                │
-│            │    ◇── Multiple           │                │
-│            │    │   Students?          │                │
-│            │   YES                     │                │
-│            │    │                      │                │
-│            │    ▼                      │                │
-│            │ Create                    │                │
-│            │ GroupEvent                │                │
-│            │    │                      │                │
-│            │    └───┐                  │                │
-│            │        │                  │                │
-│            │        ▼                  │                │
-│            │   ◇── Calculate           │                │
-│            │   │   Severity            │                │
-│            │   │                       │                │
-│            │  LOW                      │                │
-│            │   │                       │                │
-│            │   ▼                       │                │
-│            │ Tier 1                    │                │
-│            │ Alert                     │                │
-│            │   │                       │                │
-│            │   │──────────────────>│   │                │
-│            │           Notify          │                │
-│            │           • Dashboard     │                │
-│            │           • Haptic (1x)   │                │
-│            │           • Timeline      │                │
-│            │                  │        │                │
-│            │                  ▼        │                │
-│            │              Review       │                │
-│            │              Alert        │                │
-│            │                  │        │                │
-│            │                  ▼        │                │
-│            │             ◇── Decision  │                │
-│            │             │             │                │
-│            │         RESOLVE           │                │
-│            │             │             │                │
-│            │   │<────────│             │                │
-│            │   │                       │                │
-│            │   ▼                       │                │
-│            │ Update                    │                │
-│            │ Alert                     │                │
-│            │ Status                    │                │
-│            │                           │                │
-│            │  MEDIUM/HIGH              │                │
-│            │   │                       │                │
-│            │   ▼                       │                │
-│            │ Tier 2                    │                │
-│            │ Alert                     │                │
-│            │   │                       │                │
-│            │   ├──────────────────>│   │                │
-│            │   │       Notify          │                │
-│            │   │       • Dashboard     │                │
-│            │   │       • Haptic (3x)   │                │
-│            │   │       • Audio Cue     │                │
-│            │   │              │        │                │
-│            │   │              ▼        │                │
-│            │   │          Review       │                │
-│            │   │          Alert        │                │
-│            │   │              │        │                │
-│            │   │              │        │                │
-│            │   └─────────────────────────────>│         │
-│            │                  │       Notify  │         │
-│            │                  │       • Queue │         │
-│            │                  │       • Chime │         │
-│            │                  │       • Video │         │
-│            │                  │          │    │         │
-│            │                  │          ▼    │         │
-│            │                  │      Review   │         │
-│            │                  │      Context  │         │
-│            │                  │          │    │         │
-│            │                  ▼          ▼    │         │
-│            │             ◇── Escalate?  ◇──Confirm?    │
-│            │             │              │    │         │
-│            │            YES             YES  │         │
-│            │             │              │    │         │
-│            │   │<────────│──────────────│────│         │
-│            │   │         │              │              │
-│            │   │         └──────────────┘              │
-│            │   │         PTT Call                      │
-│            │   │         Initiated                     │
-│            │   │                                       │
-│            │   ▼                                       │
-│            │ Update                                    │
-│            │ Alert:                                    │
-│            │ "Escalated"                               │
-│            │                                           │
-│ (END)      │                                           │
-└────────────┴────────────┴──────────────┴────────────────┘
-
-
-AGGREGATION LOGIC:
-══════════════════
-
-Group events IF:
-1. Same exam_session_id
-2. Within 5-second window
-3. Students adjacent (distance < threshold)
-4. Related event types (e.g., both head_pose)
-
-Example:
-  Event 1: Student A turns head at 10:23:15
-  Event 2: Student B turns head at 10:23:17
-  Distance: 1.2 meters (neighbors)
-  → CREATE GroupEvent (neighbor_cheating)
-
-
-SEVERITY CALCULATION:
-═════════════════════
-
-LOW (Tier 1):
-• Single head turn < 30°
-• Brief audio spike < 2 seconds
-• Isolated movement
-
-MEDIUM (Tier 2):
-• Prolonged behavior (> 5 seconds)
-• Head turn > 45°
-• Repeated violations (> 3 in 60s)
-
-HIGH (Tier 2):
-• Coordinated cheating (GroupEvent)
-• Multiple concurrent violations
-• Prolonged suspicious behavior (> 10s)
+RTSP frame (≤30 FPS)
+   │
+   ▼
+YOLOv11m person detection         detector.py    (conf 0.15, imgsz 640)
+   │
+   ▼
+BoT-SORT tracking                 tracker.py      (persistent track IDs)
+   │
+   ▼
+OSNet re-identification           reid.py         (cosine ≥ 0.80 on re-entry)
+   │
+   ▼
+MediaPipe face landmarks          face_mesh.py    (parallel worker pool)
+   │
+   ▼
+Gaze vector computation           gaze.py         (nose-bridge → iris, 2D unit vec)
+   │
+   ▼
+Cheating evaluation               cheating_evaluator.py
+   │   - For each surrounding paper, compute cos(angle) between gaze and
+   │     direction to paper.
+   │   - If cos(angle) > cos(RISK_ANGLE_TOLERANCE)  (default 25°)
+   │     sustained for SUSPICIOUS_DURATION_THRESHOLD (default 2.0 s)
+   │     → flag student as cheating, fire on_alert(state).
+   │   - Cooldown logic prevents oscillation on brief gaze breaks.
+   ▼
+Object detection (parallel)       tools_detector.py (YOLOv8, conf 0.45)
+   │   - Detects papers (for neighbor modeling) and phones/objects.
+   ▼
+Annotated alert clip + DetectionEvent
 ```
 
-### 3.3 Device Health Check
+**Key parameters** (from `config/settings.py`, overridable via `.env`):
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│         ACTIVITY: DEVICE REGISTRATION & HEALTH CHECK             │
-└─────────────────────────────────────────────────────────────────┘
+| Setting | Default | Meaning |
+|---|---|---|
+| `detection_confidence` | 0.15 | Person-detection threshold |
+| `detection_imgsz` | 640 | YOLO inference resolution |
+| `tools_confidence` | 0.45 | Object (paper/phone) threshold |
+| `tracking_max_distance` | 100 | BoT-SORT association distance |
+| `tracking_max_age` | 30 | Frames a lost track survives |
+| `neighbor_k` | 6 | Nearest neighbors per student |
+| `risk_angle_tolerance` | 25.0° | Max gaze-to-paper angle to count as "looking" |
+| `suspicious_duration_threshold` | 2.0 s | Sustained gaze before flagging |
+| `reid_match_threshold` | 0.80 | OSNet cosine similarity for re-ID |
+| `face_mesh_workers` | 4 | Parallel MediaPipe workers |
 
-ACTORS:
-  👤 Admin
-  🖥️ System
-  📷 Device (Camera/Microphone)
-
-
-SWIMLANES:
-══════════
-
-┌──────────────┬────────────────────────┬─────────────────┐
-│     ADMIN    │        SYSTEM          │     DEVICE      │
-├──────────────┼────────────────────────┼─────────────────┤
-│              │                        │                 │
-│ (START)      │                        │                 │
-│ Select Hall  │                        │                 │
-│    │         │                        │                 │
-│    ▼         │                        │                 │
-│ Click "Add   │                        │                 │
-│ Device"      │                        │                 │
-│    │         │                        │                 │
-│    │────────>│                        │                 │
-│              │ Show Device            │                 │
-│              │ Registration           │                 │
-│              │ Form                   │                 │
-│              │    │                   │                 │
-│    │<────────│    │                   │                 │
-│    │         │    │                   │                 │
-│    ▼         │    │                   │                 │
-│ Enter:       │    │                   │                 │
-│ • Type       │    │                   │                 │
-│ • IP         │    │                   │                 │
-│ • RTSP URL   │    │                   │                 │
-│ • Position   │    │                   │                 │
-│    │         │    │                   │                 │
-│    │────────>│    │                   │                 │
-│              │ Validate:              │                 │
-│              │ • IP format            │                 │
-│              │ • URL format           │                 │
-│              │ • Not duplicate        │                 │
-│              │    │                   │                 │
-│              │    ▼                   │                 │
-│              │ ┌──────────────────┐  │                 │
-│              │ │ INSERT INTO      │  │                 │
-│              │ │ devices          │  │                 │
-│              │ │ status='offline' │  │                 │
-│              │ └────────┬─────────┘  │                 │
-│              │          │            │                 │
-│              │          ▼            │                 │
-│              │ ┌──────────────────┐  │                 │
-│              │ │ Ping RTSP Stream │  │                 │
-│              │ │ Timeout: 10s     │  │                 │
-│              │ └────────┬─────────┘  │                 │
-│              │          │            │                 │
-│              │          │──────────────────────>│      │
-│              │                        │    RTSP        │
-│              │                        │    Request     │
-│              │                        │       │        │
-│              │                        │       ▼        │
-│              │                        │    ◇──Stream   │
-│              │                        │    │  Active?  │
-│              │                        │   YES          │
-│              │                        │    │           │
-│              │          │<───────────────────┘         │
-│              │          │            │    Stream       │
-│              │          │            │    Response     │
-│              │          │            │    (200 OK)     │
-│              │          ▼            │                 │
-│              │     ◇──Connection     │                 │
-│              │     │   Successful?   │                 │
-│              │    YES                │                 │
-│              │     │                 │                 │
-│              │     ▼                 │                 │
-│              │ ┌──────────────────┐  │                 │
-│              │ │ UPDATE devices   │  │                 │
-│              │ │ SET status=      │  │                 │
-│              │ │   'online'       │  │                 │
-│              │ │ last_health_     │  │                 │
-│              │ │   check=NOW()    │  │                 │
-│              │ └────────┬─────────┘  │                 │
-│              │          │            │                 │
-│              │          ▼            │                 │
-│              │ ┌──────────────────┐  │                 │
-│              │ │ Check Hall       │  │                 │
-│              │ │ Readiness:       │  │                 │
-│              │ │ Are ALL devices  │  │                 │
-│              │ │ online?          │  │                 │
-│              │ └────────┬─────────┘  │                 │
-│              │          │            │                 │
-│              │          ▼            │                 │
-│              │     ◇──All Online?    │                 │
-│              │     │                 │                 │
-│              │    YES                │                 │
-│              │     │                 │                 │
-│              │     ▼                 │                 │
-│              │ ┌──────────────────┐  │                 │
-│              │ │ UPDATE halls     │  │                 │
-│              │ │ SET status=      │  │                 │
-│              │ │   'ready'        │  │                 │
-│              │ └────────┬─────────┘  │                 │
-│              │          │            │                 │
-│    │<────────│──────────┘            │                 │
-│    │         │ Success                │                 │
-│    │         │ Notification           │                 │
-│    │         │                        │                 │
-│    ▼         │                        │                 │
-│ View Device  │                        │                 │
-│ Status:      │                        │                 │
-│ 🟢 Online    │                        │                 │
-│              │                        │                 │
-│              │                        │                 │
-│              │     │                  │                 │
-│              │    NO (Connection      │                 │
-│              │         Failed)        │                 │
-│              │     │                  │                 │
-│              │     ▼                  │                 │
-│              │ ┌──────────────────┐   │                 │
-│              │ │ Log Error        │   │                 │
-│              │ │ Keep status=     │   │                 │
-│              │ │   'offline'      │   │                 │
-│              │ └────────┬─────────┘   │                 │
-│              │          │             │                 │
-│    │<────────│──────────┘             │                 │
-│    │         │ Error                  │                 │
-│    │         │ Notification           │                 │
-│    │         │                        │                 │
-│    ▼         │                        │                 │
-│ View Device  │                        │                 │
-│ Status:      │                        │                 │
-│ 🔴 Offline   │                        │                 │
-│              │                        │                 │
-│ Retry or     │                        │                 │
-│ Contact IT   │                        │                 │
-│              │                        │                 │
-│ (END)        │                        │                 │
-└──────────────┴────────────────────────┴─────────────────┘
-
-
-PERIODIC HEALTH CHECKS:
-═══════════════════════
-
-After initial registration, system runs automated health checks:
-
-CRON Job (every 5 minutes):
-┌─────────────────────────────┐
-│ FOR EACH device WHERE       │
-│   status IN ('online',      │
-│              'error')       │
-│ DO:                         │
-│   1. Ping RTSP stream       │
-│   2. IF success:            │
-│      • status = 'online'    │
-│      • last_health_check =  │
-│        NOW()                │
-│   3. IF failure:            │
-│      • status = 'error'     │
-│      • Send alert to admin  │
-│   4. Update hall status     │
-└─────────────────────────────┘
-
-
-HALL READINESS CALCULATION:
-═══════════════════════════
-
-UPDATE halls
-SET status = 
-  CASE
-    WHEN (
-      SELECT COUNT(*)
-      FROM devices
-      WHERE hall_id = halls.id
-        AND status = 'online'
-    ) = (
-      SELECT COUNT(*)
-      FROM devices
-      WHERE hall_id = halls.id
-    ) AND (
-      SELECT COUNT(*)
-      FROM devices
-      WHERE hall_id = halls.id
-    ) > 0
-    THEN 'ready'
-    ELSE 'not_ready'
-  END;
-```
+The evaluator runs **synchronously on the main thread** to keep `is_cheating` /
+`is_alert_recording` state consistent with the recording collector.
 
 ---
 
-## 4. Alert Processing Flow
+## 6. Audio Detection Pipeline
 
-### 4.1 Detailed Alert State Machine
+Located in `src/thaqib/audio/`. Three-thread design.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ALERT LIFECYCLE                               │
-└─────────────────────────────────────────────────────────────────┘
-
-STATE: CREATED
-══════════════
-Initial state when detection event occurs
-
-Transitions:
-  → PENDING (automatically after aggregation window)
-
-
-STATE: PENDING
-══════════════
-Alert created and sent to invigilator/referee
-
-Allowed Actions:
-  • Acknowledge
-  • Review video
-  • Dismiss
-  • Escalate
-
-Transitions:
-  → ACKNOWLEDGED (invigilator views alert)
-  → ESCALATED (invigilator requests help)
-  → FALSE_POSITIVE (invigilator dismisses)
-
-
-STATE: ACKNOWLEDGED
-═══════════════════
-Invigilator has seen the alert and is investigating
-
-Allowed Actions:
-  • Resolve (mark handled)
-  • Escalate (need help)
-  • Mark false positive
-
-Transitions:
-  → RESOLVED (incident handled)
-  → ESCALATED (needs control room)
-  → FALSE_POSITIVE (not actually cheating)
-
-
-STATE: ESCALATED
-════════════════
-Control referee is reviewing
-
-Allowed Actions:
-  • Confirm (send instructions)
-  • Resolve (provide guidance)
-  • Downgrade to false positive
-
-Transitions:
-  → RESOLVED (after referee confirms & invigilator acts)
-  → FALSE_POSITIVE (referee determines not cheating)
-
-
-STATE: RESOLVED
-═══════════════
-Alert has been handled, incident closed
-
-No further transitions (terminal state)
-
-Metadata stored:
-  • Resolution time
-  • Resolution notes
-  • Actions taken
-
-
-STATE: FALSE_POSITIVE
-════════════════════
-Alert determined to be incorrect detection
-
-No further transitions (terminal state)
-
-Used for:
-  • Training data
-  • System improvement
-  • Alert accuracy metrics
-
-
-STATE DIAGRAM:
-══════════════
-
-                    ┌─────────┐
-                    │ CREATED │
-                    └────┬────┘
-                         │
-                         ▼
-                    ┌─────────┐
-                ┌──>│ PENDING │
-                │   └────┬────┘
-                │        │
-                │        ├───────────────┬──────────────┐
-                │        │               │              │
-                │        ▼               ▼              ▼
-                │   ┌────────────┐  ┌───────────┐  ┌─────────────┐
-                │   │ACKNOWLEDGED│  │ ESCALATED │  │FALSE_       │
-                │   └─────┬──────┘  └─────┬─────┘  │POSITIVE     │
-                │         │               │        └─────────────┘
-                │         │               │              ^
-                │         │               │              │
-                │         ├───────────────┼──────────────┘
-                │         │               │
-                │         ▼               ▼
-                │      ┌──────────────────────┐
-                └──────┤     RESOLVED         │
-                       └──────────────────────┘
-
-
-SUPPRESSION RULES:
-══════════════════
-
-After an alert is RESOLVED or marked FALSE_POSITIVE:
-
-1. Same student, same type:
-   • Suppress for 5 minutes
-   • Prevent alert fatigue
-
-2. Neighbor events:
-   • After resolution, suppress similar
-     neighbor patterns for 10 minutes
-
-3. Whole hall suppression:
-   • If > 10 false positives in 30 minutes
-   • Reduce sensitivity temporarily
-   • Alert admin for review
+Main thread:    read 500 ms chunks → classify GLOBAL/LOCAL → route
+VAD worker:     Silero VAD on LOCAL chunks → accumulate speech buffer
+Whisper worker: Faster-Whisper STT + keyword match → save evidence
 ```
 
-### 4.2 Tier Classification Logic
+**Global/Local discriminator** (`discriminator.py`):
+- **2-mic mode:** learns a baseline energy ratio over the first
+  `audio_calibration_chunks` (30) chunks; a chunk is **LOCAL** when
+  `raw_ratio / baseline_ratio ≥ audio_local_ratio_multiplier` (2.0×).
+- **N-mic mode:** a chunk is **LOCAL** if fewer than `audio_global_fraction` (60%) of
+  mics heard it.
+- Periodic recalibration every `audio_recalibration_interval_sec` (300 s).
 
-```python
-# Pseudo-code for alert tier determination
+**Preprocessing** (`preprocessor.py`): high-pass filter (100 Hz), spectral noise
+reduction (strength 0.75), adaptive RMS gain.
 
-def calculate_alert_tier(detection_event, group_event=None):
-    """
-    Determine if alert should be Tier 1 or Tier 2
-    
-    Tier 1: Direct to Invigilator
-    Tier 2: Both Invigilator + Control Referee
-    """
-    
-    # TIER 2 (HIGH PRIORITY) CONDITIONS
-    # ==================================
-    
-    # Condition 1: Group Event (Coordinated Cheating)
-    if group_event is not None:
-        return "tier_2"
-    
-    # Condition 2: High Severity Single Event
-    if detection_event.severity == "high":
-        return "tier_2"
-    
-    # Condition 3: Prolonged Behavior
-    if detection_event.metadata.get("duration") > 10:  # 10 seconds
-        return "tier_2"
-    
-    # Condition 4: Repeated Violations
-    recent_events = get_recent_events(
-        student_position=detection_event.student_position,
-        time_window=60  # Last 60 seconds
-    )
-    
-    if len(recent_events) >= 3:
-        return "tier_2"
-    
-    # Condition 5: Multiple Concurrent Violations
-    concurrent = get_concurrent_events(
-        exam_session_id=detection_event.exam_session_id,
-        time_window=5  # Same 5-second window
-    )
-    
-    if len(concurrent) >= 3:
-        return "tier_2"
-    
-    # DEFAULT: TIER 1
-    # ===============
-    return "tier_1"
+**Detection modes:**
+- **STRICT** (`audio_strict_mode=true`, default): any confirmed speech = violation
+  (silent-exam assumption).
+- **KEYWORD:** only speech matching `keywords.json` (fuzzy match) is flagged.
 
-
-def create_alert(detection_event, group_event=None):
-    """Create alert and route to appropriate recipients"""
-    
-    tier = calculate_alert_tier(detection_event, group_event)
-    
-    # Get assigned invigilator
-    exam_session = get_exam_session(detection_event.exam_session_id)
-    invigilator = get_primary_invigilator(exam_session.id)
-    
-    # Create alert record
-    alert = Alert.create(
-        exam_session_id=exam_session.id,
-        detection_event_id=detection_event.id if not group_event else None,
-        group_event_id=group_event.id if group_event else None,
-        alert_type=tier,
-        assigned_to=invigilator.id,
-        status="pending"
-    )
-    
-    # TIER 1: Notify invigilator only
-    if tier == "tier_1":
-        send_notification(
-            user=invigilator,
-            alert=alert,
-            channels=["dashboard", "haptic"],
-            urgency="normal"
-        )
-    
-    # TIER 2: Notify both invigilator and control
-    elif tier == "tier_2":
-        # Notify invigilator
-        send_notification(
-            user=invigilator,
-            alert=alert,
-            channels=["dashboard", "haptic", "audio"],
-            urgency="high"
-        )
-        
-        # Notify all active control referees
-        referees = get_active_referees()
-        for referee in referees:
-            send_notification(
-                user=referee,
-                alert=alert,
-                channels=["dashboard", "audio"],
-                urgency="high"
-            )
-    
-    return alert
-```
+**Evidence** (`evidence.py`): WAV clip (2 s pre + event + 2 s post) plus a JSON sidecar
+with transcript, matched keywords, confidence, timestamps, and SHA-256 hash. Full-session
+recording and sustained-episode recording are also supported.
 
 ---
 
-## 5. Implementation Notes
+## 7. Spatial Neighbor Modeling
 
-### 5.1 System Installation & Initialization
+`src/thaqib/video/neighbors.py` + `registry.py`.
 
-The Thaqib system follows a modern, container-first deployment strategy to ensure consistency across different environments.
-
-```
-INSTALLATION (Containerized):
-════════════════════════════
-• Deployment Model: The entire system architecture (Backend, Frontend, Workers, Database, and Cache) is packaged as Docker Containers.
-• Infrastructure Agnostic: Can be deployed on-premise (local university servers) or on cloud platforms (AWS, Azure, GCP) using Kubernetes or Docker Compose.
-• Scalability: Services can be horizontally scaled by spinning up additional container instances based on concurrent exam load.
-
-INITIALIZATION (Setup Phase):
-═════════════════════════════
-• Step 1 - Service Deployment: Launch all core containers and establish network connectivity.
-• Step 2 - Institutional Identity: At first launch, the system must be initialized with the Institution's Details:
-  - Name of the Institution (e.g., University Name).
-  - Academic hierarchy (Faculties, Departments).
-  - Primary Administrator credentials.
-• Step 3 - Global Configuration: Set default system-wide thresholds and notification preferences.
-```
-
-### 5.2 Technology Stack Recommendations
-
-```
-BACKEND:
-════════
-• API: FastAPI (Python)
-• Database: PostgreSQL 14+
-• Cache: Redis
-• Message Queue: RabbitMQ or AWS SQS
-• WebSocket: Socket.IO or FastAPI WebSocket
-
-FRONTEND:
-═════════
-• Framework: React 18+
-• State: Redux Toolkit or Zustand
-• UI: Material-UI or Ant Design
-• Real-time: Socket.IO client
-• Charts: Recharts or Chart.js
-
-VIDEO PROCESSING:
-═════════════════
-• Streaming: RTSP → WebRTC conversion
-• Detection: YOLOv8 for object detection
-• Head Pose: MediaPipe or Dlib
-• Edge Computing: NVIDIA Jetson for on-premise
-
-AUDIO PROCESSING:
-═════════════════
-• Stream: WebRTC or GStreamer
-• Detection: Librosa + Custom ML model
-• VAD: WebRTC VAD or Silero VAD
-
-STORAGE:
-════════
-• Hot: Local SSD (0-7 days)
-• Warm: S3/Azure Blob (7-90 days)
-• Cold: Glacier/Archive (90+ days)
-
-DEPLOYMENT:
-═══════════
-• Containers: Docker + Kubernetes
-• Load Balancer: NGINX or AWS ALB
-• Monitoring: Prometheus + Grafana
-• Logging: ELK Stack
-```
-
-### 5.3 Performance Considerations
-
-```
-REAL-TIME REQUIREMENTS:
-═══════════════════════
-
-Alert Delivery:
-• Target: < 2 seconds from detection to notification
-• Acceptable: < 5 seconds
-• Critical path optimization needed
-
-Video Streaming:
-• Latency: < 500ms preferred
-• Frame rate: 15-30 FPS
-• Resolution: 720p minimum, 1080p ideal
-
-Database Queries:
-• Alert fetch: < 100ms
-• Session load: < 200ms
-• History queries: < 1s (with pagination)
-
-SCALABILITY:
-════════════
-
-Concurrent Sessions:
-• Target: 100 simultaneous exam sessions
-• Per session: 6 cameras + 4 mics = 10 streams
-• Total: 1000 concurrent streams
-
-Detection Throughput:
-• 30 FPS × 6 cameras = 180 frames/sec per hall
-• 100 halls = 18,000 frames/sec
-• Use GPU batching: Process 32-64 frames/batch
-
-WebSocket Connections:
-• Invigilators: 100 connections
-• Control referees: 10 connections
-• Use connection pooling and load balancing
-```
-
-### 5.4 Security Measures
-
-```
-AUTHENTICATION:
-═══════════════
-• JWT tokens with refresh mechanism
-• 2FA for admin/referee accounts
-• Session timeout: 4 hours
-• Password policy: Min 12 chars, complexity
-
-AUTHORIZATION:
-══════════════
-• Role-Based Access Control (RBAC)
-• Resource-level permissions
-• Hall-specific access for invigilators
-
-DATA PROTECTION:
-════════════════
-• TLS 1.3 for all connections
-• End-to-end encryption for video streams
-• Encrypted at rest (database, storage)
-• PII anonymization in logs
-
-COMPLIANCE:
-═══════════
-• GDPR: Right to erasure, data portability
-• Data retention: Configurable per region
-• Audit logs: 2-year retention
-• Video: 90-day default retention
-```
-
-### 5.5 Testing Strategy
-
-```
-UNIT TESTS:
-═══════════
-• Detection algorithms (accuracy > 90%)
-• Alert tier classification
-• Aggregation logic
-• State machine transitions
-
-INTEGRATION TESTS:
-══════════════════
-• API endpoints
-• Database operations
-• WebSocket communication
-• Video stream processing
-
-E2E TESTS:
-══════════
-• Complete user flows (admin, invigilator)
-• Alert processing end-to-end
-• Device health check workflow
-• Session creation and monitoring
-
-PERFORMANCE TESTS:
-══════════════════
-• Load testing: 100 concurrent sessions
-• Stress testing: Peak detection rates
-• Latency testing: Alert delivery time
-• Video streaming under load
-```
+- A **k-nearest-neighbor graph** (k = `neighbor_k`, default 6) is maintained continuously
+  from person-detection centroids — it reflects the live seating arrangement, not a static
+  floor plan.
+- Each student's `surrounding_papers` set is populated with paper centroids detected in
+  the regions of its k nearest neighbors. This lets the gaze evaluator attribute a gaze to
+  a **specific neighbor's paper** and identify the "victim" track.
+- When two adjacent students both produce suspicious gaze events within the **5-second
+  aggregation window**, the backend creates a **GroupEvent** (coordinated cheating).
 
 ---
 
-## Summary
+## 8. Alert Processing Framework
 
-This architecture provides:
+**Event aggregation:** Raw `DetectionEvent`s enter a 5-second sliding window. Events
+sharing a session, within spatial adjacency, and of compatible types are merged into a
+**GroupEvent** (with traceability back to participating events).
 
-✅ **Clear Separation of Concerns**: Admin manages infrastructure, Invigilators monitor exams
-✅ **Scalable Design**: Supports 100+ concurrent sessions
-✅ **Real-time Performance**: < 2s alert delivery, < 500ms video latency
-✅ **Intelligent Alerting**: Tiered system reduces overwhelm
-✅ **Comprehensive Audit**: Full tracking from detection to resolution
-✅ **Flexible Infrastructure**: Halls + Devices model allows easy expansion
+**Severity inputs:** (i) behavior duration, (ii) gaze angle magnitude, (iii) number of
+students involved, (iv) recent violation frequency for that student.
 
-Ready for implementation! 🚀
+**Tiers:**
+- **Tier 1 (low):** brief, isolated anomaly. → invigilator dashboard notification.
+- **Tier 2 (high):** GroupEvent, prolonged behavior (>10 s), large head turn, or repeated
+  violations. → invigilator **and** all active control referees, with a distinct cue.
+
+**Alert lifecycle** (as implemented in the `Alert` model + routes):
+
+```
+pending ──► claimed ──► confirmed        (real incident, action taken)
+   │                └──► cancelled / false_positive  (no cheating)
+   └──────────────────► escalated ──► confirmed / cancelled
+```
+
+The `Alert` model stores `claimed_by/at`, `confirmed_by/at`, `cancelled_by/at`,
+`escalated`, `resolution_notes`. Routes expose `confirm` and `cancel` actions; the
+dashboard calls `/api/alerts/{id}/confirm` and `/api/alerts/{id}/cancel`.
+
+**Application-level invariant:** each `Alert` references **exactly one** of
+`detection_event_id` **or** `group_event_id` (never both).
+
+---
+
+## 9. Hall Voice Channel Subsystem
+
+Two-way live voice between the control room (admin/referee) and hall invigilators, over the
+local network. Runs entirely in-process (no media server) and is **deliberately stateless**
+— no DB writes, no clip recording, no approval state machine.
+
+> **History:** An earlier "PTT" design (`routes/ptt.py` + `ws_manager.py` +
+> `models/ptt.py` + `HallVoiceChannel`/`PttClip` tables) was **fully removed** in commit
+> `29d7de1` and replaced by this minimal channel. Migration `20260604_remove_ptt` drops the
+> `ptt_clips` / `hall_voice_channels` tables and the `users.ptt_id` column. Do not
+> reintroduce those references.
+
+**Backend** — `src/thaqib/api/routes/voice.py`:
+- **Endpoint:** `WS /api/v1/voice/ws/{hall_id}` — one channel per hall. State is a simple
+  in-memory dict: `hall_id → { user_id → {ws, role, name} }`.
+- Audio: binary frames (raw PCM) are relayed to everyone else in the hall (`_broadcast_bytes`,
+  excluding the sender).
+- Control messages: `talk_start` / `talk_stop` (relayed to others) and `ping` → `pong`.
+- **Presence:** every connect/disconnect broadcasts a `presence` message listing
+  participants (`id`, `role`, `name`).
+- **Authentication:** JWT from the access cookie or `?access_token=` query param (the Vite
+  dev proxy strips cookies on the WS upgrade, so the token is also appended to the URL).
+  `user_id` is the username.
+- **Incident push:** `notify_hall(hall_id, message)` lets other parts of the backend push a
+  JSON card (e.g. a confirmed incident) to everyone connected to a hall; it's a no-op when
+  nobody is connected.
+- **No persistence:** nothing about voice is written to the database. Microphone capture on
+  the client requires a secure context (HTTPS or `localhost`).
+
+**Frontend** — `frontend/src/hooks/useHallVoice.ts`:
+- Opens the hall voice WebSocket, handles presence, relays mic audio while the talk button
+  is held, and plays received audio.
+- Consumed by the control-room hall view (`DashboardPage.tsx`) and the invigilator's
+  monitoring page (`HallMonitoringPage.tsx`).
+
+---
+
+## 10. Video Streaming
+
+- Cameras are ingested as RTSP by the detection engine.
+- The browser receives **MJPEG over HTTP** via `/api/stream/*` — no WebRTC, no plugins.
+- The dashboard polls `/api/stream/monitoring`, `/api/stream/alerts`, and
+  `/api/stream/status` on short intervals (5 s / 3 s / 2 s) to update hall, alert, and
+  per-camera stats.
+- A **hall readiness check** confirms all registered devices are online before monitoring
+  can start.
+
+---
+
+## 11. Data Model
+
+All models use UUID primary keys, `created_at`/`updated_at` timestamps, and most
+infrastructure entities support soft delete (`deleted_at`).
+
+### Implemented tables
+
+```
+institutions ──1:N── halls ──1:N── devices
+     │                  │
+     │                  └──M:N── exam_sessions  (via exam_session_halls)
+     │
+     └──1:N── users ──1:N── refresh_tokens
+                  │
+                  └──1:N── assignments
+
+exam_sessions ──1:N── assignments ──N:1── halls
+exam_sessions ──1:N── detection_events ──N:1── devices
+exam_sessions ──1:N── group_events
+exam_sessions ──1:N── alerts
+
+detection_events ──N:1(opt)── group_events
+alerts ──► detection_event (1) XOR group_event (1)
+
+audit_logs (standalone)
+```
+
+> Voice channels are **not** in the data model — the hall voice subsystem (§9) is
+> stateless and writes nothing to the DB.
+
+**Core fields by table:**
+
+- **institutions** — `name`, `code`, `contact_email`, `logo_url`, `address`.
+- **halls** — `institution_id`, `name`, `building`, `floor`, `capacity`, `layout_map`
+  (JSON), `image`, `status` (`ready`/`not_ready`/...).
+- **devices** — `hall_id`, `type` (`camera`/`microphone`), `identifier`, `ip_address`,
+  `stream_url`, `position` (JSON), `coverage_area` (JSON), `status`, `last_health_check`.
+- **users** — `institution_id`, `username` (unique), `password_hash`, `full_name`,
+  `email`, `phone`, `image`, `role`, `status`. *(The old `ptt_id` column was dropped by
+  migration `20260604_remove_ptt`; the voice subsystem identifies users by `username`.)*
+- **refresh_tokens** — `user_id`, `token_hash`, `expires_at`, `revoked_at`,
+  `replaced_by_hash`.
+- **exam_sessions** — `exam_name`, `exam_type`, `scheduled_start/end`,
+  `actual_start/end`, `status` (`scheduled`/`active`/`completed`/`cancelled`),
+  `student_count`, `configuration` (JSON), `created_by`. Many-to-many with halls.
+- **assignments** — `exam_session_id`, `invigilator_id`, `hall_id`, `role`
+  (`primary`/`secondary`), `monitoring_started_at`, `monitoring_ended_at`.
+- **detection_events** — `exam_session_id`, `device_id?`, `group_id?`, `event_type`
+  (`head_pose`/`gaze_alignment`/`audio_anomaly`/`object_detected`/...), `severity`,
+  `student_position` (JSON), `timestamp`, `confidence_score`, `video_clip_path`,
+  `audio_clip_path`, `metadata_json`.
+- **group_events** — `exam_session_id`, `event_type`, `severity`, `student_positions`
+  (JSON).
+- **alerts** — `exam_session_id`, `detection_event_id?`, `group_event_id?`, `alert_type`
+  (`tier_1`/`tier_2`), `status`, `claimed_by/at`, `resolved_at`, `resolution_notes`,
+  `escalated`, `confirmed_by/at`, `cancelled_by/at`.
+
+### Planned tables (RF subsystem — see §16)
+`rf_scanners`, `rf_detections`, `rf_whitelist_entries`.
+
+---
+
+## 12. Backend API Surface
+
+Routers are mounted in `src/thaqib/main.py`:
+
+| Prefix | Purpose |
+|---|---|
+| `/api/v1/voice` | Stateless hall voice channel WebSocket (`/ws/{hall_id}`) |
+| `/api/setup` | First-run install wizard |
+| `/api/auth` | Login, logout, refresh, `/me`, CSRF |
+| `/api/institutions` | Institution CRUD |
+| `/api/halls` | Hall CRUD + readiness |
+| `/api/devices` | Camera/mic registration + health |
+| `/api/users` | User management (RBAC) |
+| `/api/sessions` | Exam sessions, assignments, monitoring start/stop, **report** |
+| `/api/events` | Detection event ingestion (CSRF-exempt, token-guarded) |
+| `/api/alerts` | Alert confirm/cancel/claim/escalate |
+| `/api/stream` | MJPEG feeds, monitoring/alerts/status polling |
+| `/api/settings` | Runtime settings (writes `.env`-style values) |
+| `/uploads` | Static evidence files (clips, snapshots) |
+
+**Middleware:** security headers (CSP, X-Frame-Options, HSTS, nosniff), CSRF enforcement
+for cookie-authenticated unsafe methods (login/setup/events exempt), CORS restricted to
+configured origins, slowapi rate limiting.
+
+**Session report** (`GET /api/sessions/{id}/report`) aggregates alerts, resolutions, and
+response times for post-exam review.
+
+---
+
+## 13. Frontend Application
+
+`frontend/src/` — React 19 + TypeScript + Tailwind 4, RTL Arabic.
+
+**Admin / referee (`DashboardPage.tsx`):**
+- Tabs: Home, Halls, Exams, Supervisors, Settings.
+- Live hall grid, alert stack, per-camera stats, alert review (confirm/cancel),
+  per-hall voice control (hold-to-talk via `useHallVoice`).
+
+**Invigilator:**
+- `SchedulePage` — assigned sessions.
+- `HallMonitoringPage` — live MJPEG feed, readiness check, start/stop monitoring,
+  alert timeline, floating hold-to-talk voice button, voice connection badge.
+
+**Setup wizard** — institution + admin + halls bootstrap.
+
+**API config (`config/api.ts`):** `authFetch` injects CSRF header and credentials;
+`wsOrigin()` builds the voice WebSocket URL.
+
+---
+
+## 14. Security
+
+- **Auth:** JWT access token (cookie, 30 min) + refresh token (7 days, hashed, rotatable
+  via `refresh_tokens`).
+- **CSRF:** double-submit cookie + `X-CSRF-Token` header on unsafe cookie-auth requests.
+- **RBAC:** `RequireRole` dependency; invigilators scoped to assigned halls.
+- **Rate limiting:** slowapi (e.g., session creation, assignments).
+- **Headers:** CSP, HSTS, X-Frame-Options DENY, X-Content-Type-Options nosniff.
+- **Production guards:** Pydantic validator rejects default `SECRET_KEY`, missing
+  `INTERNAL_EVENT_TOKEN`, wildcard CORS, and `SameSite=None` without `Secure`.
+- **Privacy:** evidence captured only during active sessions; landmark-based gaze
+  (geometry, not pixels) avoids appearance bias; audio uses energy/transcript features
+  with no speaker identification.
+
+---
+
+## 15. Anti-Cheating Signal Strategy
+
+**Design decision: Thaqib does NOT jam signals — it detects them.**
+
+Rationale (the system runs entirely on WiFi):
+
+- The cameras, the invigilator's tablet, and the dashboard all communicate over WiFi.
+- A full-spectrum jammer would kill **its own monitoring system** — jamming WiFi takes the
+  cameras and tablet offline; jamming 2.4 GHz also kills the invigilator's Bluetooth
+  earbuds.
+- Therefore jamming and monitoring **cannot coexist** in the same room at the same
+  frequencies.
+
+**Adopted approach — passive RF detection (see §16):** rather than block signals, listen
+for them. Detect any device that activates during the exam and alert the invigilator, who
+responds in person. This keeps WiFi, cameras, and invigilator comms fully functional.
+
+**The cheating vector still breaks** because the invigilator is directed to the exact seat;
+the student cannot use a device once an invigilator is standing over them. Wired earbuds
+(no RF) are covered by the **camera** and **audio** pipelines instead.
+
+> If an institution insists on physical jamming, it requires (in Egypt) an **NTRA permit**,
+> and the only workable engineering compromises are: run the whole system on **5 GHz WiFi**
+> while jamming **cellular + 2.4 GHz only**, with the invigilator on a **wired headset**.
+> This is documented as an alternative, not the default design.
+
+---
+
+## 16. RF Device Detection Subsystem — PLANNED
+
+**Goal:** detect any wireless device (phone, Bluetooth earbud, smartwatch) that activates
+inside a hall during an exam, without jamming.
+
+### Hardware (per hall)
+- **3 × ESP32-WROOM-32** nodes (BLE scan + WiFi reporting), front-left, front-right,
+  rear-center — enables RSSI triangulation to a seating zone.
+- 5 V USB power per node.
+- *(Optional)* RTL-SDR + Raspberry Pi Zero 2 W for wider-spectrum (cellular-energy)
+  sensing.
+- Approx cost: ~$35/hall (BLE), ~$80/hall (with SDR).
+
+### Data flow
+```
+ESP32 nodes (passive BLE scan)
+   │  batch every ~3 s, POST over WiFi
+   ▼
+POST /api/v1/rf-push/{scanner_id}/detections   (pre-shared key auth)
+   │
+   ▼
+Whitelist check + RSSI→zone estimate
+   │
+   ├─ whitelisted / weak signal → record only
+   └─ unknown & strong → DetectionEvent(event_type="rf_transmission")
+                              → Alert (tier_2) → WebSocket → dashboard
+```
+
+### Lifecycle
+- **Pre-exam baseline (~5 min):** admin starts a baseline scan; everything currently
+  broadcasting (tablet, invigilator earbuds, cameras, AP) is added to the hall whitelist.
+- **During exam:** any non-whitelisted device, or a whitelisted device whose RSSI
+  **jumps** (hidden earbud powering on), fires an alert carrying the advertised device
+  name and estimated zone.
+
+### Planned tables
+- **rf_scanners** — `hall_id`, `identifier`, `position` (JSON), `ip_address`,
+  `api_key_hash`, `status`, `last_seen`.
+- **rf_detections** — `scanner_id`, `exam_session_id?`, `detected_at`, `signal_type`,
+  `mac_hash` (SHA-256 — never store raw MAC), `device_name?`, `rssi`, `is_whitelisted`,
+  `estimated_zone?`, `metadata_json`.
+- **rf_whitelist_entries** — `hall_id`, `mac_hash`, `device_name?`, `device_role`,
+  `added_by`, `expires_at`.
+
+### Integration
+RF hits reuse the **existing** `DetectionEvent → Alert → WebSocket` pipeline — no new alert
+machinery. A new `event_type = "rf_transmission"` and a dashboard RF badge are the only
+additions on the consuming side.
+
+### Coverage
+Catches active BLE/WiFi devices (named earbuds, phones coming off airplane mode). Does
+**not** catch fully passive wired earbuds — those remain the responsibility of the camera
+earbud-detection model and the audio pipeline.
+
+### Build order
+1. Models + Alembic migration.
+2. `/api/v1/rf-push` ingest endpoint + whitelist logic + zone estimation.
+3. Alert integration (`rf_transmission`).
+4. Scanner firmware (`scanner_node/main.py` + `config.json`).
+5. Dashboard RF badge + baseline-scan controls.
+
+---
+
+## 17. Deployment & Running the System
+
+**Development (local).** Three processes, fixed port convention:
+
+| Process | Port | Notes |
+|---|---|---|
+| Camera simulator | `8000` | Serves MJPEG feeds; seeded `Device.stream_url`s point here. |
+| Backend API (uvicorn) | `8001` | FastAPI app. |
+| Frontend (Vite) | `5173` | Proxies `/api` → `127.0.0.1:8001`. |
+
+```powershell
+# Camera simulator (feeds) — port 8000
+python -m uvicorn simulator.main:app --host 0.0.0.0 --port 8000
+
+# Backend API — port 8001
+python -m uvicorn src.thaqib.main:app --reload --host 0.0.0.0 --port 8001
+
+# Frontend (Vite) — port 5173, proxies /api → 127.0.0.1:8001
+cd frontend; npm run dev -- --host
+```
+
+- The Vite dev server proxies `/api` (including WebSocket upgrades, `ws: true`) to the
+  backend on **8001**. **The proxy target must match the uvicorn API port (8001).** A
+  mismatch silently breaks every API call and the voice socket. Note 8000 is the
+  *simulator*, not the API.
+- CORS origins must include the frontend origin (`http://localhost:5173`).
+- Database defaults to SQLite at `./data/thaqib.db`; set `DATABASE_URL` to PostgreSQL for
+  production (see the Database subsection below).
+- Mobile microphone access (voice transmit) requires a **secure context** — use HTTPS
+  (e.g., a Cloudflare quick tunnel) or `localhost`. Receive-only works over plain LAN.
+
+**Seeding a demo:** run the setup wizard first (creates institution, admin, hall named
+`قاعة 101`, and an `invigilator` user), then `python seed_demo.py` to create the demo exam
+session + assignment.
+
+### Database: SQLite (dev) / PostgreSQL (production)
+
+The system is **DB-agnostic** via SQLAlchemy + Alembic; the database is selected entirely
+by `DATABASE_URL` (no code change needed). `db/database.py` configures the engine
+conditionally:
+
+- **SQLite** (dev default, `sqlite:///./data/thaqib.db`): `check_same_thread=False` so the
+  engine is shared across FastAPI's thread pool. SQLite serializes writes (single writer)
+  — fine for development and the test suite.
+- **PostgreSQL** (production / pilot): `pool_pre_ping=True`, `pool_size=10`,
+  `max_overflow=20`, `pool_recycle=1800`. PostgreSQL provides true concurrent writes
+  (MVCC), which is **required** under live multi-hall detection-event load — SQLite would
+  hit `database is locked` errors when several halls' detection streams write at once.
+
+**Why production uses PostgreSQL:** the detection engine writes `DetectionEvent`s
+continuously during exams, concurrently with alert updates and dashboard reads. This is a
+concurrent-writer workload that SQLite cannot serve reliably.
+
+**Provisioning (Docker):** `docker-compose.yml` provides PostgreSQL 15 + PgAdmin:
+
+```powershell
+docker compose up -d db                # Postgres on localhost:5433, PgAdmin on :5050
+$env:DATABASE_URL = "postgresql+psycopg2://thaqib_admin:development_password@localhost:5433/thaqib_production"
+python -m alembic upgrade head         # apply the full migration chain
+```
+
+> The full migration chain has been verified end-to-end against PostgreSQL 15 (including
+> the `batch_alter_table` operations and the `20260604_remove_ptt` drops). On Postgres all
+> `DateTime(timezone=True)` columns become real `timestamptz`.
+
+**Timezone discipline:** because Postgres uses real `timestamptz`, all DB-written datetimes
+must be **UTC-aware** (`datetime.now(timezone.utc)`), never naive `datetime.now()`. Runtime
+writes (auth, alerts, devices, monitoring start/stop) and the seed scripts follow this.
+Naive `datetime.now()` is only used for human-readable **filenames** (recordings, clips),
+which is intentional and not DB-bound.
+
+---
+
+## 18. Configuration Reference
+
+All settings live in `src/thaqib/config/settings.py` and are overridable via `.env`.
+Highlights (defaults shown):
+
+**Video:** `detection_confidence=0.15`, `detection_imgsz=640`, `tools_confidence=0.45`,
+`neighbor_k=6`, `risk_angle_tolerance=25.0`, `suspicious_duration_threshold=2.0`,
+`reid_match_threshold=0.80`, `face_mesh_workers=4`, `yolo_model=models/yolo11m.pt`,
+`tools_model=models/best.pt`.
+
+**Audio:** `audio_whisper_model=tiny`, `audio_language=ar`, `audio_strict_mode=true`,
+`audio_chunk_ms=500`, `audio_vad_threshold=0.5`, `audio_calibration_chunks=30`,
+`audio_local_ratio_multiplier=2.0`, `audio_clip_sec_before/after=2.0`,
+`audio_episode_min_sec=3.0`, `audio_session_recording=true`.
+
+**Server/security:** `server_port=8000`, `access_token_expire_minutes=30`,
+`refresh_token_expire_days=7`, `access_cookie_name=thaqib_access_token`,
+`csrf_cookie_name=thaqib_csrf_token`, `cookie_secure=false` (dev),
+`cors_origins=[localhost:5173, 127.0.0.1:5173, localhost:3000]`.
+
+**Output:** `video_quality=75`, `alert_max_height=720`, `archive_mode=raw`.
+
+---
+
+## 19. Evidence & Forensics
+
+- **Video alert clips:** annotated MP4 with a RED box on the flagging student and a YELLOW
+  box on the target neighbor's paper, with 2 s pre/post buffers. Stored under `alerts/`.
+- **Audio alert clips:** WAV + JSON metadata (transcript, keywords, confidence, SHA-256).
+  Stored under `audio alerts/`; full sessions under `sessions/`.
+- **Voice channel:** live only — no recordings are stored (the subsystem is stateless).
+- **Continuous archive:** raw (or annotated) camera recordings under `archive/`.
+- **SHA-256 hashing** on audio evidence provides chain-of-custody integrity.
+
+All evidence is generated only during active, scheduled sessions and is intended for human
+review — consistent with the human-in-the-loop, no-automatic-sanctions policy.
