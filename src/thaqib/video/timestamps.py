@@ -18,7 +18,8 @@ def draw_timestamp_overlay(frame: np.ndarray, ts: float | None = None) -> None:
         frame: BGR frame to annotate (modified in-place).
         ts:    Unix timestamp. If None, uses current wall-clock time.
     """
-    dt = datetime.datetime.fromtimestamp(ts) if ts else datetime.datetime.now()
+    dt = (datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone()
+          if ts else datetime.datetime.now().astimezone())
     text = dt.strftime("%Y-%m-%d  %H:%M:%S")
 
     h, w = frame.shape[:2]

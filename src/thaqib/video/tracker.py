@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import cv2
-from boxmot.trackers.botsort.botsort import BotSort
+from boxmot.trackers.bbox.botsort.botsort import BotSort
 
 from thaqib.config import get_settings
 from thaqib.video.detector import Detection, DetectionResult
@@ -203,6 +203,24 @@ class ObjectTracker:
             tracks=tracks,
         )
 
+    def get_predicted_bbox(self, track_id: int) -> tuple[int, int, int, int] | None:
+        """
+        Get the predicted bounding box for a track.
+        Attempts to get the Kalman-predicted box from BoT-SORT's lost tracks,
+        falling back to the last known smoothed bbox.
+        """
+        if hasattr(self._tracker, 'tracker') and hasattr(self._tracker.tracker, 'lost_stracks'):
+            for t in self._tracker.tracker.lost_stracks:
+                if t.track_id == track_id:
+                    return (int(t.tlbr[0]), int(t.tlbr[1]), int(t.tlbr[2]), int(t.tlbr[3]))
+        
+        if hasattr(self._tracker, 'lost_stracks'):
+            for t in self._tracker.lost_stracks:
+                if t.track_id == track_id:
+                    return (int(t.tlbr[0]), int(t.tlbr[1]), int(t.tlbr[2]), int(t.tlbr[3]))
+
+        return self._smoothed_bboxes.get(track_id)
+
     # ------------------------------------------------------------------
     # Selection management
     # ------------------------------------------------------------------
@@ -261,7 +279,9 @@ class ObjectTracker:
             track_high_thresh=0.25,
             track_low_thresh=0.10,
             new_track_thresh=0.20,
-            track_buffer=60,       # 2s ghost tracks
+            track_buffer=self.max_age,
+            max_age=self.max_age,
+            max_obs=self.max_age + 5,
             match_thresh=0.8,      # Tighter matching reduces ID switches
             proximity_thresh=0.7,
             appearance_thresh=0.25,

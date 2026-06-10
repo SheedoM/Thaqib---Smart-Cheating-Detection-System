@@ -19,6 +19,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
 
 # Add src to path for development
 sys.path.insert(0, str(__file__).replace("\\", "/").rsplit("/", 2)[0] + "/src")
@@ -31,7 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-import cv2
+cv2 = None  # Lazy loaded in main()
 import numpy as np
 import threading
 from queue import Queue, Empty
@@ -58,6 +59,10 @@ class AudioDashboard:
         self._is_playing = False
         self._playback_thread = None
         self._button_rects = [] # (mic_id, x, y, w, h)
+        self.pipeline = None
+        self.current_mic_page = 0
+        self.alert_scroll_offset = 0
+        self._last_alert_time_per_mic = {}
 
     def _playback_worker(self):
         import sounddevice as sd
@@ -139,55 +144,175 @@ class AudioDashboard:
                 "transcript": alert.transcript,
             })
             self._last_transcript = alert.transcript
+            self._last_alert_time_per_mic[alert.mic_id] = time.time()
             
         # Terminal Log
-        print(f"\n{'='*60}")
-        print(f"🚨 AUDIO ALERT [{time_str}] - Mic {alert.mic_id}")
-        print(f"🚨 Keywords: {alert.matched_keywords}")
-        print(f"🚨 Transcript: {alert.transcript}")
-        print(f"{'='*60}\n")
+        try:
+            print(f"\n{'='*60}")
+            print(f"🚨 AUDIO ALERT [{time_str}] - Mic {alert.mic_id}")
+            print(f"🚨 Keywords: {alert.matched_keywords}")
+            print(f"🚨 Transcript: {alert.transcript}")
+            print(f"{'='*60}\n")
+        except UnicodeEncodeError:
+            print(f"\n{'='*60}")
+            print(f"[ALERT] AUDIO ALERT [{time_str}] - Mic {alert.mic_id}")
+            print(f"[ALERT] Keywords: {alert.matched_keywords}")
+            print(f"[ALERT] Transcript: {alert.transcript}")
+            print(f"{'='*60}\n")
+
+    def scroll_alerts(self, direction: int) -> None:
+        """Scroll the alert list offset: -1 for up, 1 for down."""
+        with self._lock:
+            self.alert_scroll_offset += direction
+
+    def change_mic_page(self, direction: int) -> None:
+        """Change mic page: -1 for left, 1 for right."""
+        with self._lock:
+            total_pages = max(1, (self._num_mics + 5) // 6)
+            self.current_mic_page = max(0, min(total_pages - 1, self.current_mic_page + direction))
 
     def render_gui(self) -> np.ndarray:
         """Render the OpenCV GUI canvas."""
         with self._lock:
-            # Create a dark canvas
-            h, w = 600, 800
+            # Create a dark canvas — widened to 1100px to give all header elements room
+            h, w = 600, 1100
             frame = np.zeros((h, w, 3), dtype=np.uint8)
-            
-            # Header
-            cv2.rectangle(frame, (0, 0), (w, 60), (40, 40, 40), -1)
-            cv2.putText(frame, f"THAQIB AUDIO MONITOR", (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-            
-            elapsed = int(time.time() - self._start_time)
-            cv2.putText(frame, f"Time: {elapsed//60:02d}:{elapsed%60:02d} | Chunks: {self._chunks_processed}",
-                        (w - 350, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
 
-            # Energy Bars
+            # ── Header Bar ───────────────────────────────────────────────────────────
+            # Two-tone gradient bar: slightly lighter at right edge for depth
+            cv2.rectangle(frame, (0, 0), (w, 62), (30, 30, 30), -1)
+            cv2.rectangle(frame, (0, 60), (w, 62), (70, 70, 70), -1)  # bottom separator line
+
+            # Shared font & baseline Y for all header items
+            _hfont  = cv2.FONT_HERSHEY_SIMPLEX
+            _hY     = 40
+            _margin = 18  # px gap between adjacent elements
+
+            # ── [1] LEFT: Window title — fixed anchor X=15 ───────────────────────────
+            title_txt   = "THAQIB AUDIO MONITOR"
+            title_scale = 0.68
+            cv2.putText(frame, title_txt, (15, _hY), _hfont, title_scale, (255, 255, 255), 2)
+            (title_w, _), _ = cv2.getTextSize(title_txt, _hfont, title_scale, 2)
+
+            # ── [2] After title: Session elapsed time ────────────────────────────────
+            elapsed    = int(time.time() - self._start_time)
+            elapsed_txt = f"Time: {elapsed // 60:02d}:{elapsed % 60:02d}"
+            elapsed_x  = 15 + title_w + _margin
+            cv2.putText(frame, elapsed_txt, (elapsed_x, _hY), _hfont, 0.48, (180, 180, 180), 1)
+            (elapsed_w, _), _ = cv2.getTextSize(elapsed_txt, _hfont, 0.48, 1)
+
+            # ── [3] After elapsed: Live real-time wall clock (Cyan) ──────────────────
+            clock_txt = f"Clock: {datetime.now().strftime('%H:%M:%S')}"
+            clock_x   = elapsed_x + elapsed_w + _margin
+            cv2.putText(frame, clock_txt, (clock_x, _hY), _hfont, 0.48, (0, 220, 220), 1)
+            (clock_w, _), _ = cv2.getTextSize(clock_txt, _hfont, 0.48, 1)
+
+            # ── [4] After clock: Mic-page & alert counters ───────────────────────────
+            total_mics  = self._num_mics
+            total_pages = max(1, (total_mics + 5) // 6)
+            page_txt    = (f"Mics: {total_mics} "
+                           f"(Page {self.current_mic_page + 1}/{total_pages}) "
+                           f"| Alerts: {len(self._alerts)}")
+            page_x = clock_x + clock_w + _margin
+            cv2.putText(frame, page_txt, (page_x, _hY), _hfont, 0.48, (200, 200, 200), 1)
+            (page_w, _), _ = cv2.getTextSize(page_txt, _hfont, 0.48, 1)
+
+            # ── [5] FAR-RIGHT: Health badge — right-aligned, anchored from edge ──────
+            health_text  = "HEALTH: OK"
+            health_color = (0, 220, 0)
+            if hasattr(self, "pipeline") and self.pipeline is not None:
+                h_state  = self.pipeline._health_state
+                beam_sz  = self.pipeline._keyword_detector._beam_size
+                if h_state == "CRITICAL":
+                    health_text  = f"HEALTH: CRIT (b={beam_sz})"
+                    health_color = (0, 60, 255)
+                else:
+                    health_text  = f"HEALTH: OK (b={beam_sz})"
+                    health_color = (0, 220, 0)
+            (health_w, health_h), _ = cv2.getTextSize(health_text, _hfont, 0.5, 2)
+            health_x = w - health_w - 12  # 12px right-edge margin
+            # Draw a subtle pill background behind the badge for contrast
+            badge_bg_color = (20, 60, 20) if "OK" in health_text else (60, 10, 10)
+            cv2.rectangle(frame,
+                          (health_x - 6, _hY - health_h - 4),
+                          (health_x + health_w + 6, _hY + 6),
+                          badge_bg_color, -1)
+            cv2.putText(frame, health_text, (health_x, _hY), _hfont, 0.5, health_color, 2)
+
+            # Left Column (Microphones)
             bar_y = 100
             max_e = max(self._energy_profile) if self._energy_profile else 1.0
             max_e = max(max_e, 0.001)
             
             self._button_rects.clear()
 
-            for i, energy in enumerate(self._energy_profile):
+            # Determine which mics to render based on page and alert priority bubble-up
+            all_mics = list(range(self._num_mics))
+            now = time.time()
+            alert_mics = [m for m in all_mics if now - self._last_alert_time_per_mic.get(m, 0.0) < 5.0]
+            
+            start_idx = self.current_mic_page * 6
+            end_idx = min(self._num_mics, start_idx + 6)
+            page_mics = all_mics[start_idx:end_idx]
+            
+            mics_to_render = []
+            for am in alert_mics:
+                if am not in mics_to_render:
+                    mics_to_render.append(am)
+            for pm in page_mics:
+                if pm not in mics_to_render:
+                    mics_to_render.append(pm)
+            mics_to_render = mics_to_render[:6]
+
+            for i in mics_to_render:
+                energy = self._energy_profile[i] if i < len(self._energy_profile) else 0.0
+                is_local_active = (i in self._active_mics)
+                is_in_alert = (now - self._last_alert_time_per_mic.get(i, 0.0) < 5.0)
+
                 # Bar background
-                cv2.rectangle(frame, (150, bar_y), (w - 150, bar_y + 30), (50, 50, 50), -1)
+                cv2.rectangle(frame, (130, bar_y), (360, bar_y + 25), (50, 50, 50), -1)
                 
                 # Bar fill
                 norm = min(1.0, energy / max_e) if max_e > 0.01 else 0.0
-                fill_w = int(norm * (w - 300))
+                fill_w = int(norm * 230)
                 
-                color = (0, 255, 0) # Green default
-                if i in self._active_mics:
-                    color = (0, 165, 255) # Orange if active local
+                if is_in_alert:
+                    color = (0, 0, 255) # Red alert
+                elif is_local_active:
+                    color = (0, 165, 255) # Orange local active
+                else:
+                    color = (0, 255, 0) # Green default
                 
                 if fill_w > 0:
-                    cv2.rectangle(frame, (150, bar_y), (150 + fill_w, bar_y + 30), color, -1)
+                    cv2.rectangle(frame, (130, bar_y), (130 + fill_w, bar_y + 25), color, -1)
                 
+                # Dynamic Threshold Tick Marks
+                threshold_val = 0.05
+                if hasattr(self, "pipeline") and self.pipeline is not None:
+                    threshold_val = self.pipeline._keyword_detector.get_vad_threshold(i)
+                tick_x = 130 + int(threshold_val * 230)
+                tick_x = max(130, min(360, tick_x))
+                cv2.line(frame, (tick_x, bar_y), (tick_x, bar_y + 25), (0, 255, 255), 2)
+                cv2.putText(frame, f"T={threshold_val:.2f}", (tick_x - 18, bar_y + 37),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 255, 255), 1)
+
+                # Transient Suppression Alert
+                transient_active = False
+                if hasattr(self, "pipeline") and self.pipeline is not None:
+                    last_time = self.pipeline._preprocessor._transient_detected_times.get(i, 0.0)
+                    if time.time() - last_time < 1.5:
+                        transient_active = True
+                
+                if transient_active:
+                    cv2.putText(frame, "[TRANSIENT FILTERED]", (130, bar_y - 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                elif is_in_alert:
+                    cv2.putText(frame, "[ALERT FLASHING]", (130, bar_y - 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+
                 # Listen button
-                btn_w, btn_h = 80, 30
-                btn_x = w - 120
+                btn_w, btn_h = 60, 25
+                btn_x = 370
                 btn_y = bar_y
                 
                 is_listening = (self._listen_mic_id == i)
@@ -195,47 +320,83 @@ class AudioDashboard:
                 cv2.rectangle(frame, (btn_x, btn_y), (btn_x + btn_w, btn_y + btn_h), btn_color, -1)
                 
                 text = "STOP" if is_listening else "LISTEN"
-                cv2.putText(frame, text, (btn_x + 10, btn_y + 22), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                cv2.putText(frame, text, (btn_x + 5, btn_y + 18), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                 
                 self._button_rects.append((i, btn_x, btn_y, btn_w, btn_h))
                 
-                # Text
-                cv2.putText(frame, f"Mic {i}", (20, bar_y + 22), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                cv2.putText(frame, f"{energy:.3f}", (160, bar_y + 22), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0) if fill_w > 40 else (255, 255, 255), 2)
-                
-                bar_y += 50
+                # Enhanced Microphone Labels
+                label = f"mic{i}"
+                if hasattr(self, "pipeline") and self.pipeline is not None:
+                    label = self.pipeline._mic_registry.get(i, f"mic{i}")
+                label_display = label.capitalize()
+                if label_display == "Front":
+                    label_display = "Front Row"
+                elif label_display == "Back":
+                    label_display = "Back Row"
+                mic_text = f"Mic {i} ({label_display})"
 
-            # Classification Status
-            status_y = bar_y + 40
-            cv2.putText(frame, "STATUS:", (20, status_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
+                cv2.putText(frame, mic_text, (10, bar_y + 18), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                cv2.putText(frame, f"{energy:.3f}", (140, bar_y + 18), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0) if fill_w > 40 else (255, 255, 255), 1)
+                
+                bar_y += 65
+
+            # Classification Status (Left Column bottom)
+            status_y = 510
+            cv2.putText(frame, "STATUS:", (15, status_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 2)
             
             cls_color = (255, 255, 255)
             if self._last_classification == "LOCAL":
-                cls_color = (0, 165, 255) # Orange
+                cls_color = (0, 165, 255)
             elif self._last_classification == "GLOBAL":
-                cls_color = (255, 200, 0) # Cyan-ish
+                cls_color = (255, 200, 0)
                 
             active_str = f"(Mics: {[m for m in self._active_mics]})" if self._active_mics else ""
-            cv2.putText(frame, f"{self._last_classification} {active_str}", (150, status_y), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, cls_color, 2)
+            cv2.putText(frame, f"{self._last_classification} {active_str}", (110, status_y), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, cls_color, 2)
 
-            # Alerts Section
-            alerts_y = status_y + 60
-            cv2.rectangle(frame, (0, alerts_y - 30), (w, alerts_y), (40, 40, 40), -1)
-            cv2.putText(frame, f"RECENT ALERTS ({len(self._alerts)})", (20, alerts_y - 8), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            # Vertical Divider
+            cv2.line(frame, (445, 75), (445, 585), (80, 80, 80), 1)
+
+            # Right Column: Alerts Ticker
+            ticker_x = 460
+            cv2.rectangle(frame, (ticker_x, 75), (w - 10, 105), (40, 40, 40), -1)
+            cv2.putText(frame, f"ALERTS TICKER ({len(self._alerts)})", (ticker_x + 10, 95), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+            all_alerts = list(reversed(self._alerts))
+            max_offset = max(0, len(all_alerts) - 4)
+            self.alert_scroll_offset = max(0, min(max_offset, self.alert_scroll_offset))
             
-            ay = alerts_y + 30
-            for alert in self._alerts[-4:]: # Show last 4 alerts
-                txt = f"[{alert['time']}] Mic {alert['mic']}: {alert['keywords']}"
-                cv2.putText(frame, txt, (20, ay), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                ay += 30
-                trans_txt = f"\"{alert['transcript'][:80]}\""
-                cv2.putText(frame, trans_txt, (40, ay), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-                ay += 35
+            visible_alerts = all_alerts[self.alert_scroll_offset : self.alert_scroll_offset + 4]
+            
+            if self.alert_scroll_offset > 0:
+                cv2.putText(frame, "▲ More Alerts (UP Key)", (ticker_x + 50, 120),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+            
+            ay = 140
+            for alert in visible_alerts:
+                # Card Background
+                cv2.rectangle(frame, (ticker_x + 5, ay - 12), (w - 15, ay + 42), (25, 25, 25), -1)
+                # Card Border
+                cv2.rectangle(frame, (ticker_x + 5, ay - 12), (w - 15, ay + 42), (60, 60, 60), 1)
+                
+                txt = f"[{alert['time']}] Mic {alert['mic']}"
+                cv2.putText(frame, txt, (ticker_x + 15, ay + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1)
+                
+                kw_txt = f"Kws: {alert['keywords']}"
+                cv2.putText(frame, kw_txt, (ticker_x + 15, ay + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                
+                trans_txt = f"\"{alert['transcript'][:35]}...\"" if len(alert['transcript']) > 35 else f"\"{alert['transcript']}\""
+                cv2.putText(frame, trans_txt, (ticker_x + 15, ay + 36), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
+                
+                ay += 65
+
+            if self.alert_scroll_offset + 4 < len(all_alerts):
+                cv2.putText(frame, "▼ Older Alerts (DOWN Key)", (ticker_x + 50, ay + 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
 
             return frame
 
@@ -345,12 +506,27 @@ def main():
         help="Disable strict mode: only keyword matches trigger alerts "
              "[env: AUDIO_STRICT_MODE=false]",
     )
+    parser.add_argument(
+        "--sim-mics",
+        type=int,
+        default=0,
+        help="Run in simulation mode with N mics",
+    )
 
     args = parser.parse_args()
 
     if args.list_devices:
         list_audio_devices()
         return
+
+    # Dynamically import cv2 for GUI dashboard
+    global cv2
+    try:
+        import cv2 as _cv2
+        cv2 = _cv2
+    except ImportError:
+        print("\nError: opencv-python (cv2) is required to run the GUI demo. Please install it.")
+        sys.exit(1)
 
     # Resolve strict mode: --no-strict CLI flag overrides the .env setting
     strict_mode = s.audio_strict_mode and not args.no_strict
@@ -390,8 +566,19 @@ def main():
         )
         print(f"\nMulti-channel mode: device {args.multi_channel}, {args.channels} channels")
 
+    elif args.sim_mics > 0:
+        source = type('DummySource', (), {
+            'num_mics': args.sim_mics,
+            'sample_rate': args.sample_rate,
+            'duration_ms': args.chunk_ms,
+            'start': lambda: None,
+            'stop': lambda: None,
+            'get_chunk': lambda: None
+        })()
+        print(f"\nSimulation Mode: {args.sim_mics} microphones")
+
     else:
-        parser.error("Specify --files, --devices, --multi-channel, or --list-devices")
+        parser.error("Specify --files, --devices, --multi-channel, --sim-mics, or --list-devices")
         return
 
     # ── Step 1: Print session info ────────────────────────────────────────────
@@ -421,39 +608,146 @@ def main():
     print("=" * 80)
 
     # ── Step 2: Create dashboard and pipeline (no models loaded yet) ─────────
-    from thaqib.audio.pipeline import AudioPipeline
-
     dashboard = AudioDashboard(num_mics=source.num_mics)
 
-    pipeline = AudioPipeline(
-        source=source,
-        whisper_model=args.whisper_model,
-        language=args.language,
-        keywords_file=args.keywords,
-        use_cross_correlation=args.cross_correlation,
-        strict_mode=strict_mode,
-        on_chunk=dashboard.update,
-        on_alert=dashboard.on_alert,
-    )
+    if args.sim_mics > 0:
+        class MockDetector:
+            def __init__(self):
+                self._beam_size = 3
+            def get_vad_threshold(self, mic_id):
+                return 0.15 + 0.05 * np.sin(time.time() * 0.5 + mic_id)
 
-    # ── Step 3: Eagerly load all AI models BEFORE starting the pipeline ───────
-    print("\n  [1/3] Loading Silero VAD model...", end="", flush=True)
-    t_start = time.time()
-    pipeline._keyword_detector._ensure_vad_loaded()
-    print(f" done ({time.time()-t_start:.1f}s)")
+        class MockPreprocessor:
+            def __init__(self):
+                self._transient_detected_times = {}
 
-    print(f"  [2/3] Loading Whisper '{args.whisper_model}' model...", end="", flush=True)
-    t_w = time.time()
-    pipeline._keyword_detector._ensure_whisper_loaded()
-    print(f" done ({time.time()-t_w:.1f}s)")
+        class MockPipeline:
+            def __init__(self, num_mics):
+                self._health_state = "NORMAL"
+                self._keyword_detector = MockDetector()
+                self._preprocessor = MockPreprocessor()
+                self._mic_registry = {i: f"Zone {chr(65 + i // 4)}{i % 4 + 1}" for i in range(num_mics)}
+                self._is_running = True
+                self.alerts = []
+                self.stats = {
+                    "chunks_processed": 0,
+                    "silent_chunks": 0,
+                    "global_chunks": 0,
+                    "local_chunks": 0,
+                    "speech_detected": 0,
+                    "alerts_triggered": 0,
+                    "dropped_chunks": 0,
+                    "two_pass_rescored": 0,
+                }
+            def start(self):
+                self._is_running = True
+            def stop(self):
+                self._is_running = False
 
-    print(f"  [3/3] Starting audio pipeline...", end="", flush=True)
+        pipeline = MockPipeline(args.sim_mics)
+        dashboard.pipeline = pipeline
 
-    # ── Step 4: Start pipeline (models already in memory — zero cold start) ───
-    # load_models() inside start() returns instantly since both models are
-    # already loaded — _ensure_*_loaded() is a no-op when model != None.
-    pipeline.start()
-    print(" ready!\n")
+        # Start simulated background stream worker
+        def sim_worker():
+            import random
+            active_alert_mic = -1
+            alert_start_time = 0
+            
+            while pipeline._is_running:
+                time.sleep(0.25)
+                
+                # Fluctuate health state
+                cycle = int(time.time() // 15) % 2
+                if cycle == 1:
+                    pipeline._health_state = "CRITICAL"
+                    pipeline._keyword_detector._beam_size = 1
+                else:
+                    pipeline._health_state = "NORMAL"
+                    pipeline._keyword_detector._beam_size = 3
+
+                # Check alert state timeout
+                if active_alert_mic != -1 and time.time() - alert_start_time > 5.0:
+                    active_alert_mic = -1
+                    
+                # Randomly trigger new alerts
+                if active_alert_mic == -1 and random.random() < 0.05:
+                    active_alert_mic = random.randint(0, args.sim_mics - 1)
+                    alert_start_time = time.time()
+                    alert = type('Alert', (), {
+                        'mic_id': active_alert_mic,
+                        'matched_keywords': [random.choice(['*HUMAN_SPEECH_DETECTED*', 'help me', 'question 3', 'cheat'])],
+                        'transcript': f"Simulated whisper caught on zone {active_alert_mic}",
+                        'sample_rate': 16000,
+                        'confidence': random.uniform(0.6, 0.95)
+                    })
+                    dashboard.on_alert(alert)
+                    
+                # Randomly trigger transient suppression
+                if random.random() < 0.05:
+                    m = random.randint(0, args.sim_mics - 1)
+                    pipeline._preprocessor._transient_detected_times[m] = time.time()
+                    
+                # Generate simulated energy profile
+                energies = []
+                for m in range(args.sim_mics):
+                    base = 0.005 + 0.015 * np.abs(np.sin(time.time() * 0.8 + m))
+                    if m == active_alert_mic:
+                        base += random.uniform(0.15, 0.35)
+                    energies.append(base)
+                    
+                class DummyClassification:
+                    def __init__(self, engs, alert_m):
+                        self.energy_profile = np.array(engs)
+                        self.is_silent = False
+                        self.is_global = False
+                        self.is_local = True
+                        self.active_mics = [alert_m] if alert_m != -1 else []
+                
+                class DummyChunk:
+                    def __init__(self, num_m):
+                        self.mic_data = np.zeros((num_m, 4000))
+                        self.sample_rate = 16000
+                        self.duration_ms = 250
+                        
+                dashboard.update(DummyChunk(args.sim_mics), DummyClassification(energies, active_alert_mic))
+                pipeline.stats["chunks_processed"] += 1
+                
+        threading.Thread(target=sim_worker, daemon=True).start()
+
+    else:
+        from thaqib.audio.pipeline import AudioPipeline
+
+        pipeline = AudioPipeline(
+            source=source,
+            whisper_model=args.whisper_model,
+            language=args.language,
+            keywords_file=args.keywords,
+            use_cross_correlation=args.cross_correlation,
+            strict_mode=strict_mode,
+            on_chunk=dashboard.update,
+            on_alert=dashboard.on_alert,
+        )
+        dashboard.pipeline = pipeline
+
+        # ── Step 3: Eagerly load all AI models BEFORE starting the pipeline ───────
+        print("\n  [1/3] Loading Silero VAD model...", end="", flush=True)
+        t_start = time.time()
+        pipeline._keyword_detector._ensure_vad_loaded()
+        print(f" done ({time.time()-t_start:.1f}s)")
+
+        if not pipeline._vad_only:
+            print(f"  [2/3] Loading Whisper '{args.whisper_model}' model...", end="", flush=True)
+            t_w = time.time()
+            pipeline._keyword_detector._ensure_whisper_loaded()
+            print(f" done ({time.time()-t_w:.1f}s)")
+        else:
+            print("  [2/3] VAD-only mode active — skipping Whisper model load.")
+
+        print(f"  [3/3] Starting audio pipeline...", end="", flush=True)
+
+        # ── Step 4: Start pipeline (models already in memory — zero cold start) ───
+        pipeline.start()
+        print(" ready!\n")
 
     window_name = "Thaqib Audio Monitor"
     cv2.namedWindow(window_name)
@@ -466,12 +760,29 @@ def main():
             cv2.imshow(window_name, frame)
             
             # Press Q or ESC to quit
-            key = cv2.waitKey(30) & 0xFF
-            if key == ord('q') or key == 27:
-                print("\nQuitting...")
-                pipeline.stop()
-                break
+            raw_key = cv2.waitKey(30)
+            if raw_key != -1:
+                key_code = raw_key & 0xFF
+                if key_code == ord('q') or key_code == 27:
+                    print("\nQuitting...")
+                    pipeline.stop()
+                    break
                 
+                # Check arrow keys
+                is_up = (raw_key == 2490368 or raw_key == 65362 or (raw_key > 255 and key_code == 82))
+                is_down = (raw_key == 2621440 or raw_key == 65364 or (raw_key > 255 and key_code == 84))
+                is_left = (raw_key == 2424832 or raw_key == 65361 or (raw_key > 255 and key_code == 81))
+                is_right = (raw_key == 2555904 or raw_key == 65363 or (raw_key > 255 and key_code == 83))
+                
+                if is_up:
+                    dashboard.scroll_alerts(-1)
+                elif is_down:
+                    dashboard.scroll_alerts(1)
+                elif is_left:
+                    dashboard.change_mic_page(-1)
+                elif is_right:
+                    dashboard.change_mic_page(1)
+                    
             # If window is closed by clicking X
             if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                 print("\nWindow closed. Quitting...")

@@ -111,6 +111,10 @@ class HumanDetector:
         self._phone_confidence: float = settings.phone_confidence
         # Dedicated phone model path (empty = reuse main model)
         self._phone_model_path: str = settings.phone_model.strip()
+        # Dedicated phone model runs at 640 — phones are large objects and
+        # don't need the same 1280px resolution as person detection.
+        # This halves inference time for the phone pass on every detection cycle.
+        self._phone_imgsz: int = 640
 
         self._model: YOLO | None = None
         self._phone_model: YOLO | None = None  # Only set when phone_model_path is given
@@ -139,8 +143,14 @@ class HumanDetector:
             try:
                 self._phone_model = YOLO(self._phone_model_path)
                 self._phone_model.to(self._device)
-                self._phone_model(dummy, verbose=False, device=self._device)
-                logger.info(f"Phone model loaded: {self._phone_model_path}")
+                # Warmup at phone-specific imgsz (640), not the main model's 1280
+                phone_dummy = dummy[:640, :640]
+                self._phone_model(phone_dummy, verbose=False, device=self._device, imgsz=self._phone_imgsz)
+                logger.info(
+                    f"Phone model loaded: {self._phone_model_path} "
+                    f"| classes={list(self._phone_model.names.values())} "
+                    f"| imgsz={self._phone_imgsz}"
+                )
             except Exception as e:
                 logger.error(
                     f"Failed to load phone model '{self._phone_model_path}': {e}. "
@@ -187,43 +197,19 @@ class HumanDetector:
 
         detections = []
 
-        # ── Person detection (always uses main model) ──────────────────────────
-        results = self._model(
-            frame,
-            conf=self.confidence_threshold,
-            classes=[self.PERSON_CLASS_ID],
-            device=self._device,
-            verbose=False,
-            imgsz=self.imgsz,
-        )
-        for result in results:
-            boxes = result.boxes
-            if boxes is None or len(boxes) == 0:
-                continue
-            xyxy_arr = boxes.xyxy.cpu().numpy().astype(int)
-            conf_arr = boxes.conf.cpu().numpy()
-            for i in range(len(boxes)):
-                detections.append(Detection(
-                    bbox=(xyxy_arr[i][0], xyxy_arr[i][1], xyxy_arr[i][2], xyxy_arr[i][3]),
-                    confidence=float(conf_arr[i]),
-                    class_id=self.PERSON_CLASS_ID,
-                ))
-
-        # ── Phone detection ────────────────────────────────────────────────────
-        if self._yolo_phone_detection:
-            # Use dedicated phone model if available, else use main model
-            phone_model = self._phone_model if self._phone_model is not None else self._model
-            phone_classes = None if self._phone_model is not None else [self._phone_class_id]
-
-            phone_results = phone_model(
+        # ── Person & Phone detection ───────────────────────────────────────────
+        # If yolo_phone_detection is enabled and no dedicated model is configured,
+        # we run a single joint inference pass for both classes to cut processing time in half.
+        if self._yolo_phone_detection and self._phone_model is None:
+            results = self._model(
                 frame,
-                conf=self._phone_confidence,
-                classes=phone_classes,
+                conf=min(self.confidence_threshold, self._phone_confidence),
+                classes=[self.PERSON_CLASS_ID, self._phone_class_id],
                 device=self._device,
                 verbose=False,
                 imgsz=self.imgsz,
             )
-            for result in phone_results:
+            for result in results:
                 boxes = result.boxes
                 if boxes is None or len(boxes) == 0:
                     continue
@@ -232,15 +218,65 @@ class HumanDetector:
                 cls_arr  = boxes.cls.cpu().numpy().astype(int)
                 for i in range(len(boxes)):
                     cls_id = int(cls_arr[i])
-                    # For shared model: only keep phone class
-                    # For dedicated model: keep all detections (model outputs only phones)
-                    if self._phone_model is None and cls_id != self._phone_class_id:
-                        continue
+                    conf = float(conf_arr[i])
+                    if cls_id == self.PERSON_CLASS_ID:
+                        if conf >= self.confidence_threshold:
+                            detections.append(Detection(
+                                bbox=(xyxy_arr[i][0], xyxy_arr[i][1], xyxy_arr[i][2], xyxy_arr[i][3]),
+                                confidence=conf,
+                                class_id=self.PERSON_CLASS_ID,
+                            ))
+                    elif cls_id == self._phone_class_id:
+                        if conf >= self._phone_confidence:
+                            detections.append(Detection(
+                                bbox=(xyxy_arr[i][0], xyxy_arr[i][1], xyxy_arr[i][2], xyxy_arr[i][3]),
+                                confidence=conf,
+                                class_id=self.PHONE_CLASS_ID,
+                            ))
+        else:
+            # Person detection (always runs on main model)
+            results = self._model(
+                frame,
+                conf=self.confidence_threshold,
+                classes=[self.PERSON_CLASS_ID],
+                device=self._device,
+                verbose=False,
+                imgsz=self.imgsz,
+            )
+            for result in results:
+                boxes = result.boxes
+                if boxes is None or len(boxes) == 0:
+                    continue
+                xyxy_arr = boxes.xyxy.cpu().numpy().astype(int)
+                conf_arr = boxes.conf.cpu().numpy()
+                for i in range(len(boxes)):
                     detections.append(Detection(
                         bbox=(xyxy_arr[i][0], xyxy_arr[i][1], xyxy_arr[i][2], xyxy_arr[i][3]),
                         confidence=float(conf_arr[i]),
-                        class_id=self._phone_class_id,  # always tag as phone class
+                        class_id=self.PERSON_CLASS_ID,
                     ))
+
+            # Phone detection (runs on dedicated model if configured)
+            if self._yolo_phone_detection and self._phone_model is not None:
+                phone_results = self._phone_model(
+                    frame,
+                    conf=self._phone_confidence,
+                    device=self._device,
+                    verbose=False,
+                    imgsz=self._phone_imgsz,
+                )
+                for result in phone_results:
+                    boxes = result.boxes
+                    if boxes is None or len(boxes) == 0:
+                        continue
+                    xyxy_arr = boxes.xyxy.cpu().numpy().astype(int)
+                    conf_arr = boxes.conf.cpu().numpy()
+                    for i in range(len(boxes)):
+                        detections.append(Detection(
+                            bbox=(xyxy_arr[i][0], xyxy_arr[i][1], xyxy_arr[i][2], xyxy_arr[i][3]),
+                            confidence=float(conf_arr[i]),
+                            class_id=self.PHONE_CLASS_ID,
+                        ))
 
         return DetectionResult(
             frame_index=frame_index,

@@ -85,11 +85,14 @@ Classifies each chunk as **SILENT**, **GLOBAL**, or **LOCAL** based on energy di
 3. Compute normalized ratio = `raw_ratio / baseline_ratio`
 4. If `normalized_ratio >= 2.0x` → **LOCAL** (possible cheating)
 
-**N-mic mode**:
-- Normalize energy relative to loudest mic
-- If ≥ 60% of mics heard the sound → **GLOBAL**
+**N-mic mode ($N \ge 3$)**:
+- Learns baseline scale factors per microphone during the calibration window (median ratio of `mic_energy / mean_energy`).
+- Normalizes energies relative to learned scales.
+- Evaluates the loudest normalized microphone and calculates the fraction of microphones that heard the sound above `AUDIO_GLOBAL_RATIO` (default 0.3).
+- If the fraction is >= `AUDIO_GLOBAL_FRACTION` (default 60%) → **GLOBAL** (not cheating).
+- Otherwise, sound is **LOCAL** (whisper) and the dominant mic is the loudest normalized channel.
 
-**Periodic recalibration** adapts to changing room acoustics every 5 minutes.
+**Periodic recalibration** adapts to changing room acoustics every 5 minutes (centralized for both 2-mic and N-mic setups).
 
 ### 4. Keyword Detector (`keyword_detector.py`)
 
@@ -103,6 +106,7 @@ Two-stage speech analysis on LOCAL chunks only:
 **Detection modes**:
 - **STRICT** (`AUDIO_STRICT_MODE=true`): ANY detected speech = violation (silent exam)
 - **KEYWORD** (`AUDIO_STRICT_MODE=false`): Only speech matching keywords.json is flagged
+- **VAD-ONLY** (`AUDIO_VAD_ONLY=true`): Bypasses Whisper STT completely to eliminate transcription latency (~5ms response). Immediately alerts when voice activity is detected on a LOCAL channel. Includes *Voice Content Matching* to verify if the sound profile is unilateral (cheating) or bilateral (global noise) by comparing spectral cosine similarity against other microphones.
 
 **Adaptive VAD threshold**: The system calibrates the VAD threshold to the room's noise floor automatically (`threshold = noise_floor_mean + 2σ`).
 
@@ -141,7 +145,7 @@ This three-thread design ensures Whisper's latency never blocks real-time chunk 
 Each cheating detection saves two files:
 
 ```
-audio_alert_SYS10-30-00_OFFSET00h05m30s_front.wav   ← audio clip (pre + event + post)
+audio_alert_SYS10-30-00_OFFSET00h05m30s_front.wav   ← audio clip (strictly 1.0s pre-event buffer + live incident duration, with 0s post-event padding)
 audio_alert_SYS10-30-00_OFFSET00h05m30s_front.json  ← metadata
 ```
 
@@ -246,9 +250,9 @@ All settings are loaded from `.env` (environment variables). CLI flags override 
 |----------|---------|-------------|
 | `AUDIO_GLOBAL_RATIO` | `0.3` | Energy fraction to count as "heard" (N-mic mode) |
 | `AUDIO_GLOBAL_FRACTION` | `0.6` | Fraction of mics for GLOBAL classification |
-| `AUDIO_CALIBRATION_CHUNKS` | `30` | Non-silent chunks for baseline learning (0 = disable) |
-| `AUDIO_LOCAL_RATIO_MULTIPLIER` | `2.0` | Normalized ratio threshold for LOCAL |
-| `AUDIO_RECALIBRATION_INTERVAL_SEC` | `300` | Seconds between periodic recalibrations |
+| `AUDIO_CALIBRATION_CHUNKS` | `30` | Non-silent chunks for baseline learning (applies to 2-mic and N-mic setups, 0 = disable) |
+| `AUDIO_LOCAL_RATIO_MULTIPLIER` | `2.0` | Normalized ratio threshold for LOCAL (2-mic mode only) |
+| `AUDIO_RECALIBRATION_INTERVAL_SEC` | `300` | Seconds between periodic recalibrations (applies to all multi-mic setups) |
 
 ### VAD & Whisper
 
@@ -262,13 +266,16 @@ All settings are loaded from `.env` (environment variables). CLI flags override 
 | `AUDIO_WHISPER_BEAM_SIZE` | `1` | Whisper beam size (1 = greedy, 5 = accurate) |
 | `AUDIO_DEVICE` | `auto` | Compute device: `auto`, `cuda`, `cpu` |
 | `AUDIO_COMPUTE_TYPE` | `auto` | Precision: `auto`, `float16`, `int8`, etc. |
+| `AUDIO_VAD_ONLY` | `false` | If true, skip Whisper STT completely and alert on VAD directly |
+| `AUDIO_VAD_ALERT_COOLDOWN` | `3.0` | Cooldown in seconds between alerts for the same mic in VAD-only mode |
+| `AUDIO_VAD_CONTEXT_MS` | `200` | Acoustic context window size in milliseconds to prepend to VAD chunks |
 
 ### Evidence
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUDIO_CLIP_SEC_BEFORE` | `2.0` | Seconds of audio before alert in clip |
-| `AUDIO_CLIP_SEC_AFTER` | `2.0` | Seconds of audio after alert in clip |
+| `AUDIO_CLIP_SEC_BEFORE` | `2.0` | Seconds of audio before alert (legacy setting, overridden by pipeline's strict 1.0s pre-event rule) |
+| `AUDIO_CLIP_SEC_AFTER` | `2.0` | Seconds of audio after alert (legacy setting, overridden by pipeline's strict 0s post-event rule) |
 | `AUDIO_HISTORY_CHUNKS` | `20` | Rolling history depth for pre-event buffer |
 | `AUDIO_INFERENCE_QUEUE_SIZE` | `10` | Max LOCAL chunks queued for inference |
 | `AUDIO_CROSS_CORRELATION` | `false` | Extra validation for LOCAL classification |

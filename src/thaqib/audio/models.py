@@ -36,7 +36,7 @@ class SoundClassification:
         active_mics: Indices of mics that picked up the sound above threshold.
         energy_profile: RMS energy per mic (for debugging/dashboard display).
         raw_ratio: Raw energy ratio between loudest and quietest mic (2-mic mode).
-        normalized_ratio: raw_ratio / baseline_ratio (1.0 = normal, >threshold = LOCAL).
+        normalized_ratio: Ratio calculated by normalizing Mic0 by baseline_ratio and comparing to Mic1 symmetrically.
         baseline_ratio: Learned structural imbalance at time of classification.
     """
 

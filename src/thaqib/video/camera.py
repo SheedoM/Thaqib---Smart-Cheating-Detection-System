@@ -175,6 +175,8 @@ class CameraStream:
                     if isinstance(self.source, str) and not self.source.startswith("rtsp"):
                         logger.info("Video file ended (EOF). Stopping reader thread.")
                         self._is_opened = False
+                        # Set stop event immediately on EOF to wake any waiting reader threads and prevent CPU spin.
+                        self._stop_event.set()
                         break
                     logger.warning(f"Failed to read {failed_frames} consecutive frames. Reconnecting...")
                     if self._cap is not None:
@@ -226,15 +228,18 @@ class CameraStream:
         if not self._is_opened:
             return None
 
-        # Wait for a frame to arrive in the queue
-        while self._is_opened and not self._stop_event.is_set():
-            if self._frame_queue:
+        # Wait for a frame to arrive in the queue or read final frame
+        while True:
+            try:
+                # Protect popleft operation from concurrent clearing of frame queue.
                 return self._frame_queue.popleft()
+            except IndexError:
+                # queue emptied between check and pop — spin again
+                pass
+            
+            if not self._is_opened or self._stop_event.is_set():
+                break
             time.sleep(0.01)
-
-        # Catch any final frames before stopping
-        if self._frame_queue:
-            return self._frame_queue.popleft()
             
         return None
 
