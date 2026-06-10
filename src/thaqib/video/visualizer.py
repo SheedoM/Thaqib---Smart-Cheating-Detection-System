@@ -196,6 +196,7 @@ class VideoVisualizer:
     # Feature 2 — Cheating Tools & Spatial Papers
     # ------------------------------------------------------------------
 
+    # canonical phone labels — also imported by pipeline.py
     _PHONE_LABELS = frozenset(['phone', 'Using_phone', 'cell phone'])
 
     def _draw_cheating_tools(self, frame: np.ndarray, pipeline_frame: PipelineFrame, sc: float) -> None:

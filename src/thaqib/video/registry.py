@@ -12,7 +12,8 @@ from thaqib.video.face_mesh import FaceMeshResult
 
 # Maximum frames kept in the per-student recording buffer (~10s at 30fps).
 # Each 720p frame ≈ 2.7MB → 300 frames ≈ 810MB worst-case per student.
-_MAX_RECORDING_FRAMES = 300
+# Reduced from 300 (829 MB) to 150 (5s at 30fps = ~415 MB) to prevent OOM
+_MAX_RECORDING_FRAMES = 150
 
 
 @dataclass
@@ -64,7 +65,7 @@ class GlobalStudentRegistry:
     def update(self, tracks: list[TrackedObject], frame_index: int, timestamp: float) -> list[int]:
         """
         Update registry with new tracking data.
-        Does not delete lost students immediately (keeps for 10 seconds).
+        Does not delete lost students immediately (keeps for 3 seconds before purging).
         Returns a list of expired track IDs that were purged.
         """
         active_ids = {t.track_id for t in tracks}
@@ -94,18 +95,20 @@ class GlobalStudentRegistry:
                     is_active=True,
                 )
 
-        # 2. Handle lost tracks (purge if older than 10 seconds)
+        # 2. Handle lost tracks (purge if older than 3 seconds)
         expired_ids = []
         for track_id, state in self._states.items():
             if track_id not in active_ids:
                 state.is_active = False
-                if timestamp - state.last_seen_time > 10.0:
+                if timestamp - state.last_seen_time > 3.0:
                     expired_ids.append(track_id)
         
+        expired_states = []
         for tid in expired_ids:
+            expired_states.append(self._states[tid])
             del self._states[tid]
             
-        return expired_ids
+        return expired_states
 
     def get(self, track_id: int) -> StudentSpatialState | None:
         """Get spatial state for a specific track ID."""
@@ -117,4 +120,7 @@ class GlobalStudentRegistry:
 
     def purge(self, track_id: int) -> None:
         """Immediately remove a track from the registry."""
+        state = self._states.get(track_id)
+        if state is not None:
+            state.recording_buffer.clear()
         self._states.pop(track_id, None)

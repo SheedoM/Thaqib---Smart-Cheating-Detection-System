@@ -49,6 +49,7 @@ class KeywordDetector:
         adaptive_vad: bool = True,
         vad_calibration_chunks: int = 50,
         preprocessor: "AudioPreprocessor | None" = None,
+        vad_context_ms: int = 200,
     ):
         """
         Args:
@@ -90,6 +91,13 @@ class KeywordDetector:
         self._vad_threshold_min: float = 0.10
         self._vad_threshold_max: float = 0.70
 
+        # EMA Adaptive VAD state
+        self._ambient_vad_ema: float = 0.01
+        self._ambient_vad_alpha: float = 0.05
+        self._ambient_vad_margin: float = 0.20  # Safety margin above noise floor
+        self._ambient_vad_emas: dict[int, float] = {}
+        self._vad_thresholds: dict[int, float] = {}
+
         # Optional preprocessor (HPF + noise reduction + adaptive gain)
         self._preprocessor = preprocessor
 
@@ -104,9 +112,13 @@ class KeywordDetector:
         # Lazy-loaded models (heavy — loaded on first use)
         self._whisper_model = None
         self._vad_model = None
+        self._vad_models: dict[int, object] = {}
         self._vad_utils = None
         self._keywords: list[str] = []
         self._fuzzy_threshold: float = 0.8
+
+        self._vad_context_ms = vad_context_ms
+        self._vad_contexts: dict[int, np.ndarray] = {}
 
         self._load_keywords()
 
@@ -219,6 +231,24 @@ class KeywordDetector:
             logger.warning(f"Failed to load Silero VAD: {e}. Skipping VAD.")
             self._vad_model = None
 
+    def _ensure_vad_loaded_for_mic(self, mic_id: int) -> None:
+        """Ensure Silero VAD model is loaded and duplicated for this specific microphone channel."""
+        if mic_id in self._vad_models:
+            return
+
+        self._ensure_vad_loaded()
+        if self._vad_model is None:
+            return
+
+        import copy
+        try:
+            # Create a separate, isolated model copy for this mic to preserve RNN state
+            self._vad_models[mic_id] = copy.deepcopy(self._vad_model)
+            logger.info(f"Instantiated separate Silero VAD model instance for mic{mic_id}")
+        except Exception as e:
+            logger.error(f"Failed to copy VAD model for mic{mic_id}: {e}")
+            self._vad_models[mic_id] = self._vad_model
+
     def preload_models(self) -> None:
         """Call this at pipeline start to avoid first-chunk delay."""
         self._ensure_vad_loaded()
@@ -285,8 +315,13 @@ class KeywordDetector:
                 "Install faster-whisper (recommended) or openai-whisper:\n"
                 "  pip install faster-whisper"
             )
+    def get_vad_threshold(self, mic_id: int = 0) -> float:
+        """
+        Get the current VAD threshold for a specific mic.
+        """
+        return self._vad_thresholds.get(mic_id, self._vad_threshold)
 
-    def is_speech(self, audio: np.ndarray, sample_rate: int) -> tuple[bool, float]:
+    def is_speech(self, audio: np.ndarray, sample_rate: int, mic_id: int = 0) -> tuple[bool, float]:
         """
         Check if audio contains speech using Silero VAD.
 
@@ -297,24 +332,43 @@ class KeywordDetector:
         Returns:
             (is_speech, max_confidence) tuple.
         """
-        self._ensure_vad_loaded()
+        self._ensure_vad_loaded_for_mic(mic_id)
+        vad_model = self._vad_models.get(mic_id)
 
-        if self._vad_model is None:
+        if vad_model is None:
             return True, 1.0
 
         try:
             import torch
 
+            # 1. Resample to 16,000 Hz if needed
             if sample_rate != 16000:
                 ratio = 16000 / sample_rate
                 new_len = int(len(audio) * ratio)
-                audio = np.interp(
+                audio_16k = np.interp(
                     np.linspace(0, len(audio) - 1, new_len),
                     np.arange(len(audio)),
                     audio,
                 ).astype(np.float32)
+            else:
+                audio_16k = audio.astype(np.float32)
 
-            tensor = torch.from_numpy(audio)
+            # 2. Apply sliding context padding for temporal continuity
+            if self._vad_context_ms > 0:
+                context_samples = int(16000 * self._vad_context_ms / 1000)
+                prev_context = self._vad_contexts.get(mic_id, None)
+                if prev_context is None:
+                    prev_context = np.zeros(context_samples, dtype=np.float32)
+                
+                # Prepend previous context (only used for VAD inference)
+                vad_input = np.concatenate([prev_context, audio_16k])
+                
+                # Update rolling context buffer for next chunk (from clean current chunk)
+                self._vad_contexts[mic_id] = audio_16k[-context_samples:].copy()
+            else:
+                vad_input = audio_16k
+
+            tensor = torch.from_numpy(vad_input)
             window_size = 512
             n_complete = len(tensor) // window_size
 
@@ -322,7 +376,7 @@ class KeywordDetector:
                 # Audio shorter than one VAD window — pad and run once
                 padded = torch.zeros(window_size)
                 padded[:len(tensor)] = tensor
-                max_confidence = self._vad_model(padded, 16000).item()
+                max_confidence = vad_model(padded, 16000).item()
             else:
                 # batch all windows, single model call
                 windows = tensor[:n_complete * window_size].reshape(n_complete, window_size)
@@ -331,17 +385,38 @@ class KeywordDetector:
                 try:
                     # Try batch path (works with most Silero versions)
                     confidences = torch.stack(
-                        [self._vad_model(windows[i], 16000) for i in range(n_complete)]
+                        [vad_model(windows[i], 16000) for i in range(n_complete)]
                     )
                     max_confidence = confidences.max().item()
                 except Exception:
                     # Fallback: sequential (rare, some Silero builds vary)
                     max_confidence = max(
-                        self._vad_model(windows[i], 16000).item()
+                        vad_model(windows[i], 16000).item()
                         for i in range(n_complete)
                     )
 
-            is_speech = max_confidence >= self._vad_threshold
+            threshold = self.get_vad_threshold(mic_id)
+            is_speech = max_confidence >= threshold
+
+            # 3. Dynamic Threshold Adaptation (Exponential Moving Average)
+            if self._adaptive_vad:
+                if max_confidence < threshold:
+                    ema = self._ambient_vad_emas.get(mic_id, self._ambient_vad_ema)
+                    ema = (self._ambient_vad_alpha * max_confidence) + ((1.0 - self._ambient_vad_alpha) * ema)
+                    self._ambient_vad_emas[mic_id] = ema
+
+                    # Safety margin
+                    new_threshold = ema + self._ambient_vad_margin
+                    new_threshold = np.clip(new_threshold, self._vad_threshold_min, self._vad_threshold_max)
+                    new_threshold = float(round(new_threshold, 3))
+
+                    if new_threshold != threshold:
+                        self._vad_thresholds[mic_id] = new_threshold
+                        logger.info(
+                            f"Adaptive VAD (Mic {mic_id}): threshold updated {threshold:.3f} → {new_threshold:.3f} "
+                            f"(ambient noise floor EMA={ema:.3f})"
+                        )
+
             return is_speech, max_confidence
 
         except Exception as e:
@@ -438,38 +513,8 @@ class KeywordDetector:
 
         return matches
 
-    def _recalibrate_vad_threshold(self) -> None:
-        """
-        Adapt the VAD threshold to the room's actual noise floor.
-
-        Algorithm:
-            threshold = mean(noise_confidences) + 2.0 * std(noise_confidences)
-
-        This places the threshold 2 sigma above the noise floor, catching
-        real speech while rejecting room noise — regardless of the room.
-
-        Bounds: [vad_threshold_min, vad_threshold_max] = [0.10, 0.70].
-        """
-        if len(self._vad_noise_confidences) < 10:
-            return  # not enough data yet
-
-        arr = np.array(self._vad_noise_confidences)
-        mean_conf = float(arr.mean())
-        std_conf  = float(arr.std())
-        new_threshold = mean_conf + 2.0 * std_conf
-        new_threshold = np.clip(new_threshold, self._vad_threshold_min, self._vad_threshold_max)
-        new_threshold = float(round(new_threshold, 3))
-
-        if abs(new_threshold - self._vad_threshold) > 0.01:
-            logger.info(
-                f"Adaptive VAD: threshold updated {self._vad_threshold:.3f} → {new_threshold:.3f} "
-                f"(noise floor mean={mean_conf:.3f}, std={std_conf:.3f}, "
-                f"N={len(self._vad_noise_confidences)} samples)"
-            )
-            self._vad_threshold = new_threshold
-
     def vad_and_buffer(
-        self, audio: np.ndarray, sample_rate: int, mic_id: int = 0
+        self, audio: np.ndarray, sample_rate: int, mic_id: int = 0, preprocessed: bool = False
     ) -> "np.ndarray | None":
         """
         Stage 1 only: preprocess → VAD → speech buffer accumulation.
@@ -482,8 +527,8 @@ class KeywordDetector:
             has accumulated, or None if still collecting / not speech.
         """
         # --- Pre-processing stage ---
-        if self._preprocessor is not None:
-            audio = self._preprocessor.process(audio, sample_rate)
+        if self._preprocessor is not None and not preprocessed:
+            audio = self._preprocessor.process(audio, sample_rate, mic_id=mic_id)
 
         # --- Per-mic state ---
         if mic_id not in self._speech_buffers:
@@ -493,14 +538,9 @@ class KeywordDetector:
         buf   = self._speech_buffers[mic_id]
         gap_c = self._speech_gap_counters[mic_id]
 
-        speech_detected, vad_confidence = self.is_speech(audio, sample_rate)
+        speech_detected, vad_confidence = self.is_speech(audio, sample_rate, mic_id=mic_id)
 
         if not speech_detected:
-            # Feed this non-speech confidence into the adaptive calibrator
-            if self._adaptive_vad:
-                self._vad_noise_confidences.append(vad_confidence)
-                if len(self._vad_noise_confidences) % self._vad_calibration_chunks == 0:
-                    self._recalibrate_vad_threshold()
 
             gap_c += 1
             if gap_c >= self._speech_gap_max:

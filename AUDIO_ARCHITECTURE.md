@@ -13,20 +13,24 @@ graph TD
     
     C -->|Chunk| D{GlobalLocalDiscriminator}
     D -->|Silence / Global Noise| E[Discard & Log Stat]
-    D -->|Local Sound| F(KeywordDetector: VAD)
+    D -->|Local Sound| F(VAD Worker: Silero VAD)
     
     F -->|Mechanical Noise| E
-    F -->|Human Speech| G(KeywordDetector: Whisper)
+    F -->|Human Speech| G{Operational Mode}
     
-    G -->|Transcript| H{Keyword Matcher}
-    H -->|Clean| E
+    G -->|Whisper STT Mode| H(Whisper STT + Match)
+    H -->|Clean / No Match| E
     H -->|Cheating Match| I[Create _PendingAlert]
     
-    I -->|Collects next 2s of chunks| J[Stitch 4.5s Audio Clip]
-    J --> K(AudioEvidenceRecorder)
-    K -->|Save WAV & JSON| L[(audio alerts/)]
+    G -->|VAD-Only Mode| J{Voice Similarity Match}
+    J -->|Bilateral Similarity >= 0.80| E
+    J -->|Unilateral Similarity < 0.80| I
     
-    I -->|Immediate Metadata Dispatch| M[Video Pipeline / GUI]
+    I -->|Collects next 2s of chunks| K[Stitch 4.5s Audio Clip]
+    K --> L(AudioEvidenceRecorder)
+    L -->|Save WAV & JSON| M[(audio alerts/)]
+    
+    I -->|Immediate Metadata Dispatch| N[Video Pipeline / GUI / Dashboard]
 ```
 
 ---
@@ -44,8 +48,9 @@ The pipeline begins by capturing audio. It abstracts the hardware away using the
 
 ## 2. The Orchestrator (`pipeline.py`)
 
-The `AudioPipeline` is the heart of the system. It uses a **three-thread architecture** to ensure Whisper's latency never blocks real-time chunk processing:
+The `AudioPipeline` is the heart of the system. It uses a **multi-threaded architecture** to ensure Whisper's heavy transcription latency or blocking disk writes never block real-time chunk processing:
 
+#### A. Whisper STT Mode (Three-Thread Flow)
 ```
 Main Loop Thread (AudioPipeline)
    ├── Reads chunks from AudioSource
@@ -64,7 +69,23 @@ VAD Worker Thread (~5ms per chunk)
 Whisper Worker Thread (~0.5–4s per buffer)
    ├── Runs Whisper STT + keyword matching
    ├── Creates AudioAlert objects
-   └── Saves evidence (WAV + JSON)
+   └── Saves evidence (WAV + JSON) via Async Writer
+```
+
+#### B. VAD-Only Mode (Two-Thread Flow)
+```
+Main Loop Thread (AudioPipeline)
+   ├── Reads chunks from AudioSource
+   ├── Classifies: SILENT / GLOBAL / LOCAL (fast)
+   ├── Feeds noise samples to Preprocessor
+   ├── Streams audio to SessionRecorder
+   └── Enqueues LOCAL chunks → _inference_queue
+            │
+            ▼
+VAD Worker Thread (~5ms per chunk)
+   ├── Runs Silero VAD on LOCAL chunks for all mics
+   ├── Finds dominant mic & runs Voice Content Similarity (cosine dot product)
+   └── Directly creates alerts & saves evidence via Async Writer
 ```
 
 *   **Rolling History**: It maintains a `_chunk_history` (a rolling buffer of the last 10 seconds of audio). This is what enables the system to "look back in time" when cheating is detected.
@@ -76,36 +97,52 @@ Whisper Worker Thread (~0.5–4s per buffer)
 
 Processing AI speech-to-text is computationally expensive. If a proctor is giving instructions to the whole room, we do not want to transcribe it. 
 
-The `GlobalLocalDiscriminator` solves this by calculating the Root Mean Square (RMS) energy of the 500ms chunk for every microphone.
+The `GlobalLocalDiscriminator` solves this by calculating the Root Mean Square (RMS) energy of the audio chunk for every microphone and classifying it:
 *   **`SILENT`**: Energy across all mics is below the `silence_threshold`. (Skipped)
-*   **`GLOBAL`**: Sound is heard loudly across a high percentage of microphones (e.g., proctor talking, door slamming). (Skipped)
-*   **`LOCAL`**: Sound is loud on only 1 or 2 specific microphones. This implies a localized whisper between adjacent students. (Proceeds to AI)
+*   **`LOCAL`**: Sound is localized near a subset of microphones. 
+    - **1-Mic Mode**: Any non-silent chunk is classified as `LOCAL` with active mic `[0]`.
+    - **2-Mic Mode**: Calibrates the baseline energy ratio (median ratio of Mic0/Mic1) during the first 30 non-silent chunks. Post-calibration, it normalizes energies symmetrically and triggers `LOCAL` when the normalized ratio exceeds the threshold multiplier (default `2.0x`).
+    - **N-Mic Mode ($N \ge 3$)**: Performs dynamic baseline scale learning relative to the session average ($\text{ratio}_i = \text{energy}_i / \text{mean\_energy}$) during the calibration phase. Post-calibration, it normalizes each channel's energy before evaluating the heard fraction relative to the loudest mic.
+    - **Hangover**: A 6-chunk (1.5s) hangover window is applied to $N \ge 2$ modes to prevent rapid decision flipping between channels during sustained whispers.
+*   **`GLOBAL`**: Sound is heard globally across the room (e.g. proctor talking, door slamming) and is filtered out. (Skipped)
 
 ---
 
 ## 4. Speech Analysis (`keyword_detector.py`)
 
-When a sound is classified as `LOCAL`, the audio for that specific microphone is analyzed in two stages.
+When a sound is classified as `LOCAL`, the audio is analyzed in one of two ways based on the operational mode:
 
-### Stage 1: Voice Activity Detection (Silero VAD)
-To prevent coughing, rustling papers, or chair squeaks from triggering the heavy Whisper model, the audio is first passed through a lightweight PyTorch VAD model. The model processes the 500ms chunk in tiny 32ms (512-sample) windows. If it detects high probability of human vocal cords, it proceeds.
+### A. VAD-Only Mode (`AUDIO_VAD_ONLY = true`)
+- **Stage 1 (Per-Mic VAD)**: Silero VAD runs on each microphone independently. The mic with the highest speech confidence is designated the *dominant* mic. If its confidence is $\ge$ `AUDIO_VAD_THRESHOLD`, speech is active.
+- **Stage 2 (Voice Content Similarity)**: Compares the spectral fingerprint of the dominant mic against other active mics using magnitude spectrum cosine similarity:
+  $$\text{Similarity} = \frac{\vec{S}_{\text{dom}} \cdot \vec{S}_{\text{other}}}{\|\vec{S}_{\text{dom}}\|_2 \|\vec{S}_{\text{other}}\|_2}$$
+  - If similarity $\ge 0.80$, the sound is bilateral (heard identically by all mics, e.g., proctor speaking) $\rightarrow$ classified as **GLOBAL** noise (no alert).
+  - If similarity $< 0.80$, the speech is unique to the dominant mic $\rightarrow$ classified as **LOCAL** $\rightarrow$ triggers an immediate **unauthorized speech alert** without Whisper STT.
 
-### Stage 2: Whisper STT & Matching
-The audio is transcribed using OpenAI's **Whisper** model (typically the `tiny` or `base` Arabic model). The resulting text is then cross-referenced against `keywords.json`.
-*   It checks for exact matches.
-*   It checks for fuzzy matches (if a student mumbles and Whisper captures "إلوض" instead of "إلوضع", the fuzzy threshold can still flag it based on context words).
+### B. Whisper STT Mode (`AUDIO_VAD_ONLY = false`)
+- **Stage 1 (Voice Activity Detection)**: Runs Silero VAD on the dominant mic. Chunks of speech are accumulated in a buffer until it reaches `AUDIO_SPEECH_BUFFER_SEC` (default: 2.5s).
+- **Stage 2 (Whisper STT & Matching)**: The buffer is sent to the Whisper worker thread, which transcribes it and matches it against `keywords.json` using exact substrings and word-level fuzzy matching. In strict mode (`AUDIO_STRICT_MODE = true`), any speech is flagged.
 
 ---
 
-## 5. Evidence Collection (`evidence.py` & `pipeline.py`)
+## 5. Pipeline Health Monitor (Load-Shedding)
 
-If a cheating keyword is matched, the system must secure forensic evidence.
+To prevent queue choking and inference latency spikes under heavy computational load, a background thread monitors the state of `_inference_queue` and `_whisper_queue`:
+- **`NORMAL` State** (`_whisper_queue.qsize() <= 1`): Restores the high-fidelity configured beam size (e.g., `beam_size = 3`).
+- **`CRITICAL` State** (`_whisper_queue.qsize() >= 3`): Triggers dynamic load-shedding, forcing `beam_size = 1` in the `KeywordDetector` to accelerate Whisper transcription.
 
-1.  **Pending Alert**: `pipeline.py` extracts the last 2 seconds of audio from the `_chunk_history` buffer and pairs it with the incident chunk.
-2.  **Post-buffering**: It holds this `_PendingAlert` open while it collects the *next* 2 seconds of incoming audio chunks.
-3.  **Stitching**: Once complete, it concatenates the arrays to form a seamless ~4.5 second clip containing the full context of the whisper.
-4.  **Archiving**: `AudioEvidenceRecorder` saves this clip as a `.wav` file in the `audio alerts` folder, alongside a `.json` file detailing the exact transcript, keywords, and mic ID.
-5.  **Dispatch**: Simultaneously, the alert metadata is instantly pushed to the `alert_queue` and the GUI, allowing proctors to see the alert in real-time even while the audio clip finishes saving in the background.
+---
+
+## 6. Evidence Collection (`evidence.py` & `pipeline.py`)
+
+If a cheating keyword is matched, the system secures forensic evidence:
+
+1.  **Strict Boundary Clipping**: To satisfy tight memory and forensic rules, the output WAV clip contains strictly:
+    $$\text{Clip Duration} = \text{Exactly 1.0s Pre-Event Buffer} + \text{Live Cheating Incident Duration}$$
+    All post-event padding and grace periods are removed / zeroed out.
+2.  **Pending Alert**: `pipeline.py` extracts the exact number of history chunks corresponding to 1.0 second of pre-event audio from `_chunk_history` and pairs it with the speech buffer.
+3.  **Archiving**: `AudioEvidenceRecorder` saves the stitched clip as a `.wav` file in the `audio alerts` folder, alongside a `.json` metadata file including a SHA-256 integrity signature.
+4.  **Dispatch**: Simultaneously, alert metadata is instantly pushed to the `alert_queue` and the GUI for proctor visualization.
 
 ---
 
