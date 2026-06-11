@@ -9,14 +9,15 @@ from src.thaqib.db.database import get_db
 from src.thaqib.db.models.users import User
 from src.thaqib.db.models.infrastructure import Institution
 from src.thaqib.schemas.users import UserCreate, UserResponse, UserUpdate
-from src.thaqib.api.dependencies import RequireRole, get_current_user
+from src.thaqib.api.dependencies import RequireRole, get_current_user, get_scope
 from src.thaqib.core.security import get_password_hash, verify_password
 from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
-# Admin only restriction
-require_admin = RequireRole(["admin"])
+# Super admin only restriction
+require_super_admin = RequireRole(["super_admin"])
+require_admin_or_super_admin = RequireRole(["admin", "super_admin"])
 
 class PasswordChangePayload(BaseModel):
     current_password: str
@@ -53,10 +54,10 @@ ALLOWED_IMAGE_TYPES = {
 @router.post("/upload-image")
 async def upload_user_image(
     image: UploadFile = File(...),
-    _ = Depends(require_admin),
+    _ = Depends(require_super_admin),
 ) -> Any:
     """
-    Upload an invigilator/referee profile image and return a public URL.
+    Upload an admin/invigilator profile image and return a public URL.
     """
     suffix = ALLOWED_IMAGE_TYPES.get(image.content_type or "")
     if not suffix:
@@ -75,13 +76,16 @@ async def upload_user_image(
 @limiter.limit("10/minute")
 def create_user(
     request: Request,
-    user: UserCreate, 
+    user: UserCreate,
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    scope = Depends(get_scope),
+    _: User = Depends(require_super_admin),
 ) -> Any:
     """
-    Create a new user. Admin only.
+    Create a new user. Super admin only, within accessible institutions.
     """
+    if user.institution_id not in scope:
+        raise HTTPException(status_code=404, detail="Institution not found")
     inst = db.query(Institution).filter(Institution.id == user.institution_id).first()
     if not inst:
         raise HTTPException(status_code=404, detail="Institution not found")
@@ -112,35 +116,47 @@ def create_user(
 def read_users(
     institution_id: Optional[uuid.UUID] = None,
     role: Optional[str] = None,
-    skip: int = 0, 
-    limit: int = 100, 
+    skip: int = 0,
+    limit: int = 100,
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    scope = Depends(get_scope),
+    current_user: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Retrieve users. Can be filtered by institution and role. Admin only.
+    Retrieve users scoped to the caller's accessible institutions.
+    Exam admins see only invigilators.
     """
-    query = db.query(User)
+    query = db.query(User).filter(User.institution_id.in_(scope))
     if institution_id:
+        if institution_id not in scope:
+            return []
         query = query.filter(User.institution_id == institution_id)
+    if current_user.role == "admin":
+        query = query.filter(User.role == "invigilator")
     if role:
         query = query.filter(User.role == role)
-        
+
     users = query.offset(skip).limit(limit).all()
     return users
 
 @router.get("/{user_id}", response_model=UserResponse)
 def read_user(
-    user_id: uuid.UUID, 
+    user_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    scope = Depends(get_scope),
+    current_user: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Get user by ID. Admin only.
+    Get user by ID. Returns 404 for out-of-scope users.
     """
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).filter(
+        User.id == user_id,
+        User.institution_id.in_(scope),
+    ).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if current_user.role == "admin" and user.role != "invigilator":
+        raise HTTPException(status_code=403, detail="Not enough permissions")
     return user
 
 @router.put("/{user_id}", response_model=UserResponse)
@@ -150,7 +166,7 @@ def update_user(
     user_id: uuid.UUID, 
     user_in: UserUpdate,
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    _ = Depends(require_super_admin)
 ) -> Any:
     """
     Update a user. Admin only.
@@ -185,7 +201,7 @@ def delete_user(
     request: Request,
     user_id: uuid.UUID, 
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    _ = Depends(require_super_admin)
 ) -> Any:
     """
     Delete a user. Admin only.

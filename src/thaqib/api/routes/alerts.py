@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from src.thaqib.api.dependencies import RequireRole
 from src.thaqib.api.routes import voice
 from src.thaqib.db.database import get_db
+from src.thaqib.db.models.exams import ExamAdminAssignment
 from src.thaqib.db.models.events import Alert
 from src.thaqib.db.models.users import User
 
@@ -41,6 +42,15 @@ def _alert_response(alert: Alert) -> dict[str, Any]:
     }
 
 
+def _require_assigned_admin(db: Session, alert: Alert, current_user: User) -> None:
+    assigned = db.query(ExamAdminAssignment).filter(
+        ExamAdminAssignment.exam_session_id == alert.exam_session_id,
+        ExamAdminAssignment.admin_id == current_user.id,
+    ).first()
+    if not assigned:
+        raise HTTPException(status_code=403, detail="Admin is not assigned to this exam")
+
+
 @router.post("/{alert_id}/confirm")
 async def confirm_alert(
     alert_id: uuid.UUID,
@@ -49,6 +59,7 @@ async def confirm_alert(
     current_user: User = Depends(require_admin),
 ) -> Any:
     alert = _alert_or_404(db, alert_id)
+    _require_assigned_admin(db, alert, current_user)
     now = datetime.now(timezone.utc)
     alert.status = "confirmed"
     alert.confirmed_by = current_user.id
@@ -95,6 +106,7 @@ def cancel_alert(
     current_user: User = Depends(require_admin),
 ) -> Any:
     alert = _alert_or_404(db, alert_id)
+    _require_assigned_admin(db, alert, current_user)
     now = datetime.now(timezone.utc)
     alert.status = "cancelled"
     alert.cancelled_by = current_user.id

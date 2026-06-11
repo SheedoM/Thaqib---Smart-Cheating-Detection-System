@@ -97,10 +97,10 @@ class DetectionEvent(Base, UUIDMixin, TimestampMixin):
 
 class Alert(Base, UUIDMixin, TimestampMixin):
     """
-    A notification generated for referee review in the shared alert queue.
+    A notification generated for admin review in the shared alert queue.
 
     SRS FR-08.7 lifecycle: pending → claimed → (resolved / false_positive / escalated)
-    SRS §2.2: Shared Alert Queue — referee claims alerts, no pre-assignment.
+    Shared Alert Queue — assigned admins claim alerts, no hall pre-assignment.
     """
     __tablename__ = "alerts"
 
@@ -122,7 +122,7 @@ class Alert(Base, UUIDMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), default="pending")
     # SRS FR-08.7: 'pending', 'claimed', 'resolved', 'false_positive', 'escalated'
 
-    # Shared Alert Queue: referee claims the alert (not pre-assigned)
+    # Shared Alert Queue: assigned admin claims the alert (not hall pre-assigned)
     claimed_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
     claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 

@@ -12,8 +12,8 @@ from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
-# Admin only restriction
-require_admin = RequireRole(["admin"])
+# Super admin only restriction
+require_super_admin = RequireRole(["super_admin"])
 
 @router.post("/", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("10/minute")
@@ -21,7 +21,7 @@ def create_device(
     request: Request,
     device: DeviceCreate, 
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    _ = Depends(require_super_admin)
 ) -> Any:
     """
     Create a new device. Admin only.
@@ -65,7 +65,7 @@ def read_devices(
     skip: int = 0, 
     limit: int = 100, 
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    _ = Depends(require_super_admin)
 ) -> Any:
     """
     Retrieve devices. Can be filtered by hall. Admin only.
@@ -81,7 +81,7 @@ def read_devices(
 def read_device(
     device_id: uuid.UUID, 
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    _ = Depends(require_super_admin)
 ) -> Any:
     """
     Get device by ID. Admin only.
@@ -99,7 +99,7 @@ def update_device(
     device_id: uuid.UUID, 
     device_in: DeviceUpdate,
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    _ = Depends(require_super_admin)
 ) -> Any:
     """
     Update a device. Admin only.
@@ -129,7 +129,7 @@ def delete_device(
     request: Request,
     device_id: uuid.UUID, 
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    _ = Depends(require_super_admin)
 ) -> Any:
     """
     Delete a device. Admin only.

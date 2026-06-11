@@ -5,13 +5,14 @@ from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.events import DetectionEvent
-from src.thaqib.db.models.exams import ExamSession
+from src.thaqib.db.models.exams import ExamAdminAssignment, ExamSession
+from src.thaqib.db.models.users import User
 from src.thaqib.schemas.events import DetectionEventCreate, DetectionEventResponse
 from src.thaqib.api.dependencies import RequireRole, require_internal_event_token
 from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
-require_monitor_user = RequireRole(["admin", "referee"])
+require_monitor_user = RequireRole(["admin", "super_admin"])
 
 @router.post("/", response_model=DetectionEventResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("60/minute")
@@ -57,10 +58,17 @@ def read_events(
     skip: int = 0, 
     limit: int = 100, 
     db: Session = Depends(get_db),
-    _ = Depends(require_monitor_user),
+    current_user: User = Depends(require_monitor_user),
 ) -> Any:
     """
     Retrieve detection events for a specific exam session.
     """
+    if current_user.role == "admin":
+        assigned = db.query(ExamAdminAssignment).filter(
+            ExamAdminAssignment.exam_session_id == exam_session_id,
+            ExamAdminAssignment.admin_id == current_user.id,
+        ).first()
+        if not assigned:
+            raise HTTPException(status_code=403, detail="Admin is not assigned to this exam")
     events = db.query(DetectionEvent).filter(DetectionEvent.exam_session_id == exam_session_id).offset(skip).limit(limit).all()
     return events

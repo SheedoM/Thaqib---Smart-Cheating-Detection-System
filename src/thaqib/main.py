@@ -10,7 +10,7 @@ from src.thaqib.core.limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from src.thaqib.api.routes import alerts, voice, auth, institutions, halls, setup, devices, users, exams, events, stream, settings as settings_router
+from src.thaqib.api.routes import alerts, voice, auth, institutions, halls, setup, devices, users, exams, events, stream, settings as settings_router, overview
 from src.thaqib.config.settings import get_settings
 
 settings = get_settings()
@@ -97,6 +97,7 @@ app.include_router(events.router, prefix="/api/events", tags=["Detection Events"
 app.include_router(alerts.router, prefix="/api/alerts", tags=["Alerts"])
 app.include_router(stream.router, prefix="/api/stream", tags=["Video Stream"])
 app.include_router(settings_router.router, prefix="/api/settings", tags=["System Settings"])
+app.include_router(overview.router, prefix="/api/overview", tags=["University Overview"])
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 @app.get("/")

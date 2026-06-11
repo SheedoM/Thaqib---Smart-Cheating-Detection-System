@@ -153,7 +153,13 @@ class GlobalLocalDiscriminator:
             )
 
         # Step 3: Classify
-        if n_mics == 2:
+        if n_mics == 1:
+            return SoundClassification(
+                is_local=True,
+                active_mics=[0],
+                energy_profile=energy,
+            )
+        elif n_mics == 2:
             return self._classify_2mic(energy)
         else:
             return self._classify_nmics(energy)

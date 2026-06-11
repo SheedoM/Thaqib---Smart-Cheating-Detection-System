@@ -27,6 +27,19 @@ class AssignmentDetailedResponse(AssignmentResponse):
     scheduled_end: datetime
 
 
+class ExamAdminAssignmentCreate(BaseModel):
+    admin_id: uuid.UUID
+    assignment_role: Optional[str] = "reviewer"
+
+
+class ExamAdminAssignmentResponse(ExamAdminAssignmentCreate):
+    id: uuid.UUID
+    exam_session_id: uuid.UUID
+    assigned_by: Optional[uuid.UUID] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ExamHallResponse(BaseModel):
     id: uuid.UUID
     name: str
@@ -65,5 +78,6 @@ class ExamSessionResponse(ExamSessionBase):
     created_by: Optional[uuid.UUID] = None
     halls: List[ExamHallResponse] = Field(default_factory=list)
     assignments: List[AssignmentResponse] = Field(default_factory=list)
+    admin_assignments: List[ExamAdminAssignmentResponse] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)

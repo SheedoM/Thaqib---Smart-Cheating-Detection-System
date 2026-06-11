@@ -82,24 +82,24 @@ The system integrates data from **IP cameras** and **microphones** installed ins
 
 The system defines three user roles:
 
-#### 2.1.1 System Administrator
+#### 2.1.1 Super Admin
 
 | Attribute | Details |
 |-----------|---------|
-| **Responsibility** | System infrastructure setup and user management |
-| **Activities** | Register institution, manage halls, register devices, create user accounts |
-| **Does NOT** | Monitor exams, schedule exams, or interact during active sessions |
-| **Access** | Full system configuration; no access to monitoring dashboard |
+| **Responsibility** | System setup, infrastructure, user management, and configuration |
+| **Activities** | Register institution, manage halls, register devices, create user accounts, configure settings, observe active exam state |
+| **Does NOT** | Schedule exams, start/end monitoring, claim alerts, or communicate with invigilators during active sessions |
+| **Access** | Full system configuration; read-only observation of monitoring state and reports |
 | **Typical user** | IT staff or designated system manager |
 
-#### 2.1.2 Referee
+#### 2.1.2 Admin
 
 | Attribute | Details |
 |-----------|---------|
-| **Responsibility** | Exam scheduling AND real-time monitoring from the control room |
-| **Pre-exam activities** | Schedule exam sessions, assign halls, assign invigilators |
+| **Responsibility** | Exam scheduling and real-time monitoring from the control room |
+| **Pre-exam activities** | Schedule assigned exam sessions, assign halls, assign invigilators, assign additional admins to the exam |
 | **During-exam activities** | Monitor AI alerts via shared queue, review video clips, make decisions on suspicious behavior, contact invigilators via PTT |
-| **Access** | Exam management, monitoring dashboard, alert queue, PTT, reports |
+| **Access** | Exam management, monitoring dashboard, alert queue, PTT, reports for assigned exams only |
 | **Typical user** | Control department staff, exam coordinator |
 
 #### 2.1.3 Invigilator
@@ -108,7 +108,7 @@ The system defines three user roles:
 |-----------|---------|
 | **Responsibility** | Physical presence in the examination hall |
 | **Pre-exam activities** | View assigned schedule, review hall layout |
-| **During-exam activities** | Receive voice instructions from referees via PTT/earpiece, take physical action (approach student, give warning) |
+| **During-exam activities** | Receive voice instructions from admins via PTT/earpiece, take physical action (approach student, give warning) |
 | **Does NOT** | Make detection decisions or review alerts |
 | **Access** | Schedule view, PTT (listen & respond) |
 | **Typical user** | Teaching assistant, assigned faculty member |
@@ -118,7 +118,7 @@ The system defines three user roles:
 The control room operates on a **Shared Alert Queue** model:
 
 ```
-AI Detection → Alert enters shared queue → Any available referee claims it →
+AI Detection -> Alert enters shared queue -> Any assigned admin claims it ->
   → Reviews video/context → Decision:
       → Suspicious: PTT call to invigilator with instructions
       → Not suspicious: Dismiss as false positive
@@ -126,11 +126,11 @@ AI Detection → Alert enters shared queue → Any available referee claims it �
 ```
 
 **Key properties:**
-- All active alerts are visible to all logged-in referees
-- No pre-assignment of referees to specific halls
-- A referee **claims** an alert to review it, preventing duplicate work
-- The system requires **at least one referee logged in** for a monitoring session to be active
-- Staffing is flexible: 2 referees can cover 5 quiet halls, or 5 referees can cover 1 intense hall
+- Active alerts are visible to admins assigned to the related exam session
+- Admins are assigned to exams, not individual halls
+- An admin **claims** an alert to review it, preventing duplicate work
+- The system requires **at least one assigned admin logged in** for a monitoring session to be active
+- Staffing is flexible: 2 admins can cover 5 quiet halls, or 5 admins can cover 1 intense hall
 
 ### 2.3 Operating Environment
 
@@ -157,7 +157,7 @@ AI Detection → Alert enters shared queue → Any available referee claims it �
 
 1. The institution provides a wired Ethernet network connecting cameras to the server
 2. A specialist assesses each hall to determine optimal camera/microphone count and placement
-3. At least one referee is present in the control room during active monitoring
+3. At least one assigned admin is present in the control room during active monitoring
 4. Invigilators have access to an earpiece or audio device for receiving PTT instructions
 5. The server has adequate GPU resources for real-time video inference (if processing multiple halls)
 
@@ -169,7 +169,7 @@ AI Detection → Alert enters shared queue → Any available referee claims it �
 
 | ID | Requirement |
 |----|------------|
-| FR-01.1 | The system shall provide a first-run **Setup Wizard** that collects institution name and creates the initial admin account |
+| FR-01.1 | The system shall provide a first-run **Setup Wizard** that collects institution name and creates the initial super admin account |
 | FR-01.2 | The Setup Wizard shall not be accessible after initial setup is complete |
 | FR-01.3 | The system shall initialize the database schema automatically on first run |
 
@@ -179,7 +179,7 @@ AI Detection → Alert enters shared queue → Any available referee claims it �
 |----|------------|
 | FR-02.1 | The system shall authenticate users via username and password |
 | FR-02.2 | The system shall issue JWT tokens upon successful authentication |
-| FR-02.3 | The system shall enforce role-based access control (RBAC) for three roles: Admin, Referee, Invigilator |
+| FR-02.3 | The system shall enforce role-based access control (RBAC) for three roles: Super Admin, Admin, Invigilator |
 | FR-02.4 | The system shall restrict access to features based on user role as defined in §2.1 |
 | FR-02.5 | Sessions shall timeout after a configurable period of inactivity |
 
@@ -187,28 +187,29 @@ AI Detection → Alert enters shared queue → Any available referee claims it �
 
 | ID | Requirement |
 |----|------------|
-| FR-03.1 | The admin shall be able to create, edit, and delete halls with attributes: name, building, floor, capacity |
-| FR-03.2 | The admin shall be able to register devices (cameras and microphones) to a specific hall |
+| FR-03.1 | The super admin shall be able to create, edit, and delete halls with attributes: name, building, floor, capacity |
+| FR-03.2 | The super admin shall be able to register devices (cameras and microphones) to a specific hall |
 | FR-03.3 | Each device shall have: type (camera/microphone), IP address, stream URL, position label |
 | FR-03.4 | The system shall perform an automated **health check** when a device is registered (ping RTSP/audio stream) |
 | FR-03.5 | Device status shall be one of: `online`, `offline`, `error`, `maintenance` |
 | FR-03.6 | The system shall run **periodic health checks** (configurable interval) on all registered devices |
 | FR-03.7 | A hall's status shall automatically be `ready` when ALL its devices are `online`, and `not_ready` otherwise |
-| FR-03.8 | The system shall alert the admin when a device goes offline |
+| FR-03.8 | The system shall alert the super admin when a device goes offline |
 
 ### FR-04: Exam Session Management
 
 | ID | Requirement |
 |----|------------|
-| FR-04.1 | A referee shall be able to create an exam session with: course name, exam type, date, start time, end time |
+| FR-04.1 | An admin shall be able to create an exam session with: course name, exam type, date, start time, end time |
 | FR-04.2 | An exam session shall be assigned to **one or more halls** (multi-hall exam support) |
 | FR-04.3 | Only halls with status `ready` shall be selectable for exam sessions |
 | FR-04.4 | The system shall prevent scheduling conflicts (overlapping sessions in the same hall) |
-| FR-04.5 | A referee shall assign one or more invigilators to an exam session |
+| FR-04.5 | An admin shall assign one or more invigilators to an exam session |
 | FR-04.6 | Exam session status shall be one of: `scheduled`, `active`, `completed`, `cancelled` |
-| FR-04.7 | A referee shall be able to **start** a monitoring session, which activates all AI pipelines for the assigned halls |
-| FR-04.8 | A referee shall be able to **end** a monitoring session manually, or it shall end automatically at the scheduled time |
+| FR-04.7 | An admin assigned to the exam shall be able to **start** a monitoring session, which activates all AI pipelines for the assigned halls |
+| FR-04.8 | An admin assigned to the exam shall be able to **end** a monitoring session manually, or it shall end automatically at the scheduled time |
 | FR-04.9 | The system shall send a notification to assigned invigilators when an exam session is created |
+| FR-04.10 | The system shall assign admins to specific exam sessions and restrict each admin's exam list, alert queue, monitoring controls, and reports to those assigned exams |
 
 ### FR-05: Real-Time Video Detection Pipeline
 
@@ -269,10 +270,10 @@ AI Detection → Alert enters shared queue → Any available referee claims it �
 
 | ID | Requirement |
 |----|------------|
-| FR-08.5 | All alerts shall appear in a **shared queue** visible to all logged-in referees |
-| FR-08.6 | A referee shall be able to **claim** an alert, which locks it to that referee and prevents duplicate review |
+| FR-08.5 | All alerts shall appear in a **shared queue** visible to admins assigned to the related exam session |
+| FR-08.6 | An assigned admin shall be able to **claim** an alert, which locks it to that admin and prevents duplicate review |
 | FR-08.7 | Alert status shall follow this lifecycle: `pending` → `claimed` → (`resolved` / `false_positive` / `escalated`) |
-| FR-08.8 | A referee shall be able to mark an alert as: **resolved** (action taken), **false positive** (not cheating), or **escalated** (needs further attention) |
+| FR-08.8 | An assigned admin shall be able to mark an alert as: **resolved** (action taken), **false positive** (not cheating), or **escalated** (needs further attention) |
 | FR-08.9 | The system shall apply **suppression rules** to prevent alert fatigue: |
 
 **Suppression Rules:**
@@ -289,7 +290,7 @@ AI Detection → Alert enters shared queue → Any available referee claims it �
 | ID | Requirement |
 |----|------------|
 | FR-09.1 | The system shall provide real-time **Push-to-Talk (PTT)** voice communication between the control room and invigilators via WebSocket |
-| FR-09.2 | A referee shall be able to initiate a voice call to a specific invigilator |
+| FR-09.2 | An admin shall be able to initiate a voice call to a specific invigilator |
 | FR-09.3 | An invigilator shall be able to respond to voice calls from the control room |
 | FR-09.4 | PTT shall support binary audio streaming with low latency (< 500ms) |
 | FR-09.5 | The system shall display connection status for all PTT-connected users |
@@ -376,7 +377,7 @@ AI Detection → Alert enters shared queue → Any available referee claims it �
 | NFR-05.1 | The interface shall be available in **Arabic** and **English** |
 | NFR-05.2 | Arabic mode shall use proper **RTL** layout |
 | NFR-05.3 | Alert severity shall be communicated through **color coding** (e.g., red for Tier 2, yellow for Tier 1) |
-| NFR-05.4 | The Setup Wizard shall guide the admin through initial configuration without technical knowledge |
+| NFR-05.4 | The Setup Wizard shall guide the super admin through initial configuration without technical knowledge |
 | NFR-05.5 | The control room dashboard shall be optimized for extended use (low eye strain, clear hierarchy) |
 
 ### NFR-06: Compatibility
@@ -399,12 +400,13 @@ AI Detection → Alert enters shared queue → Any available referee claims it �
 | **Institution** | The academic institution using the system | Has many Halls, Users |
 | **Hall** | A physical examination room | Belongs to Institution; has many Devices; many-to-many with ExamSessions |
 | **Device** | A camera or microphone registered to a hall | Belongs to Hall |
-| **User** | An authenticated system user | Belongs to Institution; has a Role (admin/referee/invigilator) |
+| **User** | An authenticated system user | Belongs to Institution; has a Role (super_admin/admin/invigilator) |
 | **ExamSession** | A scheduled or active exam monitoring period | Many-to-many with Halls; has many Assignments, DetectionEvents |
 | **Assignment** | Links an invigilator to an exam session | Belongs to ExamSession and User |
+| **ExamAdminAssignment** | Links an admin to an exam session | Belongs to ExamSession and User; controls admin scope |
 | **DetectionEvent** | A single AI-detected suspicious behavior | Belongs to ExamSession and Device; optionally grouped into GroupEvent |
 | **GroupEvent** | Multiple correlated detection events | Belongs to ExamSession; aggregates DetectionEvents |
-| **Alert** | A notification generated for referee review | References either DetectionEvent or GroupEvent (not both); has a status lifecycle |
+| **Alert** | A notification generated for admin review | References either DetectionEvent or GroupEvent (not both); has a status lifecycle |
 | **AuditLog** | Record of user actions for accountability | References User |
 
 ### 5.2 Key Relationships
@@ -417,6 +419,7 @@ Hall (M) ←──→ (N) ExamSession        [many-to-many: one exam can span mu
 Hall (1) ──→ (N) Device
 
 ExamSession (1) ──→ (N) Assignment ──→ User (invigilator)
+ExamSession (1) ──→ (N) ExamAdminAssignment ──→ User (admin)
 ExamSession (1) ──→ (N) DetectionEvent ──→ Device
 ExamSession (1) ──→ (N) GroupEvent
 ExamSession (1) ──→ (N) Alert
@@ -442,13 +445,13 @@ Alert ──→ DetectionEvent (1) XOR GroupEvent (1)
 
 | Interface | Users | Key Features |
 |-----------|-------|-------------|
-| **Setup Wizard** | Admin | 2-step form: institution details + admin account creation |
+| **Setup Wizard** | Super Admin | 2-step form: institution details + super admin account creation |
 | **Login Page** | All | Username/password, bilingual |
-| **Admin Dashboard** | Admin | Hall management, device management, user management |
-| **Exam Scheduling** | Referee | Create exam, select halls, assign invigilators |
-| **Control Room Dashboard** | Referee | Hall grid overview, shared alert queue, individual hall view with camera feeds, event timeline, PTT controls |
-| **Alert Review** | Referee | Claim alert, view video clip, mark resolved/false positive/escalated |
-| **History & Reports** | Referee, Admin | Past sessions, session detail reports, statistics |
+| **Super Admin Dashboard** | Super Admin | Hall management, device management, user management, settings, read-only observation |
+| **Exam Scheduling** | Admin | Create exam, select halls, assign invigilators and admins |
+| **Control Room Dashboard** | Admin | Hall grid overview, scoped alert queue, individual hall view with camera feeds, event timeline, PTT controls |
+| **Alert Review** | Admin | Claim alert, view video clip, mark resolved/false positive/escalated |
+| **History & Reports** | Admin, Super Admin | Past sessions, session detail reports, statistics |
 | **Invigilator Schedule** | Invigilator | "My Schedule" view, hall pre-flight status, PTT listen |
 
 ### 6.2 Hardware Interfaces
@@ -475,58 +478,58 @@ Alert ──→ DetectionEvent (1) XOR GroupEvent (1)
 
 ## 7. User Journey
 
-### 7.1 One-Time Setup (Admin)
+### 7.1 One-Time Setup (Super Admin)
 
 ```
 1. Install Thaqib on local server
 2. Open browser → Setup Wizard appears
 3. Enter institution name + upload logo
-4. Create admin account (username, email, password)
-5. Admin Dashboard opens
+4. Create super admin account (username, email, password)
+5. Super Admin Dashboard opens
 6. Register Halls → enter name, building, floor, capacity
 7. For each Hall → register cameras (RTSP URL) and mics (USB)
    → System runs health check → Hall marked "Ready" when all devices online
-8. Create user accounts → Referees and Invigilators
+8. Create user accounts → Admins and Invigilators
 ```
 
-### 7.2 Before Each Exam (Referee)
+### 7.2 Before Each Exam (Admin)
 
 ```
-1. Referee logs in → sees Exam Management page
+1. Admin logs in → sees Exam Management page
 2. Creates exam session:
    → Course name, exam type, date, start/end time
    → Selects one or more halls (only "Ready" halls shown)
-   → Assigns invigilator(s)
+   → Assigns invigilator(s) and any additional admins needed for the exam
 3. System sends notification to assigned invigilators
 4. Invigilator logs in → sees exam on "My Schedule" → reviews hall info
 ```
 
-### 7.3 Exam Day (Referee + Invigilator)
+### 7.3 Exam Day (Admin + Invigilator)
 
 ```
 1. Invigilator goes to the assigned hall physically
-2. Referee logs into control room dashboard
-3. Referee clicks "Start Monitoring" on the exam session
+2. Admin logs into control room dashboard
+3. Admin clicks "Start Monitoring" on the assigned exam session
    → AI pipelines activate for all assigned halls
    → Camera feeds go live on dashboard
-4. Referee optionally selects which detected persons are students (human-in-the-loop)
+4. Admin optionally selects which detected persons are students (human-in-the-loop)
 
 DURING EXAM:
 5. AI runs continuously:
    → Video pipeline: detect → track → head pose → gaze → neighbor risk → alert
    → Audio pipeline: capture → segment → extract features → anomaly detect → alert
    → Object detection: scan for phones/books/notes → alert
-6. Alerts appear in shared queue on all referees' dashboards
-7. A referee claims an alert → reviews video clip and context
+6. Alerts appear in the scoped shared queue on assigned admins' dashboards
+7. An admin claims an alert → reviews video clip and context
 8. Decision:
    a. Suspicious → PTT call to invigilator: "Row 3, Seat 7, please check"
    b. Not suspicious → mark as false positive
    c. Unclear → continue monitoring, keep alert open
 9. Invigilator takes physical action and confirms
-10. Referee marks alert as resolved
+10. Admin marks alert as resolved
 
 END OF EXAM:
-11. Referee clicks "End Session" (or session ends automatically at scheduled time)
+11. Admin clicks "End Session" (or session ends automatically at scheduled time)
 12. System generates session summary:
     → Total alerts, confirmed incidents, false positives, response times
     → Aggregated across all halls in the exam session
@@ -534,7 +537,7 @@ END OF EXAM:
 14. Alert video clips are auto-deleted
 ```
 
-### 7.4 Post-Exam (Admin / Referee)
+### 7.4 Post-Exam (Admin / Super Admin)
 
 ```
 1. Navigate to History & Reports
@@ -556,7 +559,7 @@ The system should eventually support a **hierarchical organizational model**:
 ```
 University
   ├── Faculty of Engineering
-  │     ├── Referees, Invigilators, Halls, Exams
+  │     ├── Admins, Invigilators, Halls, Exams
   │     └── ...
   └── Faculty of Science
         └── ...
@@ -564,23 +567,18 @@ University
 
 Each faculty would operate as an independent institution with its own data scope, while a university-level admin can view across all faculties.
 
-### 8.2 Referee Scoping (Exam-Based Access Control)
+### 8.2 Advanced Admin Scoping
 
-In institutions with multiple control departments (e.g., one per academic level), referees should only see exams relevant to them. The recommended approach for future implementation:
+Exam-based admin assignment is part of the MVP: admins are assigned to specific exam sessions and only see those exams, alerts, controls, and reports. Future versions may add convenience layers on top of this core access-control model.
 
-**Option A (Recommended): Exam-Based Assignment**
-- Referees are assigned to specific exam sessions (like invigilators are)
-- Their dashboard and alert queue only shows assigned exams
-- Simplest approach, works for any institution type
-
-**Option B: Tag/Scope Property**
-- Referees have a flexible scope label (e.g., "Level 1", "Grade 10")
+**Future Option A: Tag/Scope Property**
+- Admins have a flexible scope label (e.g., "Level 1", "Grade 10")
 - Exams are tagged with matching scopes
-- More automated but requires consistent tagging
+- More automated than manual assignment but requires consistent tagging
 
-**Option C: Hybrid**
-- Exam assignment (Option A) as the core mechanism
-- Optional "Teams" for batch-assigning referees to multiple exams at once
+**Future Option B: Teams**
+- Teams can batch-assign admins to multiple exams at once
+- Exam assignment remains the authoritative access-control mechanism
 
 ### 8.3 Student Identity Linking
 
@@ -623,7 +621,7 @@ To prevent student impersonation and hall swapping, a two-phase verification pip
 |------|-----------|
 | **Aggregation Window** | A short time period (default 5 seconds) during which related detection events are grouped before generating an alert |
 | **Audio Zone** | A spatial region within a hall covered by a specific microphone, mapped to a group of nearby students |
-| **Claim (Alert)** | A referee takes ownership of an alert for review, preventing other referees from reviewing the same alert simultaneously |
+| **Claim (Alert)** | An admin takes ownership of an alert for review, preventing other assigned admins from reviewing the same alert simultaneously |
 | **Cross-Microphone Validation** | Comparing audio activity across neighboring microphones to distinguish localized sounds from ambient hall noise |
 | **Gaze Direction** | The estimated direction a student is looking, computed by fusing head pose and eye gaze vectors |
 | **Head Pose** | The orientation of a person's head in 3D space, described by yaw (left/right), pitch (up/down), and roll (tilt) angles |

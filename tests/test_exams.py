@@ -34,12 +34,19 @@ def _create_device(client, headers, hall_id, identifier, device_type, **extra):
 
 def test_exam_session_returns_halls_and_assignments(
     client,
-    admin_token_headers,
+    admin_user,
+    super_admin_token_headers,
     test_institution,
     invigilator_user,
 ):
-    hall_a = _create_hall(client, admin_token_headers, test_institution.id, "Hall A")
-    hall_b = _create_hall(client, admin_token_headers, test_institution.id, "Hall B")
+    hall_a = _create_hall(client, super_admin_token_headers, test_institution.id, "Hall A")
+    hall_b = _create_hall(client, super_admin_token_headers, test_institution.id, "Hall B")
+    admin_login = client.post(
+        "/api/auth/login",
+        data={"username": admin_user.username, "password": "securepassword"},
+    )
+    assert admin_login.status_code == 200
+    admin_token_headers = {"X-CSRF-Token": admin_login.json()["csrf_token"]}
     start = datetime.now(timezone.utc) + timedelta(days=1)
     end = start + timedelta(hours=2)
 
@@ -90,6 +97,7 @@ def test_exam_session_returns_halls_and_assignments(
 def test_hall_readiness_returns_device_checks(
     client,
     admin_user,
+    super_admin_user,
     test_institution,
     invigilator_user,
 ):
@@ -99,11 +107,17 @@ def test_hall_readiness_returns_device_checks(
     )
     assert admin_login.status_code == 200
     admin_token_headers = {"X-CSRF-Token": admin_login.json()["csrf_token"]}
+    super_admin_login = client.post(
+        "/api/auth/login",
+        data={"username": super_admin_user.username, "password": "securepassword"},
+    )
+    assert super_admin_login.status_code == 200
+    super_admin_token_headers = {"X-CSRF-Token": super_admin_login.json()["csrf_token"]}
 
-    hall = _create_hall(client, admin_token_headers, test_institution.id, "Readiness Hall")
+    hall = _create_hall(client, super_admin_token_headers, test_institution.id, "Readiness Hall")
     _create_device(
         client,
-        admin_token_headers,
+        super_admin_token_headers,
         hall["id"],
         "camera-main",
         "camera",
@@ -111,7 +125,7 @@ def test_hall_readiness_returns_device_checks(
     )
     _create_device(
         client,
-        admin_token_headers,
+        super_admin_token_headers,
         hall["id"],
         "mic-main",
         "microphone",
@@ -119,6 +133,12 @@ def test_hall_readiness_returns_device_checks(
     )
     start = datetime.now(timezone.utc) + timedelta(days=1)
     end = start + timedelta(hours=2)
+    admin_login = client.post(
+        "/api/auth/login",
+        data={"username": admin_user.username, "password": "securepassword"},
+    )
+    assert admin_login.status_code == 200
+    admin_token_headers = {"X-CSRF-Token": admin_login.json()["csrf_token"]}
 
     create_response = client.post(
         "/api/sessions/",

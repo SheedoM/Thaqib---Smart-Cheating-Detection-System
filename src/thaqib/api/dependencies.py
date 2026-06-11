@@ -1,10 +1,13 @@
 import hmac
+import uuid
+from typing import Set
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from src.thaqib.config.settings import get_settings
 from src.thaqib.core.security import decode_token
+from src.thaqib.core.scoping import accessible_institution_ids
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.users import User
 
@@ -61,6 +64,14 @@ class RequireRole:
                 detail=f"Operation requires roles: {self.allowed_roles}",
             )
         return current_user
+
+def get_scope(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+) -> Set[uuid.UUID]:
+    """Return the set of institution IDs the current user may access (self + children)."""
+    return accessible_institution_ids(db, current_user.institution_id)
+
 
 def require_internal_event_token(request: Request) -> None:
     """Authenticate machine-to-machine event ingestion."""

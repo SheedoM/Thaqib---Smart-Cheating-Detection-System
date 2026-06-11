@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import CameraModal from '../components/CameraModal';
+import CameraFeedGrid, { type CameraFeedGridItem } from '../components/CameraFeedGrid';
 import HallsTab from '../components/HallsTab';
 import ExamsTab from '../components/ExamsTab';
 import SupervisorsTab from '../components/SupervisorsTab';
 import SettingsTab from '../components/SettingsTab';
-import { apiUrl, authFetch, STREAM_BASE } from '../config/api';
+import { authFetch, STREAM_BASE } from '../config/api';
 import { useHallVoice } from '../hooks/useHallVoice';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -82,10 +83,15 @@ interface CurrentUser {
 
 type TabType = 'cases' | 'cameras';
 
-const NAV_ITEMS = [
+const ADMIN_NAV_ITEMS = [
   { label: 'الرئيسية', key: 'home', active: true },
-  { label: 'القاعات', key: 'halls', active: false },
   { label: 'الإمتحانات', key: 'exams', active: false },
+];
+
+const SUPER_ADMIN_NAV_ITEMS = [
+  { label: 'الرئيسية', key: 'home', active: true },
+  { label: 'الإمتحانات', key: 'exams', active: false },
+  { label: 'القاعات', key: 'halls', active: false },
   { label: 'المشرفين', key: 'supervisors', active: false },
   { label: 'الإعدادات', key: 'settings', active: false },
 ];
@@ -99,16 +105,6 @@ function formatTime(isoString: string): string {
   } catch {
     return '—';
   }
-}
-
-function formatUptime(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  if (m < 60) return `${m}m ${s}s`;
-  const h = Math.floor(m / 60);
-  const rm = m % 60;
-  return `${h}h ${rm}m`;
 }
 
 function timeSince(isoString: string): string {
@@ -389,6 +385,14 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
   const visibleHalls = selectedHallId === 'all' ? halls : halls.filter((hall) => hall.id === selectedHallId);
   const selectedHallName = halls.find((hall) => hall.id === selectedHallId)?.name;
   const visibleAlerts = selectedHallName ? alerts.filter((alert) => alert.hall_name === selectedHallName) : alerts;
+  const isSuperAdmin = currentUser?.role === 'super_admin';
+  const navItems = isSuperAdmin ? SUPER_ADMIN_NAV_ITEMS : ADMIN_NAV_ITEMS;
+
+  useEffect(() => {
+    if (currentUser && !navItems.some((item) => item.key === activeNav)) {
+      setActiveNav('home');
+    }
+  }, [activeNav, currentUser, navItems]);
 
   return (
     <div className="dashboard-root" dir="rtl">
@@ -426,12 +430,14 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
               </div>
               <div className="dashboard-user-divider"></div>
               {/* Refresh streams */}
-              <button className="dashboard-icon-btn" title="تحديث البث" onClick={refreshStreams}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
-                  <polyline points="21 3 21 9 15 9"/>
-                </svg>
-              </button>
+              {!isSuperAdmin && (
+                <button className="dashboard-icon-btn" title="تحديث البث" onClick={refreshStreams}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+                    <polyline points="21 3 21 9 15 9"/>
+                  </svg>
+                </button>
+              )}
               {/* Notification bell */}
               <button
                 className="dashboard-icon-btn"
@@ -485,12 +491,14 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
                 </div>
               )}
               {/* Settings */}
-              <button className="dashboard-icon-btn" title="الإعدادات" onClick={() => setActiveNav('settings')}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="12" cy="12" r="3"/>
-                  <path d="M12 1v2m0 18v2m-9-11h2m18 0h2m-2.636-7.364l-1.414 1.414M6.05 17.95l-1.414 1.414m0-14.728l1.414 1.414M17.95 17.95l1.414 1.414"/>
-                </svg>
-              </button>
+              {isSuperAdmin && (
+                <button className="dashboard-icon-btn" title="الإعدادات" onClick={() => setActiveNav('settings')}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M12 1v2m0 18v2m-9-11h2m18 0h2m-2.636-7.364l-1.414 1.414M6.05 17.95l-1.414 1.414m0-14.728l1.414 1.414M17.95 17.95l1.414 1.414"/>
+                  </svg>
+                </button>
+              )}
               {onLogout && (
                 <button className="dashboard-icon-btn" title="تسجيل الخروج" onClick={onLogout}>
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -504,7 +512,7 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
 
             {/* Center: nav items */}
             <nav className="dashboard-nav">
-              {NAV_ITEMS.map((item) => (
+              {navItems.map((item) => (
                 <button
                   key={item.key}
                   className={`dashboard-nav-item ${activeNav === item.key ? 'active' : ''}`}
@@ -523,7 +531,7 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
 
           {/* Page title */}
           <h1 className="dashboard-page-title">
-            {NAV_ITEMS.find(n => n.key === activeNav)?.label || 'الرئيسية'}
+            {navItems.find(n => n.key === activeNav)?.label || 'الرئيسية'}
           </h1>
 
           {/* Sub-header: tabs + hall selector */}
@@ -587,6 +595,7 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
                 halls={visibleHalls}
                 hallsLoaded={hallsLoaded}
                 statsByCamera={statsByCamera}
+                canOperate={!isSuperAdmin}
                 onClickCamera={openCameraModal}
                 recentAlertByCameraId={recentAlertByCameraId}
                 onViewAlert={openAlertModal}
@@ -751,6 +760,7 @@ function CamerasTab({
   halls,
   hallsLoaded,
   statsByCamera,
+  canOperate,
   onClickCamera,
   recentAlertByCameraId,
   onViewAlert,
@@ -758,6 +768,7 @@ function CamerasTab({
   halls: HallItem[];
   hallsLoaded: boolean;
   statsByCamera: Record<string, CameraStats>;
+  canOperate: boolean;
   onClickCamera: (camera: CameraItem, hallName: string) => void;
   recentAlertByCameraId: Record<string, Alert | null>;
   onViewAlert: (alert: Alert) => void;
@@ -800,9 +811,11 @@ function CamerasTab({
                 <span className="hall-monitoring-badge inactive">في انتظار البدء</span>
               )}
             </div>
-            <div style={{ marginRight: 'auto', marginLeft: 0 }}>
-              <HallVoiceControl hallId={hall.id} hallName={hall.name} />
-            </div>
+            {canOperate && (
+              <div style={{ marginRight: 'auto', marginLeft: 0 }}>
+                <HallVoiceControl hallId={hall.id} hallName={hall.name} />
+              </div>
+            )}
           </div>
           {hall.cameras.length === 0 ? (
             <div className="dashboard-empty-state" style={{ minHeight: '200px', backgroundColor: 'rgba(255,255,255,0.5)', borderRadius: '14px' }}>
@@ -813,82 +826,25 @@ function CamerasTab({
               <p>لا توجد كاميرات في هذه القاعة</p>
             </div>
           ) : (
-            <div className="cameras-grid">
-              {hall.cameras.map((camera) => {
-              const stats = statsByCamera[camera.id];
-              const recentAlert = recentAlertByCameraId[camera.id] ?? null;
-              const hasActiveAlert = Boolean(recentAlert);
-              const canStream = Boolean(camera.feed_path);
-              const streamRunning = Boolean(stats?.is_running);
-              const showLoading = canStream && !streamRunning;
-
-              return (
-                <div
-                  key={camera.id}
-                  className={`camera-feed ${hasActiveAlert ? 'camera-feed-alert' : ''}`}
-                  onClick={() => onClickCamera(camera, hall.name)}
-                >
-                  <div className="camera-feed-label">
-                    <span className={`camera-status-dot ${streamRunning ? 'active' : 'inactive'}`}></span>
-                    <span>{camera.name}</span>
-                  </div>
-                  {/* REC badge removed */}
-                  {/* Alert overlay removed (we show the alert bar instead) */}
-                  {streamRunning && camera.feed_path ? (
-                    <img
-                      src={apiUrl(camera.feed_path)}
-                      alt={camera.name}
-                      className="camera-feed-img"
-                    />
-                  ) : showLoading ? (
-                    <div className="camera-feed-placeholder">
-                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
-                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                        <circle cx="12" cy="13" r="4"/>
-                      </svg>
-                      <p>جاري تحميل البث...</p>
-                    </div>
-                  ) : (
-                    <div className="camera-feed-placeholder">
-                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
-                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                        <circle cx="12" cy="13" r="4"/>
-                      </svg>
-                      <p>الكاميرا غير متصلة</p>
-                    </div>
-                  )}
-                  <div className="camera-feed-stats">
-                    {recentAlert ? (
-                      <div className="camera-alert-bar">
-                        <span className="camera-alert-type">{recentAlert.event_type}</span>
-                        <button
-                          className="camera-alert-view-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onViewAlert(recentAlert);
-                          }}
-                        >
-                          عرض الحالة
-                        </button>
-                      </div>
-                    ) : streamRunning ? (
-                      <>
-                        <span>FPS: {stats?.fps || 0}</span>
-                        <span>•</span>
-                        <span>{stats?.latency_ms ? `${Math.round(stats.latency_ms)}ms` : '—'}</span>
-                        <span>•</span>
-                        <span>{stats?.resolution && stats.resolution !== 'N/A' ? stats.resolution : '—'}</span>
-                        <span>•</span>
-                        <span>{stats?.uptime_seconds != null && stats.uptime_seconds > 0 ? formatUptime(stats.uptime_seconds) : '—'}</span>
-                      </>
-                    ) : (
-                      <span>—</span>
-                    )}
-                  </div>
-                </div>
-              );
+            <CameraFeedGrid<Alert>
+              cameras={hall.cameras.map((camera): CameraFeedGridItem<Alert> => {
+                const stats = statsByCamera[camera.id];
+                return {
+                  id: camera.id,
+                  name: camera.name,
+                  feedPath: camera.feed_path,
+                  sourceConfigured: camera.source_configured,
+                  isRunning: Boolean(stats?.is_running),
+                  stats,
+                  alert: recentAlertByCameraId[camera.id] ?? null,
+                };
               })}
-            </div>
+              onCameraClick={(item) => {
+                const camera = hall.cameras.find((candidate) => candidate.id === item.id);
+                if (camera) onClickCamera(camera, hall.name);
+              }}
+              onAlertClick={onViewAlert}
+            />
           )}
         </div>
       ))}

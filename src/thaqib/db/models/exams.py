@@ -8,14 +8,14 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Table
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Table, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, SoftDeleteMixin, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from .events import Alert, DetectionEvent, GroupEvent
-    from .infrastructure import Hall
+    from .infrastructure import Hall, Institution
     from .users import User
 
 # SRS §5.2: Hall (M) <-> (N) ExamSession — many-to-many junction table
@@ -41,8 +41,16 @@ class ExamSession(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     A scheduled or active exam monitoring period.
 
     SRS FR-04.6 statuses: 'scheduled', 'active', 'completed', 'cancelled'
+    One exam belongs to exactly one institution (college); halls must all be from that
+    same institution (validated at create/update).
     """
     __tablename__ = "exam_sessions"
+
+    # Owning institution (college / single-tenant root). Nullable during migration
+    # backfill; enforced NOT NULL by application logic after migration.
+    institution_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("institutions.id", ondelete="CASCADE"), nullable=True, index=True
+    )
 
     exam_name: Mapped[str] = mapped_column(String(255), nullable=False)
     exam_type: Mapped[Optional[str]] = mapped_column(String(50))
@@ -62,11 +70,15 @@ class ExamSession(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
 
     # Relationships
+    institution: Mapped[Optional["Institution"]] = relationship("Institution")
     halls: Mapped[List["Hall"]] = relationship(
         "Hall", secondary=exam_session_halls, back_populates="exam_sessions"
     )
     assignments: Mapped[List["Assignment"]] = relationship(
         "Assignment", back_populates="exam_session", cascade="all, delete-orphan"
+    )
+    admin_assignments: Mapped[List["ExamAdminAssignment"]] = relationship(
+        "ExamAdminAssignment", back_populates="exam_session", cascade="all, delete-orphan"
     )
     detection_events: Mapped[List["DetectionEvent"]] = relationship(
         "DetectionEvent", back_populates="exam_session", cascade="all, delete-orphan"
@@ -83,7 +95,7 @@ class Assignment(Base, UUIDMixin, TimestampMixin):
     """
     Links an invigilator to an exam session.
 
-    SRS FR-04.5: A referee shall assign one or more invigilators to an exam session.
+    An assigned exam admin shall assign one or more invigilators to an exam session.
     """
     __tablename__ = "assignments"
 
@@ -111,3 +123,31 @@ class Assignment(Base, UUIDMixin, TimestampMixin):
     )
     invigilator: Mapped["User"] = relationship("User", back_populates="assignments")
     hall: Mapped["Hall"] = relationship("Hall")
+
+
+class ExamAdminAssignment(Base, UUIDMixin, TimestampMixin):
+    """
+    Scopes an exam-operator admin to an exam session.
+
+    Admins share the alert queue within assigned exams, but do not get
+    institution-wide control-room access by default.
+    """
+    __tablename__ = "exam_admin_assignments"
+    __table_args__ = (
+        UniqueConstraint("exam_session_id", "admin_id", name="uq_exam_admin_assignment"),
+    )
+
+    exam_session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    admin_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    assignment_role: Mapped[str] = mapped_column(String(20), default="lead")
+    assigned_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+
+    exam_session: Mapped["ExamSession"] = relationship(
+        "ExamSession", back_populates="admin_assignments"
+    )
+    admin: Mapped["User"] = relationship("User", foreign_keys=[admin_id])
+    assigner: Mapped[Optional["User"]] = relationship("User", foreign_keys=[assigned_by])

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { authFetch } from '../config/api';
 
 interface LoginPageProps {
@@ -13,6 +13,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -78,15 +79,26 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
         />
 
         {/* Password */}
-        <input
-          type="password"
-          name="password"
-          placeholder="كلمة المرور"
-          value={formData.password}
-          onChange={handleInputChange}
-          className="thaqib-input"
-          required
-        />
+        <div className="relative w-full">
+          <input
+            type={showPassword ? 'text' : 'password'}
+            name="password"
+            placeholder="كلمة المرور"
+            value={formData.password}
+            onChange={handleInputChange}
+            className="thaqib-input pl-11"
+            required
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword((value) => !value)}
+            className="absolute inset-y-0 left-3 flex items-center text-gray-400 hover:text-gray-600"
+            aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+            tabIndex={-1}
+          >
+            {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+          </button>
+        </div>
 
         <div className="flex justify-between items-center mt-1 mb-2">
           <label className="flex items-center gap-2 cursor-pointer">

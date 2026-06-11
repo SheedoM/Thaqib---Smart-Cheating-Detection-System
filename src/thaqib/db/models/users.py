@@ -4,8 +4,8 @@ User model.
 Ref: SRS §2.1 User Roles, FR-02 (Authentication & Authorization)
 
 Roles:
-  - 'admin'        → System Administrator (SRS §2.1.1)
-  - 'referee'      → Exam scheduling + control room monitoring (SRS §2.1.2)
+  - 'super_admin'  → Setup, infrastructure, users, settings, observation
+  - 'admin'        → Exam scheduling + control room monitoring
   - 'invigilator'  → Physical hall presence, receives PTT instructions (SRS §2.1.3)
 """
 
@@ -36,7 +36,7 @@ class User(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     image: Mapped[Optional[str]] = mapped_column(String(500))
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     role: Mapped[str] = mapped_column(String(20), nullable=False)
-    # 'admin', 'referee', 'invigilator' — SRS §2.1
+    # 'super_admin', 'admin', 'invigilator'
     status: Mapped[str] = mapped_column(String(20), default="active")
     image: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 

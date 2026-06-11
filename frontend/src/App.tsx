@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { Component, useState, useEffect, type ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { authFetch } from './config/api';
 import SetupWizard from './components/SetupWizard';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
+import UniversityDashboardPage from './pages/UniversityDashboardPage';
 import InvigilatorLayout from './layouts/InvigilatorLayout';
 import SchedulePage from './pages/invigilator/SchedulePage';
 import HallMonitoringPage from './pages/invigilator/HallMonitoringPage';
@@ -12,6 +13,7 @@ import HallMonitoringPage from './pages/invigilator/HallMonitoringPage';
 export default function App() {
   const [user, setUser] = useState<any>(null);
   const [isInstalled, setIsInstalled] = useState<boolean | null>(null);
+  const [isMultiCollege, setIsMultiCollege] = useState<boolean>(false);
   const [loading, setLoading] = useState(true);
 
   const checkStatus = async () => {
@@ -21,11 +23,23 @@ export default function App() {
       if (sessionResponse.ok) {
         const userData = await sessionResponse.json();
         setUser(userData);
+
+        // 2. If admin/super_admin, check whether this is a multi-college university
+        if (userData.role === 'super_admin' || userData.role === 'admin') {
+          try {
+            const summaryRes = await authFetch('/api/overview/summary');
+            if (summaryRes.ok) {
+              const summary = await summaryRes.json();
+              setIsMultiCollege(!!summary.is_multi_college);
+            }
+          } catch { /* non-fatal: fall back to single-institution dashboard */ }
+        }
+
         setLoading(false);
         return;
       }
 
-      // 2. Check if system is installed
+      // 3. Check if system is installed
       const statusResponse = await authFetch('/api/setup/status');
       if (statusResponse.ok) {
         const statusData = await statusResponse.json();
@@ -100,35 +114,85 @@ export default function App() {
 
   // Logged in -> Routing based on role
   return (
-    <BrowserRouter>
-      <Routes>
-        {user.role === 'admin' || user.role === 'referee' ? (
-          <>
-            <Route path="/dashboard/*" element={<DashboardPage onLogout={handleLogout} />} />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
-          </>
-        ) : user.role === 'invigilator' ? (
-          <Route path="/invigilator" element={<InvigilatorLayout onLogout={handleLogout} />}>
-            <Route index element={<SchedulePage />} />
-            <Route path="session/:sessionId/:hallId" element={<HallMonitoringPage />} />
-            <Route path="settings" element={<div className="p-8 text-center text-gray-500">قريباً...</div>} />
-            <Route path="*" element={<Navigate to="/invigilator" replace />} />
-          </Route>
-        ) : (
-          <Route path="*" element={
-            <div className="flex flex-col items-center justify-center min-h-screen p-8 text-center">
-              <h1 className="text-2xl font-bold text-red-600 mb-4">خطأ في الصلاحيات</h1>
-              <p className="text-gray-600 mb-8">عذراً، هذا الحساب لا يملك الصلاحيات الكافية للوصول للنظام.</p>
-              <button onClick={handleLogout} className="thaqib-button">تسجيل الخروج</button>
-            </div>
-          } />
-        )}
-        
-        {/* Default redirect for / or any unknown route */}
-        <Route path="/" element={<Navigate to={user.role === 'admin' || user.role === 'referee' ? "/dashboard" : "/invigilator"} replace />} />
-      </Routes>
-    </BrowserRouter>
+    <AppErrorBoundary>
+      <BrowserRouter>
+        <Routes>
+          {user.role === 'admin' || user.role === 'super_admin' ? (
+            <>
+              <Route
+                path="/dashboard/*"
+                element={
+                  isMultiCollege
+                    ? <UniversityDashboardPage onLogout={handleLogout} />
+                    : <DashboardPage onLogout={handleLogout} />
+                }
+              />
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            </>
+          ) : user.role === 'invigilator' ? (
+            <>
+              <Route path="/invigilator" element={<InvigilatorLayout onLogout={handleLogout} />}>
+                <Route index element={<SchedulePage />} />
+                <Route path="session/:sessionId/:hallId" element={<HallMonitoringPage />} />
+                <Route path="settings" element={<div className="p-8 text-center text-gray-500">قريباً...</div>} />
+              </Route>
+              <Route path="*" element={<Navigate to="/invigilator" replace />} />
+            </>
+          ) : (
+            <Route path="*" element={
+              <div className="flex flex-col items-center justify-center min-h-screen p-8 text-center">
+                <h1 className="text-2xl font-bold text-red-600 mb-4">خطأ في الصلاحيات</h1>
+                <p className="text-gray-600 mb-8">عذراً، هذا الحساب لا يملك الصلاحيات الكافية للوصول للنظام.</p>
+                <button onClick={handleLogout} className="thaqib-button">تسجيل الخروج</button>
+              </div>
+            } />
+          )}
+        </Routes>
+      </BrowserRouter>
+    </AppErrorBoundary>
   );
+}
+
+class AppErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean; message?: string }
+> {
+  state = { hasError: false, message: undefined };
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, message: error.message };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error('App render failed:', error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex min-h-screen flex-col items-center justify-center bg-[#fafafb] p-8 text-center" dir="rtl">
+          <h1 className="mb-3 text-2xl font-bold text-red-600">حدث خطأ في عرض الصفحة</h1>
+          <p className="mb-6 max-w-md text-sm leading-6 text-gray-600">
+            لم نتمكن من عرض هذه الشاشة. يمكنك إعادة المحاولة، وسيبقى الخطأ مسجلاً في وحدة التحكم للمراجعة.
+          </p>
+          {this.state.message && (
+            <pre className="mb-6 max-w-lg overflow-auto rounded-xl bg-white p-4 text-left text-xs text-gray-500 shadow-sm">
+              {this.state.message}
+            </pre>
+          )}
+          <button
+            type="button"
+            className="thaqib-button"
+            onClick={() => this.setState({ hasError: false, message: undefined })}
+          >
+            إعادة المحاولة
+          </button>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
 }
 
 // Reusable Banner Component

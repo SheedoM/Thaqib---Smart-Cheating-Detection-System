@@ -64,7 +64,7 @@ def test_logout_revokes_cookie_session(client, admin_user):
     assert response.status_code == 200
     assert client.get("/api/auth/me").status_code == 401
 
-def test_rbac_admin_access(client, admin_token_headers):
-    # Institutions index is admin-only
-    response = client.get("/api/institutions/", headers=admin_token_headers)
+def test_rbac_super_admin_access(client, super_admin_token_headers):
+    # Institutions index is super-admin only
+    response = client.get("/api/institutions/", headers=super_admin_token_headers)
     assert response.status_code == 200

@@ -25,8 +25,13 @@ export default function SchedulePage() {
       const response = await authFetch('/api/sessions/my');
       if (response.ok) {
         const data = await response.json();
-        setAssignments(data);
-        setError(null);
+        if (Array.isArray(data)) {
+          setAssignments(data);
+          setError(null);
+        } else {
+          setAssignments([]);
+          setError('تعذر قراءة جدول المراقبة من الخادم.');
+        }
       } else {
         setError('فشل في تحميل الجدول الزمني.');
       }

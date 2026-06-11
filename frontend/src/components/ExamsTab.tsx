@@ -595,7 +595,7 @@ function ExamModal({ exam, onClose, onSuccess }: { exam: ExamItem | null, onClos
       .then((r) => {
         if (r.ok) {
           return r.json().then((users: any[]) =>
-            setSupervisors(users.filter(u => u.role === 'invigilator' || u.role === 'referee'))
+            setSupervisors(users.filter(u => u.role === 'invigilator'))
           );
         }
       })

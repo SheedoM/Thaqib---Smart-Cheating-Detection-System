@@ -40,7 +40,7 @@ def init_first_installation():
     db.commit()
     db.refresh(inst)
     
-    # Create Admin
+    # Create Super Admin
     hashed_pwd = get_password_hash(admin_pwd)
         
     admin = User(
@@ -49,7 +49,7 @@ def init_first_installation():
         password_hash=hashed_pwd, 
         full_name=admin_name,
         email=admin_email,
-        role="admin"
+        role="super_admin"
     )
     db.add(admin)
     db.commit()

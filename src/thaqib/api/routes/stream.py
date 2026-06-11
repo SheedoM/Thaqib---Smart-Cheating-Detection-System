@@ -26,14 +26,20 @@ from sqlalchemy.orm import Session, selectinload
 
 from src.thaqib.db.database import SessionLocal
 from src.thaqib.db.models.infrastructure import Device, Hall
-from src.thaqib.db.models.exams import Assignment
+from src.thaqib.db.models.exams import Assignment, ExamAdminAssignment, ExamSession
 from src.thaqib.db.models.events import Alert, DetectionEvent
 from src.thaqib.api.dependencies import RequireRole
+from src.thaqib.core.scoping import accessible_institution_ids
+from src.thaqib.db.models.users import User
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-require_stream_user = RequireRole(["admin", "referee"])
+require_stream_view_user = RequireRole(["admin", "super_admin"])
+require_stream_operator = RequireRole(["admin"])
+# The live feed (and only the live feed) is also viewable by invigilators, scoped
+# to the hall they are assigned to. All other stream endpoints stay admin-only.
+require_feed_view_user = RequireRole(["admin", "super_admin", "invigilator"])
 
 ALERTS_DIR = Path("./alerts")
 ALERTS_DIR.mkdir(exist_ok=True)
@@ -222,14 +228,21 @@ def _camera_display_name(device: Device) -> str:
 
 def _serialize_camera(device: Device, hall: Hall, runtime: CameraRuntime | None) -> dict[str, Any]:
     source = (device.stream_url or "").strip()
+    is_running = runtime is not None and runtime.stats.get("is_running", False)
+    if not source:
+        status = "offline"
+    elif is_running:
+        status = "online"
+    else:
+        status = device.status or "offline"
     position = device.position if isinstance(device.position, dict) else {}
     return {
         "id": str(device.id),
         "identifier": device.identifier,
         "name": _camera_display_name(device),
         "type": device.type,
-        "status": device.status,
-        "active": runtime is not None and runtime.stats.get("is_running", False),
+        "status": status,
+        "active": is_running,
         "feed_path": f"/api/stream/feed/{device.id}" if source else None,
         "source_configured": bool(source),
         "position": position,
@@ -282,6 +295,72 @@ def _load_halls_with_devices(db: Session) -> list[Hall]:
     return (
         db.query(Hall)
         .filter(Hall.deleted_at.is_(None))
+        .options(selectinload(Hall.devices))
+        .order_by(Hall.name.asc())
+        .all()
+    )
+
+
+def _assigned_exam_ids(db: Session, user: User) -> list[uuid.UUID]:
+    if user.role == "super_admin":
+        return []
+    return [
+        row.exam_session_id
+        for row in db.query(ExamAdminAssignment.exam_session_id)
+        .filter(ExamAdminAssignment.admin_id == user.id)
+        .all()
+    ]
+
+
+def _invigilator_can_access_device(db: Session, user: User, device_id: str) -> bool:
+    """An invigilator may view a device's feed only if it lives in a hall they are
+    assigned to monitor (via Assignment.invigilator_id)."""
+    try:
+        parsed_device_id = uuid.UUID(device_id)
+    except ValueError:
+        return False
+    device = db.query(Device).filter(Device.id == parsed_device_id).first()
+    if device is None:
+        return False
+    return db.query(Assignment).filter(
+        Assignment.hall_id == device.hall_id,
+        Assignment.invigilator_id == user.id,
+    ).first() is not None
+
+
+def _admin_can_access_session(db: Session, user: User, session_id: str | None) -> bool:
+    if user.role == "super_admin":
+        return True
+    if not session_id:
+        return False
+    try:
+        parsed_session_id = uuid.UUID(session_id)
+    except ValueError:
+        return False
+    return db.query(ExamAdminAssignment).filter(
+        ExamAdminAssignment.exam_session_id == parsed_session_id,
+        ExamAdminAssignment.admin_id == user.id,
+    ).first() is not None
+
+
+def _load_visible_halls_with_devices(db: Session, user: User) -> list[Hall]:
+    if user.role == "super_admin":
+        # Scope to institution subtree (university sees all colleges' halls)
+        scope = accessible_institution_ids(db, user.institution_id)
+        return (
+            db.query(Hall)
+            .filter(Hall.deleted_at.is_(None), Hall.institution_id.in_(scope))
+            .options(selectinload(Hall.devices))
+            .order_by(Hall.name.asc())
+            .all()
+        )
+    assigned_exam_ids = _assigned_exam_ids(db, user)
+    if not assigned_exam_ids:
+        return []
+    return (
+        db.query(Hall)
+        .filter(Hall.deleted_at.is_(None))
+        .filter(Hall.exam_sessions.any(ExamSession.id.in_(assigned_exam_ids)))
         .options(selectinload(Hall.devices))
         .order_by(Hall.name.asc())
         .all()
@@ -498,6 +577,7 @@ def _run_pipeline(camera: CameraRuntime) -> None:
         filename = _save_alert_snapshot(frame_img, camera, state.track_id, created_at)
         alert_data = {
             "id": str(uuid.uuid4()),
+            "exam_session_id": camera.session_id,
             "camera_id": camera.device_id,
             "camera_identifier": camera.identifier,
             "camera_name": camera.camera_name,
@@ -851,7 +931,7 @@ def _force_restart_all_cameras() -> None:
 
 
 @router.post("/reload")
-async def reload_monitoring(_=Depends(require_stream_user)) -> JSONResponse:
+async def reload_monitoring(_=Depends(require_stream_operator)) -> JSONResponse:
     _refresh_camera_states()
     return JSONResponse(
         {
@@ -862,7 +942,7 @@ async def reload_monitoring(_=Depends(require_stream_user)) -> JSONResponse:
 
 
 @router.post("/refresh")
-async def refresh_monitoring(_=Depends(require_stream_user)) -> JSONResponse:
+async def refresh_monitoring(_=Depends(require_stream_operator)) -> JSONResponse:
     _force_restart_all_cameras()
     return JSONResponse(
         {
@@ -873,10 +953,10 @@ async def refresh_monitoring(_=Depends(require_stream_user)) -> JSONResponse:
 
 
 @router.get("/monitoring")
-async def monitoring_layout(_=Depends(require_stream_user)) -> JSONResponse:
+async def monitoring_layout(current_user: User = Depends(require_stream_view_user)) -> JSONResponse:
     db = SessionLocal()
     try:
-        halls = _load_halls_with_devices(db)
+        halls = _load_visible_halls_with_devices(db, current_user)
         payload = {"halls": [_hall_to_payload(hall, db=db) for hall in halls]}
     finally:
         db.close()
@@ -884,11 +964,18 @@ async def monitoring_layout(_=Depends(require_stream_user)) -> JSONResponse:
 
 
 @router.get("/status")
-async def pipeline_status(_=Depends(require_stream_user)) -> JSONResponse:
+async def pipeline_status(current_user: User = Depends(require_stream_view_user)) -> JSONResponse:
     try:
-        with _manager_lock:
-            # Use jsonable_encoder to ensure numpy / datetime / other types are converted
-            cameras = {camera_id: jsonable_encoder(runtime.stats) for camera_id, runtime in _camera_states.items()}
+        db = SessionLocal()
+        try:
+            with _manager_lock:
+                cameras = {
+                    camera_id: jsonable_encoder(runtime.stats)
+                    for camera_id, runtime in _camera_states.items()
+                    if _admin_can_access_session(db, current_user, runtime.session_id)
+                }
+        finally:
+            db.close()
         return JSONResponse({"cameras": cameras})
     except Exception:
         logger.exception("Failed to build pipeline status payload")
@@ -896,10 +983,20 @@ async def pipeline_status(_=Depends(require_stream_user)) -> JSONResponse:
 
 
 @router.get("/feed/{device_id}")
-async def video_feed(device_id: str, _=Depends(require_stream_user)) -> StreamingResponse:
+async def video_feed(device_id: str, current_user: User = Depends(require_feed_view_user)) -> StreamingResponse:
     runtime = _camera_states.get(device_id)
     if runtime is None:
         raise HTTPException(status_code=404, detail="Camera feed not available")
+    db = SessionLocal()
+    try:
+        if current_user.role == "invigilator":
+            allowed = _invigilator_can_access_device(db, current_user, device_id)
+        else:
+            allowed = _admin_can_access_session(db, current_user, runtime.session_id)
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Not authorized to view this feed")
+    finally:
+        db.close()
 
     def generate() -> Any:
         while not runtime.stop_event.is_set():
@@ -914,14 +1011,35 @@ async def video_feed(device_id: str, _=Depends(require_stream_user)) -> Streamin
 
 
 @router.get("/alerts")
-async def list_alerts(_=Depends(require_stream_user)) -> JSONResponse:
+async def list_alerts(current_user: User = Depends(require_stream_view_user)) -> JSONResponse:
+    db = SessionLocal()
+    try:
+        scope = accessible_institution_ids(db, current_user.institution_id)
+        scope_strs = {str(s) for s in scope}
+        assigned = {str(item) for item in _assigned_exam_ids(db, current_user)}
+        # Build accessible exam ids: for super_admin scoped to institution subtree,
+        # for admin narrowed to assigned exams within that subtree.
+        if current_user.role == "super_admin":
+            accessible_sessions = {
+                str(row.id)
+                for row in db.query(ExamSession.id).filter(
+                    ExamSession.institution_id.in_(scope)
+                ).all()
+            }
+        else:
+            accessible_sessions = assigned
+    finally:
+        db.close()
     with _alerts_lock:
-        alerts = list(_alerts)
+        alerts = [
+            alert for alert in _alerts
+            if alert.get("exam_session_id") in accessible_sessions
+        ]
     return JSONResponse({"alerts": alerts})
 
 
 @router.get("/alerts/snapshot/{path:path}")
-async def get_alert_snapshot(path: str, _=Depends(require_stream_user)) -> FileResponse:
+async def get_alert_snapshot(path: str, _=Depends(require_stream_view_user)) -> FileResponse:
     safe_rel = Path(path)
     filepath = (ALERTS_DIR / safe_rel).resolve()
     if _ROOT_ALERTS_DIR not in filepath.parents or not filepath.exists():
@@ -930,7 +1048,7 @@ async def get_alert_snapshot(path: str, _=Depends(require_stream_user)) -> FileR
 
 
 @router.get("/alerts/video/{path:path}")
-async def get_alert_video(path: str, _=Depends(require_stream_user)) -> FileResponse:
+async def get_alert_video(path: str, _=Depends(require_stream_view_user)) -> FileResponse:
     safe_rel = Path(path)
     filepath = (ALERTS_DIR / safe_rel).resolve()
     if _ROOT_ALERTS_DIR not in filepath.parents or not filepath.exists():
@@ -941,7 +1059,7 @@ async def get_alert_video(path: str, _=Depends(require_stream_user)) -> FileResp
 
 
 @router.get("/alerts/report/{alert_id}.pdf")
-async def get_alert_report_pdf(alert_id: str, _=Depends(require_stream_user)) -> Response:
+async def get_alert_report_pdf(alert_id: str, _=Depends(require_stream_view_user)) -> Response:
     with _alerts_lock:
         alert = next((a for a in _alerts if a.get("id") == alert_id), None)
     if not alert:
@@ -1016,7 +1134,7 @@ def _get_pipeline_or_404(device_id: str):
 
 # [V] video quality
 @router.post("/cameras/{device_id}/quality")
-async def toggle_camera_quality(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def toggle_camera_quality(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[V] Cycle video quality LOW 50 -> MED 75 -> HIGH 90."""
     _, pipeline = _get_pipeline_or_404(device_id)
     pipeline.toggle_video_quality()
@@ -1027,7 +1145,7 @@ async def toggle_camera_quality(device_id: str, _=Depends(require_stream_user)) 
 
 # [G] processing resolution
 @router.post("/cameras/{device_id}/resolution")
-async def toggle_camera_resolution(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def toggle_camera_resolution(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[G] Cycle processing resolution NATIVE -> 1080p -> 720p."""
     _, pipeline = _get_pipeline_or_404(device_id)
     label = pipeline.toggle_processing_resolution()
@@ -1036,7 +1154,7 @@ async def toggle_camera_resolution(device_id: str, _=Depends(require_stream_user
 
 # [R] archive mode
 @router.post("/cameras/{device_id}/archive")
-async def toggle_camera_archive(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def toggle_camera_archive(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[R] Toggle archive overlay between raw and annotated."""
     _, pipeline = _get_pipeline_or_404(device_id)
     mode = pipeline.toggle_archive_mode()
@@ -1045,7 +1163,7 @@ async def toggle_camera_archive(device_id: str, _=Depends(require_stream_user)) 
 
 # [S] select all students
 @router.post("/cameras/{device_id}/select-all")
-async def select_all_students(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def select_all_students(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[S] Select (start monitoring) all currently tracked students."""
     _, pipeline = _get_pipeline_or_404(device_id)
     tracker = getattr(pipeline, "_tracker", None)
@@ -1056,7 +1174,7 @@ async def select_all_students(device_id: str, _=Depends(require_stream_user)) ->
 
 # [C] clear selection
 @router.post("/cameras/{device_id}/clear-selection")
-async def clear_student_selection(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def clear_student_selection(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[C] Stop monitoring all students."""
     _, pipeline = _get_pipeline_or_404(device_id)
     pipeline.clear_selection()
@@ -1065,7 +1183,7 @@ async def clear_student_selection(device_id: str, _=Depends(require_stream_user)
 
 # [M] deselect one student
 @router.post("/cameras/{device_id}/deselect/{track_id}")
-async def deselect_student(device_id: str, track_id: int, _=Depends(require_stream_user)) -> JSONResponse:
+async def deselect_student(device_id: str, track_id: int, _=Depends(require_stream_operator)) -> JSONResponse:
     """[M] Remove a specific student from monitoring."""
     _, pipeline = _get_pipeline_or_404(device_id)
     pipeline.remove_selection(track_id)
@@ -1086,50 +1204,50 @@ def _vis_toggle(device_id: str, toggle_method: str, state_attr: str) -> JSONResp
 
 
 @router.post("/cameras/{device_id}/toggle/neighbors")
-async def toggle_neighbors(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def toggle_neighbors(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[T] Toggle neighbor graph lines on/off."""
     return _vis_toggle(device_id, "toggle_neighbors", "show_neighbors")
 
 
 @router.post("/cameras/{device_id}/toggle/papers")
-async def toggle_papers(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def toggle_papers(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[D] Toggle paper bounding-box display on/off."""
     return _vis_toggle(device_id, "toggle_paper", "show_paper")
 
 
 @router.post("/cameras/{device_id}/toggle/phones")
-async def toggle_phones(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def toggle_phones(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[F] Toggle phone bounding-box display on/off."""
     return _vis_toggle(device_id, "toggle_phone", "show_phone")
 
 
 @router.post("/cameras/{device_id}/toggle/gaze-lines")
-async def toggle_gaze_lines(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def toggle_gaze_lines(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[L] Toggle gaze-to-paper link lines on/off."""
     return _vis_toggle(device_id, "toggle_gaze_lines", "show_gaze_lines")
 
 
 @router.post("/cameras/{device_id}/toggle/timestamp")
-async def toggle_timestamp(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def toggle_timestamp(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[W] Toggle live timestamp overlay on/off."""
     return _vis_toggle(device_id, "toggle_timestamp", "show_timestamp")
 
 
 @router.post("/cameras/{device_id}/toggle/panel")
-async def toggle_panel(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def toggle_panel(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[P] Toggle control panel overlay on/off."""
     return _vis_toggle(device_id, "toggle_control_panel", "show_control_panel")
 
 
 @router.post("/cameras/{device_id}/toggle/facemesh")
-async def toggle_facemesh(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def toggle_facemesh(device_id: str, _=Depends(require_stream_operator)) -> JSONResponse:
     """[K] Toggle face mesh overlay points on/off."""
     return _vis_toggle(device_id, "toggle_face_mesh", "show_face_mesh")
 
 
 # GET controls — read current state of all toggles
 @router.get("/cameras/{device_id}/controls")
-async def get_camera_controls(device_id: str, _=Depends(require_stream_user)) -> JSONResponse:
+async def get_camera_controls(device_id: str, _=Depends(require_stream_view_user)) -> JSONResponse:
     """Return current quality, resolution, archive mode, selection count, and visualizer state."""
     runtime = _camera_states.get(device_id)
     if runtime is None:

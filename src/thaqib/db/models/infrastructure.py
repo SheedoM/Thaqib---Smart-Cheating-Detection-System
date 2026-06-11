@@ -27,7 +27,20 @@ class Institution(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     logo_url: Mapped[Optional[str]] = mapped_column(String(500))
     address: Mapped[Optional[str]] = mapped_column(String(500))
 
+    # Multi-tenant hierarchy (depth ≤ 2: university → college)
+    # type: 'university' | 'college' | 'school' | 'standalone'
+    type: Mapped[str] = mapped_column(String(20), nullable=False, default="standalone")
+    parent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("institutions.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+
     # Relationships
+    parent: Mapped[Optional["Institution"]] = relationship(
+        "Institution", back_populates="children", remote_side="Institution.id"
+    )
+    children: Mapped[List["Institution"]] = relationship(
+        "Institution", back_populates="parent"
+    )
     halls: Mapped[List["Hall"]] = relationship(
         "Hall", back_populates="institution", cascade="all, delete-orphan"
     )

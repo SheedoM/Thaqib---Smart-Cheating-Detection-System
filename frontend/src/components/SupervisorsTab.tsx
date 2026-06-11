@@ -20,7 +20,7 @@ export default function SupervisorsTab() {
       const res = await authFetch('/api/users/');
       if (res.ok) {
         const data = await res.json();
-        setSupervisors((data || []).filter((u: any) => u.role !== 'admin'));
+        setSupervisors((data || []).filter((u: any) => u.role !== 'super_admin'));
       }
     } catch { /**/ } finally { setLoading(false); }
   };
@@ -181,7 +181,7 @@ function SupervisorModal({ supervisor, onClose, onSuccess }: { supervisor: Super
         imageUrl = uploaded.url;
       }
 
-      const payload: any = { full_name: form.full_name, username: form.username, email: form.email || `${form.username}@thaqib.local`, role: form.role, institution_id: institutionId };
+      const payload: any = { full_name: form.full_name, username: form.username, email: form.email || `${form.username}@thaqib.example.com`, role: form.role, institution_id: institutionId };
       if (form.password) payload.password = form.password;
       if (imageUrl) payload.image = imageUrl;
 
@@ -238,7 +238,7 @@ function SupervisorModal({ supervisor, onClose, onSuccess }: { supervisor: Super
             <select value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))}
               className="bg-gray-50 border border-gray-200 rounded-2xl py-3 px-4 outline-none focus:ring-2 focus:ring-purple-200 focus:border-[#44006E] text-sm font-bold transition-all appearance-none">
               <option value="invigilator">مراقب</option>
-              <option value="referee">حكم</option>
+              <option value="admin">إداري الامتحان</option>
             </select>
           </div>
 

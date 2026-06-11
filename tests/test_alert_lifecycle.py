@@ -1,11 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
 from src.thaqib.db.models.events import Alert, DetectionEvent
-from src.thaqib.db.models.exams import Assignment, ExamSession
+from src.thaqib.db.models.exams import Assignment, ExamAdminAssignment, ExamSession
 from src.thaqib.db.models.infrastructure import Device, Hall
 
 
-def _seed_alert(db_session, test_institution, invigilator_user):
+def _seed_alert(db_session, test_institution, invigilator_user, admin_user):
     hall = Hall(
         institution_id=test_institution.id,
         name="Hall A",
@@ -34,6 +34,12 @@ def _seed_alert(db_session, test_institution, invigilator_user):
         invigilator=invigilator_user,
         role="primary",
     )
+    admin_assignment = ExamAdminAssignment(
+        exam_session=session,
+        admin=admin_user,
+        assignment_role="lead",
+        assigned_by=admin_user.id,
+    )
     event = DetectionEvent(
         exam_session=session,
         device=device,
@@ -51,13 +57,13 @@ def _seed_alert(db_session, test_institution, invigilator_user):
         alert_type="tier_2",
         status="pending",
     )
-    db_session.add_all([hall, device, session, assignment, event, alert])
+    db_session.add_all([hall, device, session, assignment, admin_assignment, event, alert])
     db_session.commit()
     return alert
 
 
 def test_confirm_alert_records_reviewer_and_report_status(client, db_session, test_institution, invigilator_user, admin_user, admin_token_headers):
-    alert = _seed_alert(db_session, test_institution, invigilator_user)
+    alert = _seed_alert(db_session, test_institution, invigilator_user, admin_user)
 
     response = client.post(f"/api/alerts/{alert.id}/confirm", headers=admin_token_headers)
 
@@ -75,8 +81,8 @@ def test_confirm_alert_records_reviewer_and_report_status(client, db_session, te
     assert report["timeline"][0]["snapshot_file"] == "20260528/hall-a/snapshot.jpg"
 
 
-def test_cancel_alert_keeps_evidence_in_report(client, db_session, test_institution, invigilator_user, admin_token_headers):
-    alert = _seed_alert(db_session, test_institution, invigilator_user)
+def test_cancel_alert_keeps_evidence_in_report(client, db_session, test_institution, invigilator_user, admin_user, admin_token_headers):
+    alert = _seed_alert(db_session, test_institution, invigilator_user, admin_user)
 
     response = client.post(
         f"/api/alerts/{alert.id}/cancel",
