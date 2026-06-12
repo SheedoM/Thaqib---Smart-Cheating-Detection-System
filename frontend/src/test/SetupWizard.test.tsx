@@ -12,7 +12,7 @@ describe('SetupWizard Component', () => {
 
   it('renders installation form', () => {
     render(<SetupWizard onSuccess={() => {}} />);
-    expect(screen.getByPlaceholderText(/اسم الكلية/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/اسم المنشأة/i)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/^مسؤول النظام$/i)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/كلمة مرور مسؤول النظام/i)).toBeInTheDocument();
     expect(screen.getByText(/الشعار/i)).toBeInTheDocument();
@@ -30,7 +30,7 @@ describe('SetupWizard Component', () => {
 
     render(<SetupWizard onSuccess={onSuccessMock} />);
     
-    fireEvent.change(screen.getByPlaceholderText(/اسم الكلية/i), {
+    fireEvent.change(screen.getByPlaceholderText(/اسم المنشأة/i), {
       target: { value: 'Test University' },
     });
     fireEvent.change(screen.getByPlaceholderText(/^مسؤول النظام$/i), {

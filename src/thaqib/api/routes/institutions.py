@@ -15,6 +15,7 @@ router = APIRouter()
 
 # Super admin only restriction
 require_super_admin = RequireRole(["super_admin"])
+require_admin_or_super_admin = RequireRole(["admin", "super_admin"])
 
 
 class CollegeCreate(BaseModel):
@@ -59,7 +60,7 @@ def read_institutions(
     limit: int = 100,
     db: Session = Depends(get_db),
     scope = Depends(get_scope),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
     Retrieve institutions accessible to the caller (self + children).
@@ -78,7 +79,7 @@ def read_institution(
     institution_id: uuid.UUID,
     db: Session = Depends(get_db),
     scope = Depends(get_scope),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
     Get institution by ID. Returns 404 for out-of-scope institutions.
@@ -135,10 +136,10 @@ def update_institution(
     institution_in: InstitutionUpdate,
     db: Session = Depends(get_db),
     scope = Depends(get_scope),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Update an institution. Super admin only, within accessible institutions.
+    Update an institution within accessible institutions.
     """
     inst = db.query(Institution).filter(
         Institution.id == institution_id,

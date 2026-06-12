@@ -13,8 +13,6 @@ from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
-# Super admin only restriction
-require_super_admin = RequireRole(["super_admin"])
 require_admin_or_super_admin = RequireRole(["admin", "super_admin"])
 
 @router.post("/", response_model=HallResponse, status_code=status.HTTP_201_CREATED)
@@ -23,11 +21,11 @@ def create_hall(
     request: Request,
     hall: HallCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_super_admin),
+    current_user: User = Depends(require_admin_or_super_admin),
     scope = Depends(get_scope),
 ) -> Any:
     """
-    Create a new hall. Super admin only, within accessible institutions.
+    Create a new hall within accessible institutions.
     """
     if hall.institution_id not in scope:
         raise HTTPException(status_code=404, detail="Institution not found")
@@ -113,10 +111,10 @@ def update_hall(
     hall_in: HallUpdate,
     db: Session = Depends(get_db),
     scope = Depends(get_scope),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Update a hall. Super admin only, within accessible institutions.
+    Update a hall within accessible institutions.
     """
     hall = db.query(Hall).filter(
         Hall.id == hall_id,
@@ -157,10 +155,10 @@ def delete_hall(
     hall_id: uuid.UUID,
     db: Session = Depends(get_db),
     scope = Depends(get_scope),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Delete a hall. Super admin only, within accessible institutions.
+    Delete a hall within accessible institutions.
     """
     hall = db.query(Hall).filter(
         Hall.id == hall_id,

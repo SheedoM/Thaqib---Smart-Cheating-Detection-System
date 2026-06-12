@@ -83,12 +83,7 @@ interface CurrentUser {
 
 type TabType = 'cases' | 'cameras';
 
-const ADMIN_NAV_ITEMS = [
-  { label: 'الرئيسية', key: 'home', active: true },
-  { label: 'الإمتحانات', key: 'exams', active: false },
-];
-
-const SUPER_ADMIN_NAV_ITEMS = [
+const DASHBOARD_NAV_ITEMS = [
   { label: 'الرئيسية', key: 'home', active: true },
   { label: 'الإمتحانات', key: 'exams', active: false },
   { label: 'القاعات', key: 'halls', active: false },
@@ -386,7 +381,7 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
   const selectedHallName = halls.find((hall) => hall.id === selectedHallId)?.name;
   const visibleAlerts = selectedHallName ? alerts.filter((alert) => alert.hall_name === selectedHallName) : alerts;
   const isSuperAdmin = currentUser?.role === 'super_admin';
-  const navItems = isSuperAdmin ? SUPER_ADMIN_NAV_ITEMS : ADMIN_NAV_ITEMS;
+  const navItems = DASHBOARD_NAV_ITEMS;
 
   useEffect(() => {
     if (currentUser && !navItems.some((item) => item.key === activeNav)) {
@@ -491,14 +486,12 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
                 </div>
               )}
               {/* Settings */}
-              {isSuperAdmin && (
-                <button className="dashboard-icon-btn" title="الإعدادات" onClick={() => setActiveNav('settings')}>
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="12" cy="12" r="3"/>
-                    <path d="M12 1v2m0 18v2m-9-11h2m18 0h2m-2.636-7.364l-1.414 1.414M6.05 17.95l-1.414 1.414m0-14.728l1.414 1.414M17.95 17.95l1.414 1.414"/>
-                  </svg>
-                </button>
-              )}
+              <button className="dashboard-icon-btn" title="الإعدادات" onClick={() => setActiveNav('settings')}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M12 1v2m0 18v2m-9-11h2m18 0h2m-2.636-7.364l-1.414 1.414M6.05 17.95l-1.414 1.414m0-14.728l1.414 1.414M17.95 17.95l1.414 1.414"/>
+                </svg>
+              </button>
               {onLogout && (
                 <button className="dashboard-icon-btn" title="تسجيل الخروج" onClick={onLogout}>
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -606,7 +599,7 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
         ) : activeNav === 'exams' ? (
           <ExamsTab />
         ) : activeNav === 'supervisors' ? (
-          <SupervisorsTab />
+          <SupervisorsTab canManageAdmins={isSuperAdmin} />
         ) : activeNav === 'settings' ? (
           <SettingsTab />
         ) : (

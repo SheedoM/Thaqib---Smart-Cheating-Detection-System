@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DashboardPage from '../pages/DashboardPage';
 import type { VoiceParticipant } from '../hooks/useHallVoice';
@@ -68,6 +68,17 @@ describe('DashboardPage per-hall voice strip', () => {
 
     expect(screen.getByRole('button', { name: 'تحدث مع القاعة' })).toBeInTheDocument();
     expect(screen.getByText('المراقب متصل')).toBeInTheDocument();
+  });
+
+  it('shows management tabs for admin users', async () => {
+    render(<DashboardPage />);
+
+    const nav = screen.getByRole('navigation');
+
+    await waitFor(() => expect(within(nav).getByRole('button', { name: 'القاعات' })).toBeInTheDocument());
+
+    expect(within(nav).getByRole('button', { name: 'المشرفين' })).toBeInTheDocument();
+    expect(within(nav).getByRole('button', { name: 'الإعدادات' })).toBeInTheDocument();
   });
 
   it('shows a reconnect button that retries the voice connection on error', async () => {

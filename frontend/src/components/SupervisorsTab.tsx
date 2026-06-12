@@ -7,7 +7,7 @@ interface Supervisor {
   email: string; role: string; image?: string; status?: string;
 }
 
-export default function SupervisorsTab() {
+export default function SupervisorsTab({ canManageAdmins = false }: { canManageAdmins?: boolean }) {
   const [supervisors, setSupervisors] = useState<Supervisor[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -83,7 +83,7 @@ export default function SupervisorsTab() {
         </div>
       )}
 
-      {modal && <SupervisorModal supervisor={editing} onClose={() => setModal(false)} onSuccess={() => { setModal(false); load(); }} />}
+      {modal && <SupervisorModal supervisor={editing} canManageAdmins={canManageAdmins} onClose={() => setModal(false)} onSuccess={() => { setModal(false); load(); }} />}
       {deleting && <DeleteModal name={deleting.full_name} onConfirm={() => doDelete(deleting.id)} onCancel={() => setDeleting(null)} />}
     </div>
   );
@@ -140,7 +140,17 @@ function SupervisorCard({ s, onEdit, onDelete }: { s: Supervisor, onEdit: () => 
 }
 
 // ─── Add/Edit Modal ───────────────────────────────────────────────────────────
-function SupervisorModal({ supervisor, onClose, onSuccess }: { supervisor: Supervisor | null, onClose: () => void, onSuccess: () => void }) {
+function SupervisorModal({
+  supervisor,
+  canManageAdmins,
+  onClose,
+  onSuccess,
+}: {
+  supervisor: Supervisor | null,
+  canManageAdmins: boolean,
+  onClose: () => void,
+  onSuccess: () => void,
+}) {
   const [form, setForm] = useState({ full_name: supervisor?.full_name || '', username: supervisor?.username || '', email: supervisor?.email || '', password: '', role: supervisor?.role || 'invigilator' });
   const [image, setImage] = useState<string | null>(supervisor?.image || null);
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -181,7 +191,7 @@ function SupervisorModal({ supervisor, onClose, onSuccess }: { supervisor: Super
         imageUrl = uploaded.url;
       }
 
-      const payload: any = { full_name: form.full_name, username: form.username, email: form.email || `${form.username}@thaqib.example.com`, role: form.role, institution_id: institutionId };
+      const payload: any = { full_name: form.full_name, username: form.username, email: form.email || `${form.username}@thaqib.example.com`, role: canManageAdmins ? form.role : 'invigilator', institution_id: institutionId };
       if (form.password) payload.password = form.password;
       if (imageUrl) payload.image = imageUrl;
 
@@ -238,7 +248,7 @@ function SupervisorModal({ supervisor, onClose, onSuccess }: { supervisor: Super
             <select value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))}
               className="bg-gray-50 border border-gray-200 rounded-2xl py-3 px-4 outline-none focus:ring-2 focus:ring-purple-200 focus:border-[#44006E] text-sm font-bold transition-all appearance-none">
               <option value="invigilator">مراقب</option>
-              <option value="admin">إداري الامتحان</option>
+              {canManageAdmins && <option value="admin">إداري الامتحان</option>}
             </select>
           </div>
 

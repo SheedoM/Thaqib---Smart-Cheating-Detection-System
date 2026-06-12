@@ -6,14 +6,36 @@ from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.infrastructure import Device, Hall
+from src.thaqib.db.models.users import User
 from src.thaqib.schemas.infrastructure import DeviceCreate, DeviceResponse, DeviceUpdate
-from src.thaqib.api.dependencies import RequireRole
+from src.thaqib.api.dependencies import RequireRole, get_scope
 from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
-# Super admin only restriction
-require_super_admin = RequireRole(["super_admin"])
+require_admin_or_super_admin = RequireRole(["admin", "super_admin"])
+
+
+def _get_scoped_hall(db: Session, hall_id: uuid.UUID, scope: set[uuid.UUID]) -> Hall | None:
+    return db.query(Hall).filter(
+        Hall.id == hall_id,
+        Hall.deleted_at.is_(None),
+        Hall.institution_id.in_(scope),
+    ).first()
+
+
+def _get_scoped_device(db: Session, device_id: uuid.UUID, scope: set[uuid.UUID]) -> Device | None:
+    return (
+        db.query(Device)
+        .join(Hall, Device.hall_id == Hall.id)
+        .filter(
+            Device.id == device_id,
+            Device.deleted_at.is_(None),
+            Hall.deleted_at.is_(None),
+            Hall.institution_id.in_(scope),
+        )
+        .first()
+    )
 
 @router.post("/", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("10/minute")
@@ -21,12 +43,13 @@ def create_device(
     request: Request,
     device: DeviceCreate, 
     db: Session = Depends(get_db),
-    _ = Depends(require_super_admin)
+    scope = Depends(get_scope),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Create a new device. Admin only.
+    Create a new device within accessible halls.
     """
-    hall = db.query(Hall).filter(Hall.id == device.hall_id, Hall.deleted_at.is_(None)).first()
+    hall = _get_scoped_hall(db, device.hall_id, scope)
     if not hall:
         raise HTTPException(status_code=404, detail="Hall not found")
         
@@ -65,13 +88,24 @@ def read_devices(
     skip: int = 0, 
     limit: int = 100, 
     db: Session = Depends(get_db),
-    _ = Depends(require_super_admin)
+    scope = Depends(get_scope),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Retrieve devices. Can be filtered by hall. Admin only.
+    Retrieve devices in accessible halls. Can be filtered by hall.
     """
-    query = db.query(Device).filter(Device.deleted_at.is_(None))
+    query = (
+        db.query(Device)
+        .join(Hall, Device.hall_id == Hall.id)
+        .filter(
+            Device.deleted_at.is_(None),
+            Hall.deleted_at.is_(None),
+            Hall.institution_id.in_(scope),
+        )
+    )
     if hall_id:
+        if not _get_scoped_hall(db, hall_id, scope):
+            return []
         query = query.filter(Device.hall_id == hall_id)
         
     devices = query.offset(skip).limit(limit).all()
@@ -81,12 +115,13 @@ def read_devices(
 def read_device(
     device_id: uuid.UUID, 
     db: Session = Depends(get_db),
-    _ = Depends(require_super_admin)
+    scope = Depends(get_scope),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Get device by ID. Admin only.
+    Get device by ID within accessible halls.
     """
-    device = db.query(Device).filter(Device.id == device_id, Device.deleted_at.is_(None)).first()
+    device = _get_scoped_device(db, device_id, scope)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
         
@@ -99,12 +134,13 @@ def update_device(
     device_id: uuid.UUID, 
     device_in: DeviceUpdate,
     db: Session = Depends(get_db),
-    _ = Depends(require_super_admin)
+    scope = Depends(get_scope),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Update a device. Admin only.
+    Update a device within accessible halls.
     """
-    device = db.query(Device).filter(Device.id == device_id, Device.deleted_at.is_(None)).first()
+    device = _get_scoped_device(db, device_id, scope)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
         
@@ -129,12 +165,13 @@ def delete_device(
     request: Request,
     device_id: uuid.UUID, 
     db: Session = Depends(get_db),
-    _ = Depends(require_super_admin)
+    scope = Depends(get_scope),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Delete a device. Admin only.
+    Delete a device within accessible halls.
     """
-    device = db.query(Device).filter(Device.id == device_id, Device.deleted_at.is_(None)).first()
+    device = _get_scoped_device(db, device_id, scope)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 

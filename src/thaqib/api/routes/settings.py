@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from src.thaqib.api.dependencies import RequireRole
 
 router = APIRouter()
-require_super_admin = RequireRole(["super_admin"])
+require_admin_or_super_admin = RequireRole(["admin", "super_admin"])
 
 ENV_FILE = Path(".env")
 
@@ -186,12 +186,12 @@ def _build_current_settings() -> SystemSettings:
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=SystemSettings)
-def get_system_settings(_ = Depends(require_super_admin)) -> Any:
+def get_system_settings(_ = Depends(require_admin_or_super_admin)) -> Any:
     return _build_current_settings()
 
 
 @router.put("/", response_model=SystemSettings)
-def update_system_settings(payload: SystemSettings, _ = Depends(require_super_admin)) -> Any:
+def update_system_settings(payload: SystemSettings, _ = Depends(require_admin_or_super_admin)) -> Any:
     """Write to .env and clear lru_cache. Next get_settings() call re-reads .env."""
     data = payload.model_dump()
     env_updates: dict[str, str] = {}

@@ -15,8 +15,6 @@ from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
-# Super admin only restriction
-require_super_admin = RequireRole(["super_admin"])
 require_admin_or_super_admin = RequireRole(["admin", "super_admin"])
 
 class PasswordChangePayload(BaseModel):
@@ -54,7 +52,7 @@ ALLOWED_IMAGE_TYPES = {
 @router.post("/upload-image")
 async def upload_user_image(
     image: UploadFile = File(...),
-    _ = Depends(require_super_admin),
+    _ = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
     Upload an admin/invigilator profile image and return a public URL.
@@ -79,13 +77,16 @@ def create_user(
     user: UserCreate,
     db: Session = Depends(get_db),
     scope = Depends(get_scope),
-    _: User = Depends(require_super_admin),
+    current_user: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Create a new user. Super admin only, within accessible institutions.
+    Create a new user within accessible institutions.
+    College admins may create invigilators; only super admins may create admins.
     """
     if user.institution_id not in scope:
         raise HTTPException(status_code=404, detail="Institution not found")
+    if current_user.role == "admin" and user.role != "invigilator":
+        raise HTTPException(status_code=403, detail="Only super admins can create admin users")
     inst = db.query(Institution).filter(Institution.id == user.institution_id).first()
     if not inst:
         raise HTTPException(status_code=404, detail="Institution not found")
@@ -166,16 +167,26 @@ def update_user(
     user_id: uuid.UUID, 
     user_in: UserUpdate,
     db: Session = Depends(get_db),
-    _ = Depends(require_super_admin)
+    scope = Depends(get_scope),
+    current_user: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Update a user. Admin only.
+    Update a user within accessible institutions.
+    College admins may manage invigilators only; admin accounts are super-admin governed.
     """
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).filter(
+        User.id == user_id,
+        User.institution_id.in_(scope),
+    ).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
         
     update_data = user_in.model_dump(exclude_unset=True)
+    if current_user.role == "admin":
+        requested_role = update_data.get("role")
+        if user.role != "invigilator" or (requested_role is not None and requested_role != "invigilator"):
+            raise HTTPException(status_code=403, detail="Only super admins can manage admin users")
+
     if "username" in update_data:
         existing = db.query(User).filter(User.username == update_data["username"], User.id != user_id).first()
         if existing:
@@ -201,14 +212,21 @@ def delete_user(
     request: Request,
     user_id: uuid.UUID, 
     db: Session = Depends(get_db),
-    _ = Depends(require_super_admin)
+    scope = Depends(get_scope),
+    current_user: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Delete a user. Admin only.
+    Delete a user within accessible institutions.
+    College admins may delete invigilators only.
     """
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).filter(
+        User.id == user_id,
+        User.institution_id.in_(scope),
+    ).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if current_user.role == "admin" and user.role != "invigilator":
+        raise HTTPException(status_code=403, detail="Only super admins can manage admin users")
         
     db.delete(user)
     db.commit()

@@ -109,15 +109,12 @@ class TestCrossTenantCreation:
         college_a_admin_headers,
         college_b_id,
     ):
-        # admin role cannot create halls (super_admin only) → 403
-        # super_admin of college_a would get 404 (college_b out of scope)
-        # either way the operation is blocked
         resp = client.post(
             "/api/halls",
             json={"name": "Intruder Hall", "institution_id": str(college_b_id), "capacity": 30},
             headers=college_a_admin_headers,
         )
-        assert resp.status_code in (403, 404)
+        assert resp.status_code == 404
 
     def test_exam_with_cross_institution_halls_rejected(
         self,
