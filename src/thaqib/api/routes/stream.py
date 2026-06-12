@@ -8,6 +8,7 @@ local video file, so the same architecture supports both demo and production.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -328,21 +329,6 @@ def _invigilator_can_access_device(db: Session, user: User, device_id: str) -> b
     ).first() is not None
 
 
-def _admin_can_access_session(db: Session, user: User, session_id: str | None) -> bool:
-    if user.role == "super_admin":
-        return True
-    if not session_id:
-        return False
-    try:
-        parsed_session_id = uuid.UUID(session_id)
-    except ValueError:
-        return False
-    return db.query(ExamAdminAssignment).filter(
-        ExamAdminAssignment.exam_session_id == parsed_session_id,
-        ExamAdminAssignment.admin_id == user.id,
-    ).first() is not None
-
-
 def _load_visible_halls_with_devices(db: Session, user: User) -> list[Hall]:
     if user.role == "super_admin":
         # Scope to institution subtree (university sees all colleges' halls)
@@ -365,6 +351,13 @@ def _load_visible_halls_with_devices(db: Session, user: User) -> list[Hall]:
         .order_by(Hall.name.asc())
         .all()
     )
+
+
+def _visible_hall_ids(db: Session, user: User) -> set[str]:
+    """Hall IDs the user may see in the monitoring layout. Used to keep /status and
+    the live feed consistent with /monitoring: if a camera shows up in the layout,
+    its stats and stream are viewable too (regardless of which session is running)."""
+    return {str(hall.id) for hall in _load_visible_halls_with_devices(db, user)}
 
 
 def _load_active_camera_rows(db: Session) -> list[tuple[Hall, Device]]:
@@ -842,7 +835,11 @@ def stop_hall_monitoring(hall_id: uuid.UUID, session_id: uuid.UUID, db: Session)
     ).first()
     if assignment:
         assignment.monitoring_ended_at = _now_utc()
-        
+        # Flush so the aggregate queries below see this hall as ended — the session
+        # is configured autoflush=False, otherwise the just-stopped assignment would
+        # still count as active and the session would never reach "completed".
+        db.flush()
+
         # Check if all halls in this session have finished monitoring
         session = assignment.exam_session
         # Get all hall IDs for this session
@@ -968,11 +965,12 @@ async def pipeline_status(current_user: User = Depends(require_stream_view_user)
     try:
         db = SessionLocal()
         try:
+            visible_hall_ids = _visible_hall_ids(db, current_user)
             with _manager_lock:
                 cameras = {
                     camera_id: jsonable_encoder(runtime.stats)
                     for camera_id, runtime in _camera_states.items()
-                    if _admin_can_access_session(db, current_user, runtime.session_id)
+                    if runtime.hall_id in visible_hall_ids
                 }
         finally:
             db.close()
@@ -992,20 +990,31 @@ async def video_feed(device_id: str, current_user: User = Depends(require_feed_v
         if current_user.role == "invigilator":
             allowed = _invigilator_can_access_device(db, current_user, device_id)
         else:
-            allowed = _admin_can_access_session(db, current_user, runtime.session_id)
+            # Admins/super-admins may view any feed in a hall they can see in the
+            # monitoring layout, consistent with /status and /monitoring.
+            allowed = runtime.hall_id in _visible_hall_ids(db, current_user)
         if not allowed:
             raise HTTPException(status_code=403, detail="Not authorized to view this feed")
     finally:
         db.close()
 
-    def generate() -> Any:
+    async def generate() -> Any:
+        # Async generator (asyncio.sleep, not time.sleep) so each open MJPEG stream
+        # runs on the event loop instead of permanently occupying an anyio worker
+        # thread. With many feeds open, sync generators starved the thread pool and
+        # stalled other sync endpoints (status, start, stop). `latest_frame` is a
+        # fresh bytes object per pipeline frame, so identity tells us when it's new
+        # and we avoid re-sending duplicates.
+        last_sent: bytes | None = None
         while not runtime.stop_event.is_set():
             with runtime.frame_lock:
                 frame = runtime.latest_frame
-            if frame is not None:
+            if frame is not None and frame is not last_sent:
+                last_sent = frame
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+                await asyncio.sleep(0.04)  # ~25fps cap; yields control to the loop
             else:
-                time.sleep(0.1)
+                await asyncio.sleep(0.05)
 
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
 

@@ -27,7 +27,7 @@ from src.thaqib.db.database import SessionLocal, engine
 from src.thaqib.db.models import Base
 from src.thaqib.db.models.infrastructure import Device, Hall, Institution
 from src.thaqib.db.models.users import User
-from src.thaqib.db.models.exams import ExamSession, Assignment
+from src.thaqib.db.models.exams import ExamSession, Assignment, ExamAdminAssignment
 from src.thaqib.core.security import get_password_hash
 from datetime import datetime, timedelta, timezone
 
@@ -250,7 +250,12 @@ def upsert_user(
     return user
 
 
-def upsert_exam_session(db, exam_name: str) -> ExamSession:
+def upsert_exam_session(
+    db,
+    exam_name: str,
+    institution: Institution,
+    created_by: User,
+) -> ExamSession:
     session = db.query(ExamSession).filter(ExamSession.exam_name == exam_name).first()
     if session is None:
         now = datetime.now(timezone.utc)
@@ -261,10 +266,43 @@ def upsert_exam_session(db, exam_name: str) -> ExamSession:
             scheduled_end=now + timedelta(hours=2),
             status="scheduled",
             student_count=100,
+            # An exam must belong to an institution, otherwise scoped overview
+            # queries (which filter institution_id.in_(scope)) silently drop it.
+            institution_id=institution.id,
+            created_by=created_by.id,
         )
         db.add(session)
         db.commit()
         db.refresh(session)
+    else:
+        # Backfill on existing rows seeded before institution scoping existed.
+        if session.institution_id is None:
+            session.institution_id = institution.id
+        if session.created_by is None:
+            session.created_by = created_by.id
+        db.commit()
+
+    # The creating admin must be assigned to operate the exam (mirrors the API's
+    # create_exam_session, which always adds a lead ExamAdminAssignment).
+    if created_by.role == "admin":
+        existing = (
+            db.query(ExamAdminAssignment)
+            .filter(
+                ExamAdminAssignment.exam_session_id == session.id,
+                ExamAdminAssignment.admin_id == created_by.id,
+            )
+            .first()
+        )
+        if existing is None:
+            db.add(
+                ExamAdminAssignment(
+                    exam_session_id=session.id,
+                    admin_id=created_by.id,
+                    assignment_role="lead",
+                    assigned_by=created_by.id,
+                )
+            )
+            db.commit()
     return session
 
 
@@ -341,15 +379,15 @@ def sync_to_db(protocol: str = "http", host: str = "localhost", port: int = 8000
             full_name="Invigilator User",
             role="invigilator",
         )
-        upsert_user(
+        admin = upsert_user(
             db,
             institution,
             username="shady",
             full_name="Shady Admin",
             role="admin",
         )
-        
-        exam_session = upsert_exam_session(db, "Midterm Exam 2024")
+
+        exam_session = upsert_exam_session(db, "Midterm Exam 2024", institution, admin)
         
         # Link invigilator to Hall 101 for this session
         hall_101 = db.query(Hall).filter(Hall.name == "قاعة 101").first()

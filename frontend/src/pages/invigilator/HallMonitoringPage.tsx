@@ -158,10 +158,14 @@ export default function HallMonitoringPage() {
         method: 'POST'
       });
       if (response.ok) {
+        setError(null);
         await fetchStatus();
+      } else {
+        setError('فشل إنهاء جلسة المراقبة. حاول مرة أخرى.');
       }
     } catch (err) {
       console.error('Error stopping monitoring:', err);
+      setError('تعذر الاتصال بالخادم أثناء إنهاء المراقبة.');
     }
   };
 

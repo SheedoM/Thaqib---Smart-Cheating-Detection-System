@@ -822,12 +822,18 @@ function CamerasTab({
             <CameraFeedGrid<Alert>
               cameras={hall.cameras.map((camera): CameraFeedGridItem<Alert> => {
                 const stats = statsByCamera[camera.id];
+                const monitoringActive = hall.monitoring_status === 'active';
                 return {
                   id: camera.id,
                   name: camera.name,
                   feedPath: camera.feed_path,
                   sourceConfigured: camera.source_configured,
-                  isRunning: Boolean(stats?.is_running),
+                  // Show the live feed whenever the hall is being monitored and the
+                  // camera has a source — consistent with the invigilator view. The
+                  // pipeline's is_running only drives the stats overlay, so a slow or
+                  // scope-filtered /status poll no longer leaves the PC blank while
+                  // mobile shows video.
+                  isRunning: Boolean(stats?.is_running) || (monitoringActive && camera.source_configured),
                   stats,
                   alert: recentAlertByCameraId[camera.id] ?? null,
                 };
