@@ -169,7 +169,7 @@ MediaPipe FaceLandmarker in **VIDEO mode** (temporal smoothing enabled).
 - Creates one `FaceLandmarker` instance per worker thread (thread-local storage).
 - Extracts 2D/3D landmarks, face transformation matrix, and iris positions.
 - Returns a `FaceMeshResult` with `landmarks_2d`, `landmarks_3d`, `head_matrix`, `iris_left`, `iris_right`.
-- Runs via a multiprocessing `Pool` with shared memory for frame passing.
+- Runs via a `ThreadPoolExecutor` using thread-local instances to avoid GIL contention.
 
 ### 3.9 `gaze.py` — Gaze Direction Computation
 
@@ -241,7 +241,7 @@ Standalone utility module providing `draw_timestamp_overlay(frame, ts)`. Burns a
 | **Archive writer** | `ArchiveWriter` | Drains frame queue → disk | `_archive_queue` (Queue) |
 | **Alert writers** | `AlertWriter-N` | Saves alert clips (one thread per clip) | Independent frame list |
 | **Phone alert writer** | `PhoneAlertWriter` | Saves phone clips | Independent frame list |
-| **Face mesh pool** | `Pool(4)` | MediaPipe inference (multiprocessing) | Shared memory for frames |
+| **Face mesh pool** | `ThreadPool(4)` | MediaPipe inference (multithreading) | Thread-local instances |
 
 ### Key synchronization:
 - Detection results pass via `Queue` (thread-safe).
@@ -359,7 +359,7 @@ Phone detected in frame → START recording
 - YELLOW bounding box around the target paper (not the victim student)
 - Red banner: "CHEATING ALERT — Student X looking at neighbor's paper"
 
-**Buffer structure:** `(raw_frame, track_id | None)` tuples. Pre-event frames have `track_id=None` → written raw.
+**Buffer structure:** `AlertFrame` dataclasses. Pre-event frames have no bboxes → written raw.
 
 ### 7.2 Phone Alert Videos
 
@@ -369,7 +369,7 @@ Phone detected in frame → START recording
 - RED bounding box around each detected phone + label "PHONE"
 - Dark red banner: "PHONE ALERT — Mobile device detected"
 
-**Buffer structure:** `(raw_frame, phone_bboxes_list)` tuples. Pre-event frames have `[]` → written raw.
+**Buffer structure:** `AlertFrame` dataclasses. Pre-event frames have `[]` → written raw.
 
 ### 7.3 Concurrency Limits
 
@@ -552,8 +552,8 @@ AudioSource (Live/File) → Preprocessor → GlobalLocalDiscriminator
 ```
 
 1. **Audio Source (`source.py`)**: Yields synchronized audio buffers (`AudioChunk`, shape: `n_mics × n_samples`) at 16,000 Hz.
-2. **Preprocessor (`preprocessor.py`)**: Cleans incoming signals using High-pass filter (Butterworth 100Hz cutoff), Adaptive noise reduction (learned noise profile), and Adaptive gain control.
-3. **Global/Local Discriminator (`discriminator.py`)**: Classifies chunks as **SILENT**, **GLOBAL** (proctor voice, room noise heard across microphones), or **LOCAL** (suspicious localized whisper heard on a subset of microphones). 
+2. **Preprocessor (`preprocessor.py`)**: Cleans incoming signals using Transient suppression (for sudden spikes like pen clicks), High-pass filter (Butterworth 100Hz cutoff), Adaptive noise reduction (learned noise profile), and Adaptive gain control.
+3. **Global/Local Discriminator (`discriminator.py`)**: Classifies chunks as **SILENT**, **GLOBAL** (proctor voice, room noise heard across microphones), or **LOCAL** (suspicious localized whisper heard on a subset of microphones). Includes a **Two-Pass Denoising** logic that denoises and re-evaluates GLOBAL chunks to uncover localized whispers masked by loud room noise.
 4. **VAD Worker Thread (`pipeline.py`)**: Runs Silero Voice Activity Detection on LOCAL chunks to confirm human speech.
 5. **Whisper STT / VAD-Only Processing (`keyword_detector.py`)**: Transcribes speech (Whisper STT) and matches keywords, or fires immediate alerts on voice detection (VAD-Only).
 6. **Evidence Recording (`evidence.py`)**: Saves annotated evidence WAV clips with corresponding JSON metadata, secured with SHA-256 signatures. Applies strict clipping boundaries (exactly 1.0s pre-event buffer + live incident duration, with 0s post-event padding).
@@ -597,7 +597,7 @@ These variables are defined in `src/thaqib/config/settings.py` and configurable 
 | `AUDIO_MIC_NAMES` | `""` | Comma-separated or JSON list mapping microphone channels |
 | `AUDIO_SAMPLE_RATE` | `16000` | Sample rate (Hz) for VAD/Whisper |
 | `AUDIO_CHUNK_MS` | `500` | Processing chunk size in milliseconds |
-| `AUDIO_SILENCE_THRESHOLD` | `0.01` | RMS energy threshold for silence |
+| `AUDIO_SILENCE_THRESHOLD` | `0.002` | RMS energy threshold for silence |
 | `AUDIO_VAD_THRESHOLD` | `0.5` | VAD confidence speech threshold |
 | `AUDIO_VAD_ONLY` | `false` | If true, skip Whisper STT and alert on VAD directly |
 | `AUDIO_VAD_ALERT_COOLDOWN` | `3.0` | Alert cooldown in seconds for VAD-only mode |
@@ -613,5 +613,4 @@ These variables are defined in `src/thaqib/config/settings.py` and configurable 
 | `AUDIO_EPISODE_GRACE_SEC` | `5.0` | Silence grace period before closing episode |
 
 > [!NOTE]
-> The configuration variables `AUDIO_CLIP_SEC_BEFORE` and `AUDIO_CLIP_SEC_AFTER` are legacy settings and are overridden by the pipeline's strict forensic boundary rule: evidence clips contain exactly 1.0s pre-event buffer + live incident duration, with 0s post-event padding.
-
+> The pipeline actively respects `AUDIO_CLIP_SEC_BEFORE` (pulling from a history buffer) and `AUDIO_CLIP_SEC_AFTER` (gathering post-event chunks), allowing configurable pre- and post-incident padding for forensic evidence.

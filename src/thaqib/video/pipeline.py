@@ -200,6 +200,10 @@ class VideoPipeline:
         source: int | str | None = None,
         detection_interval: float | None = None,
         on_alert: Callable[[StudentState], None] | None = None,
+        camera_id: str = "cam0",
+        composer = None,
+        frame_buffer = None,
+        clock = None,
     ):
         """
         Initialize video pipeline.
@@ -225,8 +229,12 @@ class VideoPipeline:
 
         self.detection_interval = detection_interval or settings.detection_interval
 
+        self._camera_id = camera_id
+        self._composer = composer
+        self._frame_buffer = frame_buffer
+
         # Initialize components
-        self._camera = CameraStream(source=source)
+        self._camera = CameraStream(source=source, clock=clock)
         self._detector = HumanDetector()
         self._tools_detector = ToolsDetector()
         self._tracker = ObjectTracker()
@@ -323,7 +331,7 @@ class VideoPipeline:
         # A phone anywhere in frame triggers its own 2s+event+2s clip.
         self._phone_detected: bool = False
         self._phone_is_recording: bool = False
-        self._phone_recording_buffer: deque = deque(maxlen=300)
+        self._phone_recording_buffer: deque = deque(maxlen=1800)
         self._phone_frames_to_record: int = 0
         self._phone_current_bboxes: list = []  # phone bboxes in the current frame
 
@@ -782,6 +790,8 @@ class VideoPipeline:
         # Acquire buffer lock to protect against concurrent list snapshots from alert writers.
         with self._buffer_lock:
             self._global_frame_buffer.append(AlertFrame(frame_data.frame))
+            if self._frame_buffer is not None:
+                self._frame_buffer.append((frame_data.timestamp, frame_data.frame.copy()))
 
         # Check for new detection async result
         new_detection = False
@@ -1315,7 +1325,7 @@ class VideoPipeline:
                     # then reset recording state immediately.
                     frames_snapshot = list(state.recording_buffer)
                     state.is_alert_recording = False
-                    state.recording_buffer = deque(maxlen=300)
+                    state.recording_buffer = deque(maxlen=1800)
                     
                     # Determine cheat type BEFORE resetting state
                     cheat_type = "phone" if state.is_using_phone else "gaze"
@@ -1364,7 +1374,7 @@ class VideoPipeline:
                 pre = list(self._global_frame_buffer)[-self._post_buffer_frames:]  # last ~2s
             self._phone_recording_buffer = deque(
                 [AlertFrame(item.frame, phone_bboxes=[]) for item in pre],
-                maxlen=300,
+                maxlen=1800,
             )
             self._phone_frames_to_record = self._post_buffer_frames
             logger.info("Phone alert recording STARTED")
@@ -1385,7 +1395,7 @@ class VideoPipeline:
                 if self._phone_frames_to_record <= 0:
                     frames_snapshot = list(self._phone_recording_buffer)
                     self._phone_is_recording = False
-                    self._phone_recording_buffer = deque(maxlen=300)
+                    self._phone_recording_buffer = deque(maxlen=1800)
                     self._save_phone_alert_video_async(frames_snapshot, frame_data.timestamp)
 
         t5 = time.perf_counter()
@@ -1778,12 +1788,17 @@ class VideoPipeline:
                 return
 
             frames_written = 0
+            annotated_frames = []
+            subject_point = None
             try:
                 for item in frames:
                     if item.frame is None:
                         continue
                     if item.phone_bboxes:
                         out_frame = self._render_phone_alert_frame(item.frame, item.phone_bboxes)
+                        if subject_point is None:
+                            px1, py1, px2, py2 = item.phone_bboxes[0]
+                            subject_point = ((px1 + px2) // 2, (py1 + py2) // 2)
                     else:
                         out_frame = item.frame
                     if out_frame.shape[:2] != (height, width):
@@ -1792,6 +1807,25 @@ class VideoPipeline:
                     # _render_phone_alert_frame already returns a copy, and
                     # pre-event raw frames are consumed once — safe in-place.
                     draw_timestamp_overlay(out_frame)
+                    annotated_frames.append(out_frame)
+
+                # Composer integration path
+                if getattr(self, '_composer', None) is not None:
+                    if subject_point is None:
+                        subject_point = (width // 2, height // 2)
+                    timestamp_start = frames[0].timestamp if frames else timestamp - (len(annotated_frames) / self._camera_fps)
+                    timestamp_end = frames[-1].timestamp if frames else timestamp
+                    self._composer.on_video_alert(
+                        frames=annotated_frames,
+                        alert_type="phone",
+                        subject_point=subject_point,
+                        camera_id=self._camera_id,
+                        timestamp_start=timestamp_start,
+                        timestamp_end=timestamp_end
+                    )
+                    return
+
+                for out_frame in annotated_frames:
                     writer.write(out_frame)
                     frames_written += 1
                 duration = frames_written / self._camera_fps
@@ -1956,6 +1990,8 @@ class VideoPipeline:
                 return
             
             frames_written = 0
+            annotated_frames = []
+            subject_point = None
             try:
                 for item in frames:
                     raw_frame = item.frame if isinstance(item, AlertFrame) else (item[0] if isinstance(item, tuple) else item)
@@ -1965,6 +2001,8 @@ class VideoPipeline:
                     if tid is not None:
                         student_bbox = item.student_bbox if isinstance(item, AlertFrame) else None
                         student_center = item.student_center if isinstance(item, AlertFrame) else None
+                        if student_center is not None:
+                            subject_point = student_center
                         out = self._render_alert_frame(
                             raw_frame, tid,
                             student_bbox=student_bbox,
@@ -1979,6 +2017,37 @@ class VideoPipeline:
                         out = cv2.resize(out, out_size, interpolation=cv2.INTER_AREA)
                     # Always burn timestamp into gaze alert videos
                     draw_timestamp_overlay(out)
+                    annotated_frames.append(out)
+                
+                # Composer integration path
+                if getattr(self, '_composer', None) is not None:
+                    # Resolve subject_point for phone cheat if needed
+                    if cheat_type == "phone":
+                        phone_bbox = cheat_ctx.get('phone_bbox') if cheat_ctx else None
+                        if phone_bbox:
+                            subject_point = ((phone_bbox[0] + phone_bbox[2]) // 2, (phone_bbox[1] + phone_bbox[3]) // 2)
+
+                    if subject_point is None:
+                        subject_point = (width // 2, height // 2)
+
+                    # Extract the original timestamp from the frame tuple/AlertFrame
+                    def _get_ts(item):
+                        return item.timestamp if hasattr(item, 'timestamp') else (item[0] if isinstance(item, tuple) else timestamp)
+                    
+                    timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
+                    timestamp_end = _get_ts(frames[-1]) if frames else timestamp
+                    
+                    self._composer.on_video_alert(
+                        frames=annotated_frames,
+                        alert_type=cheat_type,
+                        subject_point=subject_point,
+                        camera_id=self._camera_id,
+                        timestamp_start=timestamp_start,
+                        timestamp_end=timestamp_end
+                    )
+                    return
+
+                for out in annotated_frames:
                     writer.write(out)
                     frames_written += 1
                 duration = frames_written / self._camera_fps

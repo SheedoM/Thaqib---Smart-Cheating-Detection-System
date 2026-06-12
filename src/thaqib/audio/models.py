@@ -99,6 +99,8 @@ class AudioAlert:
     active_mics: list[int]
     transcript: str
     matched_keywords: list[str]
+    timestamp_start: float
+    timestamp_end: float
     audio_clip: np.ndarray
     sample_rate: int
     confidence: float

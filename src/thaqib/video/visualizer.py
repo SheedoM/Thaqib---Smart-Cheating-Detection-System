@@ -51,7 +51,7 @@ class VideoVisualizer:
     the on-screen size looks identical across 720p, 1080p, 2K, and 4K.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, layout=None, camera_id="cam0", available_mic_ids=None) -> None:
         self.show_neighbors: bool = False
         self.show_phone: bool = True
         self.show_paper: bool = True
@@ -60,6 +60,13 @@ class VideoVisualizer:
         self.show_timestamp: bool = True  # Live display only; recordings always have it
         self.show_face_mesh: bool = True   # Green landmark dots on student faces
         self._gaze_scales: dict[int, int] = {}  # track_id → smoothed gaze arrow scale
+        self._layout = layout
+        self._camera_id = camera_id
+        self._available_mic_ids = available_mic_ids or []
+
+        self._last_frame_size: tuple[int, int] | None = None  # (height, width)
+        self._mic_placement_mode = False
+        self._selected_mic_idx = 0
 
     def toggle_neighbors(self) -> None:
         """Toggle neighbor graph rendering on/off."""
@@ -93,6 +100,24 @@ class VideoVisualizer:
         """Toggle face mesh landmark dot rendering on/off (display only)."""
         self.show_face_mesh = not self.show_face_mesh
 
+    def toggle_mic_placement_mode(self) -> None:
+        """Toggle mic placement interactive mode."""
+        self._mic_placement_mode = not self._mic_placement_mode
+
+    def handle_mouse(self, event, x, y, flags, param):
+        """Handle mouse clicks for mic pinning."""
+        if not self._mic_placement_mode or self._layout is None:
+            return
+        if event == cv2.EVENT_RBUTTONDOWN:
+            if self._available_mic_ids:
+                self._selected_mic_idx = (self._selected_mic_idx + 1) % len(self._available_mic_ids)
+        elif event == cv2.EVENT_LBUTTONDOWN:
+            if self._available_mic_ids and self._last_frame_size is not None:
+                mic_id = self._available_mic_ids[self._selected_mic_idx]
+                h, w = self._last_frame_size
+                norm_pos = (x / float(w), y / float(h))
+                self._layout.add_pin(mic_id, self._camera_id, norm_pos)
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -113,6 +138,7 @@ class VideoVisualizer:
             A new annotated frame (the original is not modified).
         """
         annotated = pipeline_frame.frame.copy()
+        self._last_frame_size = annotated.shape[:2]
         sc = _sc(annotated)
 
         # Student overlays use a reduced scale so the face stays clearly visible
@@ -128,6 +154,7 @@ class VideoVisualizer:
             self._draw_legend_panel(annotated, pipeline_frame, sc)
 
         self._draw_hud(annotated, pipeline_frame, sc)
+        self._draw_mic_placement(annotated, sc)
 
         if self.show_control_panel:
             self._draw_control_panel(annotated, pipeline_frame)
@@ -341,6 +368,22 @@ class VideoVisualizer:
             border = _th(sc, 8)
             cv2.rectangle(frame, (0, 0), (w - 1, h - 1), (0, 0, 255), border)
 
+    def _draw_mic_placement(self, frame: np.ndarray, sc: float) -> None:
+        if self._layout is not None:
+            h, w = frame.shape[:2]
+            for pin in self._layout.get_pins_for_camera(self._camera_id):
+                px, py = int(pin.norm_pos[0] * w), int(pin.norm_pos[1] * h)
+                cv2.circle(frame, (px, py), _th(sc, 8), (255, 0, 255), -1)
+                cv2.putText(frame, pin.mic_id, (px + 12, py + 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.5), (255, 0, 255), _th(sc, 2))
+
+        if self._mic_placement_mode and self._available_mic_ids:
+            mic_id = self._available_mic_ids[self._selected_mic_idx]
+            h, w = frame.shape[:2]
+            msg = f"MIC PLACEMENT MODE [I to exit] - L-Click to pin {mic_id}, R-Click to cycle mics"
+            cv2.putText(frame, msg, (int(20 * sc), h - int(60 * sc)),
+                        cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.6), (255, 0, 255), _th(sc, 2), cv2.LINE_AA)
+
 
     def _draw_instructions(self, frame: np.ndarray, sc: float) -> None:
         """Draw slim bottom instruction bar."""
@@ -506,6 +549,8 @@ class VideoVisualizer:
         key_row(rx, y, "S", "Monitor all students")
         y += line_h
         key_row(rx, y, "M", "Remove student (click)")
+        y += line_h
+        key_row(rx, y, "I", "Toggle mic placement")
         y += line_h
         key_row(rx, y, "C", "Stop all monitoring")
         y += line_h
