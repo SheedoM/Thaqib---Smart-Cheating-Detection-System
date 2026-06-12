@@ -48,7 +48,10 @@ class CheatingEvaluator:
         def patched_update(*args, **kwargs):
             for state in registry.get_all():
                 state.is_using_phone = False
-            return original_update(*args, **kwargs)
+            expired_states = original_update(*args, **kwargs)
+            for state in expired_states:
+                self._face_lost_times.pop(state.track_id, None)
+            return expired_states
         registry.update = patched_update
 
     @property

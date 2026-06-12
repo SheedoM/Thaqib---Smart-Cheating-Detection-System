@@ -123,3 +123,9 @@ alerts/
 # Large archives and dev folders
 *.zip
 ved/
+test_venv/
+scratch/
+*.mp4
+*.wav
+alerts/
+temp_mic_layout*.json

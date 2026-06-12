@@ -82,6 +82,7 @@ class FileAudioSource(AudioSource):
         sample_rate: int = 16000,
         chunk_ms: int = 500,
         real_time: bool = False,
+        clock=None,
     ):
         """
         Args:
@@ -94,6 +95,7 @@ class FileAudioSource(AudioSource):
         self._sample_rate = sample_rate
         self._chunk_ms = chunk_ms
         self._real_time = real_time
+        self._clock = clock
 
         self._audio_data: list[np.ndarray] = []  # Per-mic audio arrays
         self._position: int = 0  # Current read position (in samples)
@@ -204,7 +206,7 @@ class FileAudioSource(AudioSource):
         mic_data = np.stack(mic_chunks, axis=0)
 
         audio_chunk = AudioChunk(
-            timestamp=time.time(),
+            timestamp=self._clock.now() if self._clock else time.time(),
             mic_data=mic_data,
             sample_rate=self._sample_rate,
             duration_ms=self._chunk_ms,
@@ -276,6 +278,7 @@ class LiveAudioSource(AudioSource):
         channels: int = 1,
         sample_rate: int = 16000,
         chunk_ms: int = 500,
+        clock=None,
     ):
         """
         Args:
@@ -306,6 +309,7 @@ class LiveAudioSource(AudioSource):
         self._channels = channels if multi_channel_device is not None else 1
         self._sample_rate = sample_rate
         self._chunk_ms = chunk_ms
+        self._clock = clock
         self._chunk_samples = int(sample_rate * chunk_ms / 1000)
         self._chunk_index = 0
         self._is_running = False
@@ -468,7 +472,7 @@ class LiveAudioSource(AudioSource):
         mic_data = np.stack(mic_chunks, axis=0)  # (n_mics, chunk_samples)
 
         audio_chunk = AudioChunk(
-            timestamp=time.time(),
+            timestamp=self._clock.now() if self._clock else time.time(),
             mic_data=mic_data,
             sample_rate=self._sample_rate,
             duration_ms=self._chunk_ms,

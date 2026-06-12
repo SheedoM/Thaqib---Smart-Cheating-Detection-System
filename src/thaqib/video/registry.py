@@ -5,15 +5,14 @@ Global student spatial registry system.
 from collections import deque
 from dataclasses import dataclass, field
 import numpy as np
+import threading
 
 from thaqib.video.tracker import TrackedObject
 from thaqib.video.face_mesh import FaceMeshResult
 
 
-# Maximum frames kept in the per-student recording buffer (~10s at 30fps).
-# Each 720p frame ≈ 2.7MB → 300 frames ≈ 810MB worst-case per student.
-# Reduced from 300 (829 MB) to 150 (5s at 30fps = ~415 MB) to prevent OOM
-_MAX_RECORDING_FRAMES = 150
+# Maximum frames kept in the per-student recording buffer (~60s at 30fps).
+_MAX_RECORDING_FRAMES = 1800
 
 
 @dataclass
@@ -61,6 +60,7 @@ class GlobalStudentRegistry:
 
     def __init__(self):
         self._states: dict[int, StudentSpatialState] = {}
+        self._lock = threading.Lock()
 
     def update(self, tracks: list[TrackedObject], frame_index: int, timestamp: float) -> list[int]:
         """
@@ -70,57 +70,61 @@ class GlobalStudentRegistry:
         """
         active_ids = {t.track_id for t in tracks}
 
-        # 1. Update or add new tracks
-        for track in tracks:
-            if track.track_id in self._states:
-                state = self._states[track.track_id]
-                state.bbox = track.bbox
-                state.center = track.center
-                state.paper_center = track.paper_center
-                state.frame_index = frame_index
-                state.timestamp = timestamp
-                state.last_seen_frame = frame_index
-                state.last_seen_time = timestamp
-                state.is_active = True
-            else:
-                self._states[track.track_id] = StudentSpatialState(
-                    track_id=track.track_id,
-                    bbox=track.bbox,
-                    center=track.center,
-                    paper_center=track.paper_center,
-                    frame_index=frame_index,
-                    timestamp=timestamp,
-                    last_seen_frame=frame_index,
-                    last_seen_time=timestamp,
-                    is_active=True,
-                )
+        with self._lock:
+            # 1. Update or add new tracks
+            for track in tracks:
+                if track.track_id in self._states:
+                    state = self._states[track.track_id]
+                    state.bbox = track.bbox
+                    state.center = track.center
+                    state.paper_center = track.paper_center
+                    state.frame_index = frame_index
+                    state.timestamp = timestamp
+                    state.last_seen_frame = frame_index
+                    state.last_seen_time = timestamp
+                    state.is_active = True
+                else:
+                    self._states[track.track_id] = StudentSpatialState(
+                        track_id=track.track_id,
+                        bbox=track.bbox,
+                        center=track.center,
+                        paper_center=track.paper_center,
+                        frame_index=frame_index,
+                        timestamp=timestamp,
+                        last_seen_frame=frame_index,
+                        last_seen_time=timestamp,
+                        is_active=True,
+                    )
 
-        # 2. Handle lost tracks (purge if older than 3 seconds)
-        expired_ids = []
-        for track_id, state in self._states.items():
-            if track_id not in active_ids:
-                state.is_active = False
-                if timestamp - state.last_seen_time > 3.0:
-                    expired_ids.append(track_id)
-        
-        expired_states = []
-        for tid in expired_ids:
-            expired_states.append(self._states[tid])
-            del self._states[tid]
+            # 2. Handle lost tracks (purge if older than 3 seconds)
+            expired_ids = []
+            for track_id, state in self._states.items():
+                if track_id not in active_ids:
+                    state.is_active = False
+                    if timestamp - state.last_seen_time > 3.0:
+                        expired_ids.append(track_id)
             
+            expired_states = []
+            for tid in expired_ids:
+                expired_states.append(self._states[tid])
+                del self._states[tid]
+                
         return expired_states
 
     def get(self, track_id: int) -> StudentSpatialState | None:
         """Get spatial state for a specific track ID."""
-        return self._states.get(track_id)
+        with self._lock:
+            return self._states.get(track_id)
 
     def get_all(self) -> list[StudentSpatialState]:
         """Get all spatial states."""
-        return list(self._states.values())
+        with self._lock:
+            return list(self._states.values())
 
     def purge(self, track_id: int) -> None:
         """Immediately remove a track from the registry."""
-        state = self._states.get(track_id)
-        if state is not None:
-            state.recording_buffer.clear()
-        self._states.pop(track_id, None)
+        with self._lock:
+            state = self._states.get(track_id)
+            if state is not None:
+                state.recording_buffer.clear()
+            self._states.pop(track_id, None)
