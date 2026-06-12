@@ -6,15 +6,18 @@ Supports webcam/video input and interactive monitoring controls.
 import argparse
 import logging
 import sys
+import time
+from pathlib import Path
 
 import cv2
 
 # Add src to path for development
-sys.path.insert(0, str(__file__).replace("\\", "/").rsplit("/", 2)[0] + "/src")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from thaqib.video.pipeline import VideoPipeline
 from thaqib.video.visualizer import VideoVisualizer
 from thaqib.video.timestamps import draw_timestamp_overlay
+from thaqib.video.video_logger import get_video_logger
 
 
 # Configure logging
@@ -102,6 +105,10 @@ def main():
 
     logger.info(f"Starting demo with source: {source}")
 
+    # Initialise the diagnostic logger early so it can capture pipeline startup
+    vlog = get_video_logger()
+    logger.info(f"Diagnostic log: {vlog.log_path}")
+
     # Create pipeline (processing layer)
     pipeline = VideoPipeline(
         source=source,
@@ -122,8 +129,11 @@ def main():
 
     try:
         with pipeline:
+            _display_fps_t0 = time.time()
+            _display_frame_count = 0
             for pipeline_frame in pipeline.run():
                 _latest_pipeline_frame = pipeline_frame
+                _display_frame_count += 1
 
                 # Reuse the annotated frame rendered once inside _process_frame().
                 # Falls back to calling draw() if no visualizer was attached
@@ -151,11 +161,23 @@ def main():
                 # Show frame
                 cv2.imshow(window_name, display)
 
+                # Sample display-loop FPS every 30 frames
+                if _display_frame_count % 30 == 0:
+                    elapsed = time.time() - _display_fps_t0
+                    if elapsed > 0:
+                        vlog.log_display_fps(
+                            frame_idx=pipeline_frame.frame_index,
+                            display_fps=_display_frame_count / elapsed,
+                        )
+                    _display_fps_t0 = time.time()
+                    _display_frame_count = 0
+
                 # Handle key presses
                 key = cv2.waitKey(1) & 0xFF
 
                 if key == ord("q"):
                     logger.info("Quitting...")
+                    vlog.log_keypress(key="q", action="QUIT")
                     break
 
                 elif key == ord("s"):
@@ -164,46 +186,55 @@ def main():
                         active_ids = [state.track_id for state in pipeline_frame.registry.get_all() if getattr(state, "is_active", True)]
                         pipeline.select_students(active_ids)
                         logger.info(f"Snapshot taken: {len(active_ids)} students registered for monitoring.")
+                        vlog.log_keypress(key="s", action=f"SNAPSHOT_SELECT ids={active_ids}")
 
                 elif key == ord("c"):
                     # Clear selection
                     pipeline.clear_selection()
                     logger.info("Cleared selection and disabled monitoring")
+                    vlog.log_keypress(key="c", action="CLEAR_SELECTION")
 
                 elif key == ord("t"):
                     # Toggle neighbor graph
                     visualizer.toggle_neighbors()
                     logger.info(f"Neighbor graph: {'ON' if visualizer.show_neighbors else 'OFF'}")
+                    vlog.log_keypress(key="t", action=f"TOGGLE_NEIGHBORS {'ON' if visualizer.show_neighbors else 'OFF'}")
 
                 elif key == ord("p"):
                     # Toggle control panel
                     visualizer.toggle_control_panel()
                     logger.info(f"Control panel: {'ON' if visualizer.show_control_panel else 'OFF'}")
+                    vlog.log_keypress(key="p", action=f"TOGGLE_PANEL {'ON' if visualizer.show_control_panel else 'OFF'}")
 
                 elif key == ord("m"):
                     # Toggle deselect mode
                     _deselect_mode = not _deselect_mode
                     logger.info(f"Deselect mode: {'ON — click a student to remove' if _deselect_mode else 'OFF'}")
+                    vlog.log_keypress(key="m", action=f"DESELECT_MODE {'ON' if _deselect_mode else 'OFF'}")
 
                 elif key == ord("r"):
                     # Toggle archive recording mode (raw / annotated)
                     mode = pipeline.toggle_archive_mode()
                     logger.info(f"Archive recording mode: {mode.upper()} {'(original video)' if mode == 'raw' else '(with overlays)'}")
+                    vlog.log_keypress(key="r", action=f"ARCHIVE_MODE {mode.upper()}")
 
                 elif key == ord("d"):
                     # Toggle paper bbox display (detection still runs)
                     visualizer.toggle_paper()
                     logger.info(f"Paper display: {'ON' if visualizer.show_paper else 'OFF'} (detection unaffected)")
+                    vlog.log_keypress(key="d", action=f"PAPER_DISPLAY {'ON' if visualizer.show_paper else 'OFF'}")
 
                 elif key == ord("f"):
                     # Toggle phone bbox display (detection still runs)
                     visualizer.toggle_phone()
                     logger.info(f"Phone display: {'ON' if visualizer.show_phone else 'OFF'} (detection unaffected)")
+                    vlog.log_keypress(key="f", action=f"PHONE_DISPLAY {'ON' if visualizer.show_phone else 'OFF'}")
 
                 elif key == ord("l"):
                     # Toggle student→paper link lines display
                     visualizer.toggle_gaze_lines()
                     logger.info(f"Paper link lines: {'ON' if visualizer.show_gaze_lines else 'OFF'}")
+                    vlog.log_keypress(key="l", action=f"GAZE_LINES {'ON' if visualizer.show_gaze_lines else 'OFF'}")
 
                 elif key == ord("k"):
                     # Toggle face mesh points display (detection still runs)
@@ -213,25 +244,29 @@ def main():
                 elif key == ord("v"):
                     # Cycle video quality: LOW (50) → MED (75) → HIGH (90) → ...
                     pipeline.toggle_video_quality()
-                    q = pipeline._video_quality
+                    q = pipeline.video_quality
                     label = "HIGH" if q >= 90 else ("MED" if q >= 75 else "LOW")
                     logger.info(f"Video quality: {label} ({q}%) — applies to next recorded video")
+                    vlog.log_keypress(key="v", action=f"VIDEO_QUALITY {label} ({q}%)")
 
                 elif key == ord("g"):
                     # Cycle processing resolution: NATIVE → 1080p → 720p → ...
                     label = pipeline.toggle_processing_resolution()
                     logger.info(f"Processing resolution: {label} — takes effect next frame")
+                    vlog.log_keypress(key="g", action=f"PROCESSING_RES {label}")
 
                 elif key == ord("w"):
                     # Toggle live timestamp display (recordings always have it)
                     visualizer.toggle_timestamp()
                     state = "ON" if visualizer.show_timestamp else "OFF"
                     logger.info(f"Live timestamp: {state} (archive/alert recordings unaffected)")
+                    vlog.log_keypress(key="w", action=f"TIMESTAMP_DISPLAY {state}")
 
                 elif key == ord("k"):
                     # Toggle face mesh landmark dots (display only — detection still runs)
                     visualizer.toggle_face_mesh()
                     logger.info(f"Face map points: {'ON' if visualizer.show_face_mesh else 'OFF'} (detection unaffected)")
+                    vlog.log_keypress(key="k", action=f"FACE_MESH_DISPLAY {'ON' if visualizer.show_face_mesh else 'OFF'}")
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

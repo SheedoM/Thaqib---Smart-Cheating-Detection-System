@@ -54,6 +54,7 @@ class CameraStream:
         width: int | None = None,
         height: int | None = None,
         fps: int | None = None,
+        clock=None,
     ):
         """
         Initialize camera stream.
@@ -82,6 +83,7 @@ class CameraStream:
         self._frame_queue = deque(maxlen=5)
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._clock = clock
 
     def open(self) -> bool:
         """
@@ -174,7 +176,10 @@ class CameraStream:
                     # instead of reconnecting (which would replay the file).
                     if isinstance(self.source, str) and not self.source.startswith("rtsp"):
                         logger.info("Video file ended (EOF). Stopping reader thread.")
+                        logger.warning(f"Camera stream disconnected — video buffer is now stale.")
                         self._is_opened = False
+                        # Set stop event immediately on EOF to wake any waiting reader threads and prevent CPU spin.
+                        self._stop_event.set()
                         break
                     logger.warning(f"Failed to read {failed_frames} consecutive frames. Reconnecting...")
                     if self._cap is not None:
@@ -187,7 +192,7 @@ class CameraStream:
             self._frame_index += 1
             fd = FrameData(
                 frame=frame,
-                timestamp=time.time(),
+                timestamp=self._clock.now() if self._clock else time.time(),
                 frame_index=self._frame_index,
                 width=frame.shape[1],
                 height=frame.shape[0],
@@ -201,6 +206,7 @@ class CameraStream:
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 
+        logger.warning("Camera stream disconnected — video buffer is now stale.")
         self._stop_event.set()
 
     def close(self) -> None:
@@ -226,15 +232,18 @@ class CameraStream:
         if not self._is_opened:
             return None
 
-        # Wait for a frame to arrive in the queue
-        while self._is_opened and not self._stop_event.is_set():
-            if self._frame_queue:
+        # Wait for a frame to arrive in the queue or read final frame
+        while True:
+            try:
+                # Protect popleft operation from concurrent clearing of frame queue.
                 return self._frame_queue.popleft()
+            except IndexError:
+                # queue emptied between check and pop — spin again
+                pass
+            
+            if not self._is_opened or self._stop_event.is_set():
+                break
             time.sleep(0.01)
-
-        # Catch any final frames before stopping
-        if self._frame_queue:
-            return self._frame_queue.popleft()
             
         return None
 

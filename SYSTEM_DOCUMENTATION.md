@@ -17,6 +17,7 @@
 9. [Interactive Controls](#9-interactive-controls)
 10. [Configuration Reference](#10-configuration-reference)
 11. [Known Limitations & Edge Cases](#11-known-limitations--edge-cases)
+12. [Audio Cheating Detection Subsystem](#12-audio-cheating-detection-subsystem)
 
 ---
 
@@ -39,7 +40,7 @@ When cheating is detected, the system automatically saves an annotated evidence 
 
 - Not a web application (no server, no API, no dashboard)
 - Not a multi-camera system (processes one camera at a time)
-- Not an audio processing system
+- Not a distributed cloud service (runs locally on a single desktop machine)
 
 ---
 
@@ -168,7 +169,7 @@ MediaPipe FaceLandmarker in **VIDEO mode** (temporal smoothing enabled).
 - Creates one `FaceLandmarker` instance per worker thread (thread-local storage).
 - Extracts 2D/3D landmarks, face transformation matrix, and iris positions.
 - Returns a `FaceMeshResult` with `landmarks_2d`, `landmarks_3d`, `head_matrix`, `iris_left`, `iris_right`.
-- Runs via a multiprocessing `Pool` with shared memory for frame passing.
+- Runs via a `ThreadPoolExecutor` using thread-local instances to avoid GIL contention.
 
 ### 3.9 `gaze.py` — Gaze Direction Computation
 
@@ -240,7 +241,7 @@ Standalone utility module providing `draw_timestamp_overlay(frame, ts)`. Burns a
 | **Archive writer** | `ArchiveWriter` | Drains frame queue → disk | `_archive_queue` (Queue) |
 | **Alert writers** | `AlertWriter-N` | Saves alert clips (one thread per clip) | Independent frame list |
 | **Phone alert writer** | `PhoneAlertWriter` | Saves phone clips | Independent frame list |
-| **Face mesh pool** | `Pool(4)` | MediaPipe inference (multiprocessing) | Shared memory for frames |
+| **Face mesh pool** | `ThreadPool(4)` | MediaPipe inference (multithreading) | Thread-local instances |
 
 ### Key synchronization:
 - Detection results pass via `Queue` (thread-safe).
@@ -358,7 +359,7 @@ Phone detected in frame → START recording
 - YELLOW bounding box around the target paper (not the victim student)
 - Red banner: "CHEATING ALERT — Student X looking at neighbor's paper"
 
-**Buffer structure:** `(raw_frame, track_id | None)` tuples. Pre-event frames have `track_id=None` → written raw.
+**Buffer structure:** `AlertFrame` dataclasses. Pre-event frames have no bboxes → written raw.
 
 ### 7.2 Phone Alert Videos
 
@@ -368,7 +369,7 @@ Phone detected in frame → START recording
 - RED bounding box around each detected phone + label "PHONE"
 - Dark red banner: "PHONE ALERT — Mobile device detected"
 
-**Buffer structure:** `(raw_frame, phone_bboxes_list)` tuples. Pre-event frames have `[]` → written raw.
+**Buffer structure:** `AlertFrame` dataclasses. Pre-event frames have `[]` → written raw.
 
 ### 7.3 Concurrency Limits
 
@@ -518,3 +519,98 @@ All settings are loaded from `.env` via Pydantic. Override any setting with an e
 | Video file ends during recording | Recording flushed on pipeline stop | `stop()` method saves all pending buffers |
 | 4K video input | High memory usage for buffers | Press `G` to switch to 1080p/720p processing. Alert videos also downscaled to `alert_max_height`. |
 | `avc1` codec unavailable | Falls back to `mp4v` (larger files) | Install OpenH264 DLL for smallest MP4 output |
+
+---
+
+## 12. Audio Cheating Detection Subsystem
+
+The audio subsystem provides **real-time, multi-microphone speech detection** for exam environments. It identifies cheating by detecting localized speech (whispers heard by only one microphone) vs. global sounds (heard by all microphones), then processes voice activity to extract cheating evidence.
+
+### 12.1 Operational Architecture
+
+The audio pipeline consists of six sequential stages, managed by `pipeline.py`:
+
+```
+AudioSource (Live/File) → Preprocessor → GlobalLocalDiscriminator
+                                                 │ (LOCAL Sound)
+                                                 ▼
+                                     Inference Queue (VAD Worker)
+                                                 │
+                               ┌─────────────────┴─────────────────┐
+                       (Whisper STT Mode)                  (VAD-Only Mode)
+                               │                                   │
+                    VAD Buffer Accumulator                  Per-Mic VAD Run
+                               │                                   │
+                   Whisper Queue (STT Worker)             Find Dominant Mic
+                               │                                   │
+                   Whisper STT + Keyword Match          Voice Content Similarity
+                               │                                   │
+                               └─────────────────┬─────────────────┘
+                                                 ▼
+                                     AudioEvidenceRecorder (WAV+JSON)
+                                     EpisodeTracker (Sustained Episodes)
+```
+
+1. **Audio Source (`source.py`)**: Yields synchronized audio buffers (`AudioChunk`, shape: `n_mics × n_samples`) at 16,000 Hz.
+2. **Preprocessor (`preprocessor.py`)**: Cleans incoming signals using Transient suppression (for sudden spikes like pen clicks), High-pass filter (Butterworth 100Hz cutoff), Adaptive noise reduction (learned noise profile), and Adaptive gain control.
+3. **Global/Local Discriminator (`discriminator.py`)**: Classifies chunks as **SILENT**, **GLOBAL** (proctor voice, room noise heard across microphones), or **LOCAL** (suspicious localized whisper heard on a subset of microphones). Includes a **Two-Pass Denoising** logic that denoises and re-evaluates GLOBAL chunks to uncover localized whispers masked by loud room noise.
+4. **VAD Worker Thread (`pipeline.py`)**: Runs Silero Voice Activity Detection on LOCAL chunks to confirm human speech.
+5. **Whisper STT / VAD-Only Processing (`keyword_detector.py`)**: Transcribes speech (Whisper STT) and matches keywords, or fires immediate alerts on voice detection (VAD-Only).
+6. **Evidence Recording (`evidence.py`)**: Saves annotated evidence WAV clips with corresponding JSON metadata, secured with SHA-256 signatures. Applies strict clipping boundaries (exactly 1.0s pre-event buffer + live incident duration, with 0s post-event padding).
+
+### 12.2 Operational Modes
+
+The audio subsystem operates in one of two modes, configurable via `.env`:
+
+#### A. Whisper STT Mode (`AUDIO_VAD_ONLY = false`)
+- **Strict Mode (`AUDIO_STRICT_MODE = true`)**: Transcribes VAD-confirmed speech. Any verbal utterance triggers a violation.
+- **Keyword Mode (`AUDIO_STRICT_MODE = false`)**: Transcribes VAD-confirmed speech. Compares text against `keywords.json` and flags matching phrases (supports exact and fuzzy matching).
+
+#### B. VAD-Only Mode (`AUDIO_VAD_ONLY = true`)
+- Skip Whisper STT entirely for instant detection (latency ~5ms per chunk).
+- Runs Silero VAD on all denoised microphones.
+- Identifies the dominant microphone (highest VAD confidence score).
+- **Voice Content Matching**: To prevent false alerts on bilateral global speech (e.g. proctor talking near one mic), it performs a spectral cosine similarity check against other microphones:
+  - If similarity $\ge 0.80$, the spectral voice profile matches across microphones $\rightarrow$ classified as **GLOBAL** noise.
+  - If similarity $< 0.80$, distinct voice/acoustic content exists $\rightarrow$ classified as **LOCAL** $\rightarrow$ fires an alert.
+
+### 12.3 Threading & Concurrency Model
+
+The audio pipeline utilizes four concurrent threads to ensure Whisper or disk I/O latency never blocks real-time audio ingestion:
+
+| Thread | Purpose | Shared State |
+|--------|---------|--------------|
+| **Main Loop (AudioPipeline)** | Ingests chunks, runs preprocessor, energy discriminator, and session recording. | `_chunk_history`, `_stats` |
+| **VAD Worker Thread** | Pulls local chunks, runs Silero VAD, accumulates speech buffers. | `_inference_queue`, `_whisper_queue` |
+| **Whisper Worker Thread** | Pulls speech buffers, runs Whisper transcription, matches keywords. | `_whisper_queue`, `_alerts` |
+| **Async Audio Writer** | Drains disk I/O queues and writes WAV and JSON evidence asynchronously. | `_pending_alerts`, `_output_dir` |
+
+### 12.4 Audio Subsystem Configurations
+
+These variables are defined in `src/thaqib/config/settings.py` and configurable via `.env`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUDIO_WHISPER_MODEL` | `tiny` | Whisper model size (`tiny`, `base`, `small`, `medium`) |
+| `AUDIO_LANGUAGE` | `ar` | Language code for Whisper transcription |
+| `AUDIO_STRICT_MODE` | `true` | Any speech = cheating (strict mode) |
+| `AUDIO_MIC_NAMES` | `""` | Comma-separated or JSON list mapping microphone channels |
+| `AUDIO_SAMPLE_RATE` | `16000` | Sample rate (Hz) for VAD/Whisper |
+| `AUDIO_CHUNK_MS` | `500` | Processing chunk size in milliseconds |
+| `AUDIO_SILENCE_THRESHOLD` | `0.002` | RMS energy threshold for silence |
+| `AUDIO_VAD_THRESHOLD` | `0.5` | VAD confidence speech threshold |
+| `AUDIO_VAD_ONLY` | `false` | If true, skip Whisper STT and alert on VAD directly |
+| `AUDIO_VAD_ALERT_COOLDOWN` | `3.0` | Alert cooldown in seconds for VAD-only mode |
+| `AUDIO_VAD_CONTEXT_MS` | `200` | Acoustic context window size in milliseconds to prepend to VAD chunks |
+| `AUDIO_GLOBAL_RATIO` | `0.3` | Loudest mic energy ratio (N-mic mode) |
+| `AUDIO_GLOBAL_FRACTION` | `0.6` | Mics ratio to classify global (N-mic mode) |
+| `AUDIO_CALIBRATION_CHUNKS` | `30` | Number of chunks used to calibrate baseline (both 2-mic and N-mic setups) |
+| `AUDIO_LOCAL_RATIO_MULTIPLIER` | `2.0` | Normalized energy ratio multiplier for LOCAL (2-mic mode only) |
+| `AUDIO_RECALIBRATION_INTERVAL_SEC` | `300.0` | Recalibration interval for room baseline (all multi-mic setups) |
+| `AUDIO_SESSION_RECORDING` | `true` | If true, record full exam audio |
+| `AUDIO_EPISODE_RECORDING` | `true` | If true, track sustained cheating episodes |
+| `AUDIO_EPISODE_MIN_SEC` | `3.0` | Minimum duration in seconds to confirm episode |
+| `AUDIO_EPISODE_GRACE_SEC` | `5.0` | Silence grace period before closing episode |
+
+> [!NOTE]
+> The pipeline actively respects `AUDIO_CLIP_SEC_BEFORE` (pulling from a history buffer) and `AUDIO_CLIP_SEC_AFTER` (gathering post-event chunks), allowing configurable pre- and post-incident padding for forensic evidence.

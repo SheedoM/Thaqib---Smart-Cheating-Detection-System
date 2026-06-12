@@ -82,6 +82,7 @@ class FileAudioSource(AudioSource):
         sample_rate: int = 16000,
         chunk_ms: int = 500,
         real_time: bool = False,
+        clock=None,
     ):
         """
         Args:
@@ -94,6 +95,7 @@ class FileAudioSource(AudioSource):
         self._sample_rate = sample_rate
         self._chunk_ms = chunk_ms
         self._real_time = real_time
+        self._clock = clock
 
         self._audio_data: list[np.ndarray] = []  # Per-mic audio arrays
         self._position: int = 0  # Current read position (in samples)
@@ -204,7 +206,7 @@ class FileAudioSource(AudioSource):
         mic_data = np.stack(mic_chunks, axis=0)
 
         audio_chunk = AudioChunk(
-            timestamp=time.time(),
+            timestamp=self._clock.now() if self._clock else time.time(),
             mic_data=mic_data,
             sample_rate=self._sample_rate,
             duration_ms=self._chunk_ms,
@@ -276,6 +278,7 @@ class LiveAudioSource(AudioSource):
         channels: int = 1,
         sample_rate: int = 16000,
         chunk_ms: int = 500,
+        clock=None,
     ):
         """
         Args:
@@ -306,6 +309,7 @@ class LiveAudioSource(AudioSource):
         self._channels = channels if multi_channel_device is not None else 1
         self._sample_rate = sample_rate
         self._chunk_ms = chunk_ms
+        self._clock = clock
         self._chunk_samples = int(sample_rate * chunk_ms / 1000)
         self._chunk_index = 0
         self._is_running = False
@@ -327,14 +331,27 @@ class LiveAudioSource(AudioSource):
         self._chunk_queues = [_queue.Queue(maxsize=8) for _ in range(n_mics)]
         self._streams = []
 
-        def _push_samples(mic_idx: int, samples: np.ndarray, local_accum: list) -> None:
+        def _push_samples(mic_idx: int, samples: np.ndarray, local_accum: list[np.ndarray]) -> None:
             """Accumulate samples; push complete chunks to the queue."""
-            local_accum.extend(samples.tolist())
-            while len(local_accum) >= self._chunk_samples:
-                chunk_arr = np.array(
-                    local_accum[:self._chunk_samples], dtype=np.float32
-                )
-                del local_accum[:self._chunk_samples]
+            local_accum.append(samples.copy())
+            
+            # Count total samples
+            total_samples = sum(len(arr) for arr in local_accum)
+            while total_samples >= self._chunk_samples:
+                # Concatenate all accumulated arrays
+                all_samples = np.concatenate(local_accum)
+                
+                # Extract one full chunk
+                chunk_arr = all_samples[:self._chunk_samples]
+                
+                # Keep the remainder
+                remainder = all_samples[self._chunk_samples:]
+                local_accum.clear()
+                if len(remainder) > 0:
+                    local_accum.append(remainder)
+                
+                total_samples = len(remainder)
+                
                 q = self._chunk_queues[mic_idx]
                 if q.full():
                     # Drop the oldest chunk to make room (log once per drop)
@@ -351,7 +368,7 @@ class LiveAudioSource(AudioSource):
         if self._device_ids:
             # Mode: Multiple separate USB mics
             for i, dev_id in enumerate(self._device_ids):
-                accum: list[float] = []  # per-mic accumulator (closure)
+                accum: list[np.ndarray] = []  # per-mic accumulator (closure)
 
                 def make_callback(mic_idx: int, buf: list):
                     def callback(indata, frames, time_info, status):
@@ -374,7 +391,7 @@ class LiveAudioSource(AudioSource):
         elif self._multi_channel_device is not None:
             # Mode: Multi-channel audio interface
             # Each channel gets its own accumulator
-            accums: list[list[float]] = [[] for _ in range(self._channels)]
+            accums: list[list[np.ndarray]] = [[] for _ in range(self._channels)]
 
             def multi_callback(indata, frames, time_info, status):
                 if status:
@@ -402,11 +419,10 @@ class LiveAudioSource(AudioSource):
         """
         Block until a synchronized chunk is available from ALL mics.
 
-        Uses Queue.get() with timeout instead of time.sleep() to ensure
-        no chunks are missed ().
-
-        Tracks consecutive timeouts per mic and logs a CRITICAL
-        warning if a mic appears dead (5+ consecutive 1-second timeouts).
+        Uses Queue.get() with timeout to poll chunk queues.
+        If a microphone fails to produce audio within a small window,
+        it is dynamically masked and padded with zero-filled silence
+        to prevent blocking the entire pipeline.
         """
         import queue as _queue
 
@@ -416,35 +432,47 @@ class LiveAudioSource(AudioSource):
         # Track consecutive timeouts per mic for dead-mic detection
         if not hasattr(self, '_timeout_counts'):
             self._timeout_counts = [0] * len(self._chunk_queues)
+            self._active_mics_mask = [True] * len(self._chunk_queues)
 
         mic_chunks = []
         for i, q in enumerate(self._chunk_queues):
+            # If microphone is marked dead/inactive, immediately yield zero silence chunk
+            if not self._active_mics_mask[i]:
+                silence_chunk = np.zeros(self._chunk_samples, dtype=np.float32)
+                mic_chunks.append(silence_chunk)
+                continue
+
             while True:
                 if not self._is_running:
                     return None
                 try:
-                    chunk = q.get(timeout=1.0)
+                    # Poll queue with a fast timeout (e.g. 50ms) to detect failure quickly
+                    chunk = q.get(timeout=0.05)
                     self._timeout_counts[i] = 0  # reset on success
                     mic_chunks.append(chunk)
                     break
                 except _queue.Empty:
                     self._timeout_counts[i] += 1
-                    if self._timeout_counts[i] >= 5:
-                        # 5+ consecutive seconds with no audio
+                    
+                    # 100 consecutive 50ms timeouts = 5 seconds of silence/missing chunks
+                    if self._timeout_counts[i] >= 100:
                         logger.critical(
-                            f"HARDWARE WARNING: Mic {i} has produced no audio for "
-                            f"{self._timeout_counts[i]}s. Device may be unplugged, "
-                            f"muted, or failed. Check hardware immediately."
+                            f"HARDWARE FAILURE: Mic {i} has disconnected or failed! "
+                            f"Pruning/masking from active wait loop and using zero silence padding."
                         )
-                    else:
-                        logger.debug(f"Mic {i}: waiting for audio (queue empty, "
-                                     f"timeout #{self._timeout_counts[i]})...")
+                        self._active_mics_mask[i] = False
+                        silence_chunk = np.zeros(self._chunk_samples, dtype=np.float32)
+                        mic_chunks.append(silence_chunk)
+                        break
+                    
+                    # Small yield to prevent CPU spinning in while loop
+                    time.sleep(0.001)
                     continue
 
         mic_data = np.stack(mic_chunks, axis=0)  # (n_mics, chunk_samples)
 
         audio_chunk = AudioChunk(
-            timestamp=time.time(),
+            timestamp=self._clock.now() if self._clock else time.time(),
             mic_data=mic_data,
             sample_rate=self._sample_rate,
             duration_ms=self._chunk_ms,

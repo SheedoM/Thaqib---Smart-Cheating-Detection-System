@@ -18,6 +18,18 @@ class NeighborComputer:
         self._prev_track_ids: list[int] | None = None
         self._stability_threshold: float = 20.0  # pixels
 
+    def _assign_papers(self, registry: GlobalStudentRegistry) -> None:
+        """Assign current paper centers to neighbor paper dictionaries."""
+        all_states = [s for s in registry.get_all() if getattr(s, "is_active", True)]
+        paper_map = {s.track_id: s.paper_center for s in all_states}
+        for state in all_states:
+            if state.neighbors:
+                state.neighbor_papers = {
+                    nid: paper_map[nid]
+                    for nid in state.neighbors
+                    if nid in paper_map
+                }
+
     def compute_neighbors(self, registry: GlobalStudentRegistry, k: int = 4) -> None:
         """
         Compute neighbors for all students in the registry.
@@ -49,6 +61,9 @@ class NeighborComputer:
             and self._prev_track_ids == track_ids
             and len(self._prev_centers) == len(centers)):
             max_movement = np.max(np.linalg.norm(centers - self._prev_centers, axis=1))
+            
+            # Update paper assignments to neighbors even when spatial centers are stable.
+            self._assign_papers(registry)
             if max_movement < self._stability_threshold:
                 return  # Skip recomputation — positions are stable
 

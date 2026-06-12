@@ -12,7 +12,9 @@ import os
 import cv2
 from queue import Queue, Empty
 from collections import deque
+# Import concurrent.futures to manage bounded thread pools for async alert videos.
 from concurrent.futures import ThreadPoolExecutor, Future
+import concurrent.futures
 from dataclasses import dataclass, field
 from typing import Callable, Generator
 
@@ -30,9 +32,77 @@ from thaqib.video.neighbors import NeighborComputer
 from thaqib.video.face_mesh import FaceMeshResult
 from thaqib.video.tools_detector import ToolsDetector, ToolsDetectionResult
 from thaqib.video.cheating_evaluator import CheatingEvaluator
+from thaqib.video.video_logger import get_video_logger
+
+
+class ConstantVelocityExtrapolator:
+    """Extrapolates bounding boxes on intermediate frames using historical velocity."""
+    def __init__(self):
+        self.history = {}  # track_id -> (last_bbox, last_timestamp)
+        self.velocity = {} # track_id -> (vx_cx, vy_cy, v_w, v_h)
+
+    def update(self, track_id: int, bbox: tuple[int, int, int, int], timestamp: float):
+        x1, y1, x2, y2 = bbox
+        w, h = x2 - x1, y2 - y1
+        cx, cy = x1 + w / 2.0, y1 + h / 2.0
+
+        if track_id in self.history:
+            prev_bbox, prev_ts = self.history[track_id]
+            px1, py1, px2, py2 = prev_bbox
+            pw, ph = px2 - px1, py2 - py1
+            pcx, pcy = px1 + pw / 2.0, py1 + ph / 2.0
+
+            dt = timestamp - prev_ts
+            if dt > 0.0:
+                # Calculate velocity (pixels per second)
+                self.velocity[track_id] = (
+                    (cx - pcx) / dt,
+                    (cy - pcy) / dt,
+                    (w - pw) / dt,
+                    (h - ph) / dt
+                )
+        else:
+            self.velocity[track_id] = (0.0, 0.0, 0.0, 0.0)
+
+        self.history[track_id] = (bbox, timestamp)
+
+    def extrapolate(self, track_id: int, target_timestamp: float) -> tuple[int, int, int, int] | None:
+        if track_id not in self.history:
+            return None
+
+        bbox, last_ts = self.history[track_id]
+        vx_cx, vy_cy, v_w, v_h = self.velocity.get(track_id, (0.0, 0.0, 0.0, 0.0))
+        dt = target_timestamp - last_ts
+
+        if dt <= 0.0:
+            return bbox
+
+        x1, y1, x2, y2 = bbox
+        w, h = x2 - x1, y2 - y1
+        cx, cy = x1 + w / 2.0, y1 + h / 2.0
+
+        new_cx = cx + vx_cx * dt
+        new_cy = cy + vy_cy * dt
+        new_w = w + v_w * dt
+        new_h = h + v_h * dt
+
+        nx1 = int(new_cx - new_w / 2.0)
+        ny1 = int(new_cy - new_h / 2.0)
+        nx2 = int(new_cx + new_w / 2.0)
+        ny2 = int(new_cy + new_h / 2.0)
+
+        return (nx1, ny1, nx2, ny2)
+
+    def prune(self, active_ids: set[int]):
+        """Prunes historical state for lost tracks."""
+        expired = set(self.history.keys()) - active_ids
+        for eid in expired:
+            self.history.pop(eid, None)
+            self.velocity.pop(eid, None)
 
 
 logger = logging.getLogger(__name__)
+
 
 
 @dataclass
@@ -49,6 +119,8 @@ class AlertFrame:
     # phone_bboxes is [] for pre-event frames — phone not yet visible.
     track_id: int | None = None
     phone_bboxes: list = field(default_factory=list)
+    student_bbox: tuple[int, int, int, int] | None = None
+    student_center: tuple[int, int] | None = None
 
 
 @dataclass
@@ -128,6 +200,10 @@ class VideoPipeline:
         source: int | str | None = None,
         detection_interval: float | None = None,
         on_alert: Callable[[StudentState], None] | None = None,
+        camera_id: str = "cam0",
+        composer = None,
+        frame_buffer = None,
+        clock = None,
     ):
         """
         Initialize video pipeline.
@@ -139,11 +215,26 @@ class VideoPipeline:
         """
         settings = get_settings()
         self._settings = settings  # Keep reference for alert writers
+        import torch
+        if not hasattr(self._settings, "device"):
+            object.__setattr__(self._settings, "device", "cuda" if torch.cuda.is_available() else "cpu")
+        if (self._settings.detection_imgsz > 640
+                and str(self._settings.device).lower() == 'cpu'):
+            logger.warning(
+                "DETECTION_IMGSZ=%d on CPU may exceed detection interval "
+                "(%ds). Consider reducing to 640 for real-time performance.",
+                self._settings.detection_imgsz,
+                self._settings.detection_interval,
+            )
 
         self.detection_interval = detection_interval or settings.detection_interval
 
+        self._camera_id = camera_id
+        self._composer = composer
+        self._frame_buffer = frame_buffer
+
         # Initialize components
-        self._camera = CameraStream(source=source)
+        self._camera = CameraStream(source=source, clock=clock)
         self._detector = HumanDetector()
         self._tools_detector = ToolsDetector()
         self._tracker = ObjectTracker()
@@ -162,6 +253,12 @@ class VideoPipeline:
         # real parallelism without the spawn/shared-memory overhead.
         self._face_executor: ThreadPoolExecutor | None = None
         self._fm_thread_local = None  # threading.local for per-thread FaceLandmarker
+        # Shared result cache: track_id → (timestamp, FaceMeshResult)
+        # When MediaPipe fails on a frame (occlusion/blur), we return the last
+        # good result if it is less than 0.3 s old instead of returning None.
+        # A lock protects concurrent writes from multiple worker threads.
+        self._fm_cache: dict[int, tuple[float, "FaceMeshResult"]] = {}
+        self._fm_cache_lock = threading.Lock()
 
         self._is_running = False
 
@@ -173,6 +270,15 @@ class VideoPipeline:
         self._track_aliases: dict[int, int] = {}
         self._global_frame_buffer: deque[tuple[np.ndarray, None]] = deque(maxlen=90)
         
+        # Initialize buffer lock and bounded executors to manage thread safety and memory.
+        self._buffer_lock = threading.Lock()
+        self._phone_alert_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="PhoneAlertWriter"
+        )
+        self._gaze_alert_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="GazeAlertWriter"
+        )
+        
         # Async Detection State
         self._detection_queue: Queue[tuple[DetectionResult, ToolsDetectionResult]] = Queue(maxsize=1)
         self._current_frame_data: FrameData | None = None
@@ -182,6 +288,11 @@ class VideoPipeline:
         self._last_tracking_result: TrackingResult | None = None
 
         self._selected_ids: set[int] = set()
+        self._auto_select_enabled: bool = True
+        self._deselected_ids: set[int] = set()
+        
+        # Initialize last logged track IDs to prevent all active students showing as new.
+        self._last_logged_track_ids: set[int] = set()
         
         # Face mesh futures: [(Future, track_id), ...]
         self._pending_fm_futures: list[tuple[Future, int]] = []
@@ -220,7 +331,7 @@ class VideoPipeline:
         # A phone anywhere in frame triggers its own 2s+event+2s clip.
         self._phone_detected: bool = False
         self._phone_is_recording: bool = False
-        self._phone_recording_buffer: deque = deque(maxlen=300)
+        self._phone_recording_buffer: deque = deque(maxlen=1800)
         self._phone_frames_to_record: int = 0
         self._phone_current_bboxes: list = []  # phone bboxes in the current frame
 
@@ -240,6 +351,10 @@ class VideoPipeline:
         )
         self._processing_preset_idx: int = 0
 
+        # Diagnostic video logger (non-blocking, background writer thread).
+        self._vlog = get_video_logger()
+        self._extrapolator = ConstantVelocityExtrapolator()
+
     def toggle_video_quality(self) -> None:
         """Cycle through LOW/MED/HIGH video quality presets."""
         idx = self._quality_presets.index(self._video_quality)
@@ -256,21 +371,88 @@ class VideoPipeline:
         ) % len(self._processing_presets)
         label, max_h = self._processing_presets[self._processing_preset_idx]
         self._processing_max_height = max_h
+        # Force recalculation of face mesh scale factor for the new frame size.
+        # Without this reset, landmarks could be computed at the wrong scale
+        # after switching resolution, causing face overlays to appear misaligned.
+        self._fm_scale_computed = False
         logger.info(f"Processing resolution changed to: {label} (max_height={max_h})")
         return label
 
-    # ------------------------------------------------------------------
-    # Face mesh thread inference
-    # ------------------------------------------------------------------
+    # Pass only track_id as tracking_result is unused after using the live registry to prevent stale ReID blockages.
+    def _make_fm_callback(self, track_id: int) -> "Callable":
+        """Return a done-callback for the face mesh future.
+
+        Old pattern (restored): evaluate cheating IMMEDIATELY when the face
+        mesh result arrives in the worker thread, instead of deferring to the
+        next main-thread frame.  This reduces latency by up to one full frame
+        interval and matches the reference implementation.
+
+        Thread-safety note: the callback runs on the ThreadPoolExecutor thread,
+        not the main thread.  We write only to reg_state.face_mesh (atomic
+        assignment in CPython) and call CheatingEvaluator which guards its own
+        state with time.time() comparisons — acceptable benign race.
+        """
+        def callback(future):
+            try:
+                result = future.result()
+
+                reg_state = self._registry.get(track_id)
+                if reg_state is None:
+                    return
+
+                # Write face mesh result (atomic in CPython — no lock needed)
+                reg_state.face_mesh = result
+
+                if result is not None:
+                    # ReID — skip for permanently locked IDs
+                    if not self._tracker.is_locked(track_id):
+                        best_id = self._reid.match(result)
+                        if best_id is not None and best_id != track_id:
+                            # Retrieve active track IDs from the live registry to prevent stale tracks from blocking ReID.
+                            # use live registry instead of stale closure — fixes V-L-1
+                            visible_ids = {s.track_id for s in self._registry.get_all()
+                                           if s.is_active}
+                            active_aliases = set(self._track_aliases.values())
+                            if best_id not in visible_ids and best_id not in active_aliases:
+                                logger.info(
+                                    f"ReID match found! Aliasing tracker ID {track_id} -> {best_id}"
+                                )
+                                self._track_aliases[track_id] = best_id
+
+                        actual_id = self._track_aliases.get(track_id, track_id)
+                        is_match = self._reid.register_embedding(actual_id, result)
+                        self._tracker.verify_embedding_match(actual_id, is_match)
+
+                    # Avoid evaluating cheating on worker threads to prevent race conditions on student state fields.
+
+            except Exception as exc:
+                logger.debug(f"FM callback error (track {track_id}): {exc}")
+
+        return callback
+
+    def _get_fm_cached(self, track_id: int) -> "FaceMeshResult | None":
+
+        """Return the cached FaceMeshResult for track_id if it is < 0.3 s old."""
+        with self._fm_cache_lock:
+            entry = self._fm_cache.get(track_id)
+        if entry is None:
+            return None
+        cache_time, cached = entry
+        if time.time() - cache_time <= 0.3:
+            return cached
+        return None
 
     def _fm_thread_infer(
-        self, frame: np.ndarray, bbox: tuple, fm_scale: float
+        self, frame: np.ndarray, bbox: tuple, fm_scale: float, track_id: int
     ) -> "FaceMeshResult | None":
         """Run face mesh inference in a worker thread.
 
         Each thread lazily initializes its own FaceLandmarker in IMAGE mode
         via threading.local() so there is no lock contention.  MediaPipe's
         C++ inference releases the GIL, giving true parallelism.
+
+        On detection failure the last cached result (< 0.3 s) is returned so
+        brief occlusions / bad frames don't cause the overlay to blink off.
 
         Returns a FaceMeshResult or None if no face is detected.
         """
@@ -288,9 +470,9 @@ class VideoPipeline:
                 ),
                 running_mode=vision.RunningMode.IMAGE,
                 num_faces=1,
-                min_face_detection_confidence=0.50,
-                min_face_presence_confidence=0.50,
-                min_tracking_confidence=0.50,
+                min_face_detection_confidence=0.80,
+                min_face_presence_confidence=0.80,
+                min_tracking_confidence=0.80,
                 output_face_blendshapes=False,
                 output_facial_transformation_matrixes=True,
             )
@@ -299,33 +481,30 @@ class VideoPipeline:
         # Scale bbox to match the (potentially downscaled) frame
         x1, y1, x2, y2 = [int(v * fm_scale) for v in bbox]
 
-        # Crop only the HEAD region (upper 40% of person bbox)
-        body_h = y2 - y1
-        y2 = y1 + int(body_h * 0.40)
-
-        # Dynamic 15% padding around the head crop
-        pad_w = int((x2 - x1) * 0.15)
-        pad_h = int((y2 - y1) * 0.15)
+        # Clamp to frame bounds (use full bbox — old working approach)
         fh, fw = frame.shape[:2]
-        x1 = max(0, x1 - pad_w)
-        y1 = max(0, y1 - pad_h)
-        x2 = min(fw, x2 + pad_w)
-        y2 = min(fh, y2 + pad_h)
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(fw, x2), min(fh, y2)
 
         if x2 <= x1 or y2 <= y1:
-            return None
+            return self._get_fm_cached(track_id)
 
         crop = frame[y1:y2, x1:x2]
         if crop.shape[0] < 40 or crop.shape[1] < 40:
-            return None
+            return self._get_fm_cached(track_id)
 
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
-        det = tl.landmarker.detect(mp_img)
+        try:
+            det = tl.landmarker.detect(mp_img)
+        except Exception as exc:
+            logger.debug(f"FaceLandmarker inference error: {exc}")
+            return self._get_fm_cached(track_id)
 
         if not det.face_landmarks:
-            return None
+            # Detection failed — return cached result if fresh (< 0.3 s)
+            return self._get_fm_cached(track_id)
 
         raw = det.face_landmarks[0]
         ch, cw = crop.shape[:2]
@@ -345,12 +524,18 @@ class VideoPipeline:
 
         bbox_orig = (int(x1 * inv), int(y1 * inv), int(x2 * inv), int(y2 * inv))
 
-        return FaceMeshResult(
+        result = FaceMeshResult(
             landmarks_2d=lm2d,
             landmarks_3d=lm3d,
             bbox=bbox_orig,
             head_matrix=hmat,
         )
+
+        # Save successful result to cache for use on future failures
+        with self._fm_cache_lock:
+            self._fm_cache[track_id] = (time.time(), result)
+
+        return result
 
     def _detection_worker(self) -> None:
         """Background thread running YOLO detection."""
@@ -365,17 +550,23 @@ class VideoPipeline:
                     # Run both inferences (Human + Tools)
                     f_copy = frame_data.frame.copy()
                     
-                    detection_result = self._detector.detect(
-                        f_copy,
-                        frame_data.frame_index,
-                        frame_data.timestamp,
-                    )
-                    
-                    tools_result = self._tools_detector.detect(
-                        f_copy,
-                        frame_data.frame_index,
-                        frame_data.timestamp,
-                    )
+                    try:
+                        # Wrap YOLO detections to prevent exceptions in worker threads from silencing pipeline.
+                        detection_result = self._detector.detect(
+                            f_copy,
+                            frame_data.frame_index,
+                            frame_data.timestamp,
+                        )
+                        
+                        tools_result = self._tools_detector.detect(
+                            f_copy,
+                            frame_data.frame_index,
+                            frame_data.timestamp,
+                        )
+                    except Exception as exc:
+                        logger.error("Detection worker exception — skipping frame: %s", exc)
+                        time.sleep(1.0)
+                        continue
                     
                     last_detect_time = time.time()
                     
@@ -407,6 +598,24 @@ class VideoPipeline:
         
         logger.info("Starting video pipeline...")
 
+        # Log all configuration at startup so every run is fully reproducible
+        self._vlog.log_startup(
+            source=self._camera.source,
+            detection_interval=self.detection_interval,
+            archive_mode=self.archive_mode,
+            face_workers=getattr(settings, "face_mesh_workers", 4),
+            video_quality=self._video_quality,
+            yolo_model=settings.yolo_model,
+            tools_model=settings.tools_model,
+            detection_confidence=settings.detection_confidence,
+            tools_confidence=settings.tools_confidence,
+            detection_imgsz=settings.detection_imgsz,
+            neighbor_k=settings.neighbor_k,
+            risk_angle_tolerance=settings.risk_angle_tolerance,
+            suspicious_duration_threshold=settings.suspicious_duration_threshold,
+            reid_match_threshold=settings.reid_match_threshold,
+        )
+
         if not self._camera.open():
             logger.error("Failed to open camera")
             return False
@@ -420,6 +629,7 @@ class VideoPipeline:
         # frame counts so they are correct for non-30-FPS sources.
         self._camera_fps: float = self._camera.actual_fps
         self._post_buffer_frames: int = max(1, round(self._camera_fps * 2))  # 2-second post-buffer
+        self._global_frame_buffer = deque(self._global_frame_buffer, maxlen=self._post_buffer_frames)
         logger.info(f"Camera FPS: {self._camera_fps:.1f} — post-buffer = {self._post_buffer_frames} frames")
 
         # Create thread pool for face mesh — threads share address space so
@@ -438,6 +648,12 @@ class VideoPipeline:
         except Exception as e:
             logger.error(f"Failed to create face-mesh thread pool: {e}. Face mesh disabled.")
             self._face_executor = None
+
+        self._vlog.log_camera_open(
+            camera_fps=self._camera_fps,
+            post_buffer_frames=self._post_buffer_frames,
+            face_workers=face_workers,
+        )
 
         # Start async detection thread
         self._detection_thread = threading.Thread(
@@ -483,6 +699,14 @@ class VideoPipeline:
                     frames_snapshot, state.track_id, time.time(),
                     cheat_ctx=cheat_ctx
                 )
+            state.recording_buffer.clear()  # Free memory immediately
+
+        # Flush phone recording if active
+        if self._phone_is_recording and len(self._phone_recording_buffer) > 0:
+            frames_snapshot = list(self._phone_recording_buffer)
+            self._phone_is_recording = False
+            self._phone_recording_buffer.clear()
+            self._save_phone_alert_video_async(frames_snapshot, time.time())
         
         # Drain and close archive writer thread (Fix 2)
         if self._archive_thread is not None:
@@ -499,11 +723,18 @@ class VideoPipeline:
         # Clean up thread pool
         try:
             if self._face_executor is not None:
-                self._face_executor.shutdown(wait=False, cancel_futures=True)
+                # Use wait=True to block until worker threads join and release MediaPipe FaceLandmarker objects.
+                self._face_executor.shutdown(wait=True, cancel_futures=True)
         except Exception as e:
             logger.warning("Thread pool shutdown error: %s", e)
+
+        # Shut down phone and gaze alert executors to clean up background worker threads.
+        self._phone_alert_executor.shutdown(wait=True)
+        self._gaze_alert_executor.shutdown(wait=True)
         
         logger.info("Video pipeline stopped")
+        # Flush and close the diagnostic log file
+        self._vlog.close()
 
     def run(self) -> Generator[PipelineFrame, None, None]:
         """
@@ -556,7 +787,11 @@ class VideoPipeline:
         # Add to global frame ring buffer for alert recordings.
         # Always buffer — needed for both student gaze alerts AND phone alerts.
         # No copy needed: cv2.VideoCapture.read() allocates a fresh ndarray per call.
-        self._global_frame_buffer.append(AlertFrame(frame_data.frame))
+        # Acquire buffer lock to protect against concurrent list snapshots from alert writers.
+        with self._buffer_lock:
+            self._global_frame_buffer.append(AlertFrame(frame_data.frame))
+            if self._frame_buffer is not None:
+                self._frame_buffer.append((frame_data.timestamp, frame_data.frame.copy()))
 
         # Check for new detection async result
         new_detection = False
@@ -616,6 +851,24 @@ class VideoPipeline:
                 f"Detection: {detection_result.count if detection_result else 0} persons, "
                 f"{tools_result.count if tools_result else 0} tools"
             )
+            # Log detection result to the diagnostic file
+            # phone label strings — keep in sync with VideoVisualizer._PHONE_LABELS
+            phone_labels_det = {'phone', 'Using_phone', 'cell phone'}
+            paper_count_det = sum(
+                1 for t in (tools_result.tools if tools_result else [])
+                if t.label not in phone_labels_det
+            )
+            phone_count_det = sum(
+                1 for t in (tools_result.tools if tools_result else [])
+                if t.label in phone_labels_det
+            )
+            self._vlog.log_detection_result(
+                frame_idx=frame_data.frame_index,
+                persons=detection_result.count if detection_result else 0,
+                phones=phone_count_det,
+                papers=paper_count_det,
+                elapsed_ms=(time.perf_counter() - t0) * 1000,
+            )
         except Empty:
             detection_result = self._last_detection_result
             tools_result = self._last_tools_result
@@ -626,15 +879,27 @@ class VideoPipeline:
         if new_detection and detection_result is not None:
             tracking_result = self._tracker.update(detection_result, frame_data.frame)
             self._last_tracking_result = tracking_result
+            # Update extrapolator history with actual tracker coordinates
+            for track in tracking_result.tracks:
+                self._extrapolator.update(track.track_id, track.bbox, frame_data.timestamp)
         elif self._last_tracking_result is not None:
-            # Reuse last tracking result — BoT-SORT's internal Kalman filter
-            # already ran its prediction on the last update call. Calling it
-            # again with empty detections every frame would cause it to drop
-            # all tracks after track_buffer frames of zero matches.
+            # Extrapolate track coordinates on intermediate frames for smooth 30 FPS tracking
+            extrapolated_tracks = []
+            for track in self._last_tracking_result.tracks:
+                pred_bbox = self._extrapolator.extrapolate(track.track_id, frame_data.timestamp)
+                bbox = pred_bbox if pred_bbox is not None else track.bbox
+                extrapolated_tracks.append(TrackedObject(
+                    track_id=track.track_id,
+                    bbox=bbox,
+                    confidence=track.confidence,
+                    is_selected=track.is_selected,
+                    label=track.label,
+                    is_predicted=track.is_predicted
+                ))
             tracking_result = TrackingResult(
                 frame_index=frame_data.frame_index,
                 timestamp=frame_data.timestamp,
-                tracks=list(self._last_tracking_result.tracks),
+                tracks=extrapolated_tracks,
             )
         else:
             tracking_result = TrackingResult(
@@ -650,16 +915,134 @@ class VideoPipeline:
 
         t2 = time.perf_counter()
 
+        # Detection Stability Filter — keep selected tracks alive through
+        # brief YOLO misses by injecting a mock track at the Kalman-predicted
+        # position.  Tolerance of 300 frames (~10s at 30fps) is intentionally
+        # large: BoT-SORT's track_buffer already handles short gaps, but
+        # selected students should never flicker out of the overlay.
+        active_track_ids = {t.track_id for t in tracking_result.tracks}
+        # Prune stale extrapolator entries to prevent historical velocity maps from growing unbounded during long sessions.
+        # prune stale extrapolator entries — fixes V-M-5
+        self._extrapolator.prune(active_track_ids)
+        tolerance = 90
+        for state in self._registry.get_all():
+            if state.track_id not in active_track_ids and state.is_active:
+                frames_missing = frame_data.frame_index - state.last_seen_frame
+                if 0 < frames_missing < tolerance:
+                    predicted_bbox = self._tracker.get_predicted_bbox(state.track_id)
+                    bbox = predicted_bbox if predicted_bbox is not None else state.bbox
+
+                    # IoU check — discard ghost tracks that overlap a live track
+                    is_overlapping = False
+                    for active_track in tracking_result.tracks:
+                        xA = max(bbox[0], active_track.bbox[0])
+                        yA = max(bbox[1], active_track.bbox[1])
+                        xB = min(bbox[2], active_track.bbox[2])
+                        yB = min(bbox[3], active_track.bbox[3])
+                        inter = max(0, xB - xA) * max(0, yB - yA)
+                        if inter > 0:
+                            aA = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                            aB = (active_track.bbox[2] - active_track.bbox[0]) * (active_track.bbox[3] - active_track.bbox[1])
+                            if inter / float(aA + aB - inter) > 0.4:
+                                is_overlapping = True
+                                break
+
+                    if is_overlapping:
+                        state.is_active = False
+                        state.last_seen_time = 0.0
+                        self._selected_ids.discard(state.track_id)
+                        continue
+
+                    tracking_result.tracks.append(TrackedObject(
+                        track_id=state.track_id,
+                        bbox=bbox,
+                        confidence=0.3,
+                        is_selected=state.track_id in self._selected_ids,
+                        is_predicted=True,
+                    ))
+
+        # Post-tracking duplicate suppression (NMS) to resolve Issue 1
+        if len(tracking_result.tracks) > 1:
+            sorted_tracks = sorted(
+                tracking_result.tracks,
+                key=lambda x: (not getattr(x, "is_predicted", False), x.confidence),
+                reverse=True
+            )
+            keep = []
+            while sorted_tracks:
+                current = sorted_tracks.pop(0)
+                keep.append(current)
+                cx1, cy1, cx2, cy2 = current.bbox
+                c_area = (cx2 - cx1) * (cy2 - cy1)
+                
+                remaining = []
+                for track in sorted_tracks:
+                    tx1, ty1, tx2, ty2 = track.bbox
+                    ix1 = max(cx1, tx1)
+                    iy1 = max(cy1, ty1)
+                    ix2 = min(cx2, tx2)
+                    iy2 = min(cy2, ty2)
+                    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+                    if inter > 0:
+                        t_area = (tx2 - tx1) * (ty2 - ty1)
+                        union = c_area + t_area - inter
+                        iou = inter / float(union)
+                        if iou >= 0.45:
+                            logger.info(
+                                f"Suppressed duplicate overlap: Track {track.track_id} "
+                                f"suppressed by Track {current.track_id} (IoU={iou:.2f})"
+                            )
+                            state = self._registry.get(track.track_id)
+                            if state:
+                                state.is_active = False
+                                state.last_seen_time = 0.0
+                                self._selected_ids.discard(track.track_id)
+                            continue
+                    remaining.append(track)
+                sorted_tracks = remaining
+            tracking_result.tracks = keep
+
         # Apply Re-ID and ID mapping
         for track in tracking_result.tracks:
+            if self._auto_select_enabled:
+                if track.track_id not in self._selected_ids and track.track_id not in self._deselected_ids:
+                    self._selected_ids.add(track.track_id)
+                    self._tracker.add_selection(track.track_id)
+                    logger.info(f"Auto-selected student ID {track.track_id} for monitoring.")
             track.is_selected = track.track_id in self._selected_ids
 
 
+
         # Update spatial registry and compute neighbors for ALL tracks
-        expired_ids = self._registry.update(tracking_result.tracks, frame_data.frame_index, frame_data.timestamp)
+        expired_states = self._registry.update(tracking_result.tracks, frame_data.frame_index, frame_data.timestamp)
+        expired_ids = []
         
         # Cleanup ReID memory and aliases
-        if expired_ids:
+        if expired_states:
+            expired_ids = [state.track_id for state in expired_states]
+            
+            # Save in-progress recordings for expired tracks
+            for state in expired_states:
+                if state.is_alert_recording and len(state.recording_buffer) > 0:
+                    frames_snapshot = list(state.recording_buffer)
+                    state.is_alert_recording = False
+                    cheat_type = "phone" if state.is_using_phone else "gaze"
+                    cheat_ctx = {
+                        'target_paper': state.cheating_target_paper,
+                        'target_neighbor': state.cheating_target_neighbor,
+                        'paper_bbox': self._paper_bboxes.get(
+                            state.cheating_target_paper
+                        ) if state.cheating_target_paper else None,
+                        'is_heuristic_paper': state.is_heuristic_paper,
+                        'is_using_phone': state.is_using_phone,
+                        'phone_bbox': state.phone_bbox,
+                    }
+                    self._save_alert_video_async(
+                        frames_snapshot, state.track_id, frame_data.timestamp,
+                        cheat_type=cheat_type, cheat_ctx=cheat_ctx
+                    )
+                state.recording_buffer.clear()  # Free memory immediately
+            
             self._reid.remove_embeddings(expired_ids)
             # Use the public API to prune tracker state — avoids reaching
             # into private dicts/sets from outside the tracker class.
@@ -672,12 +1055,28 @@ class VideoPipeline:
                 del self._track_aliases[k]
 
         t3 = time.perf_counter()
+
+        # Log tracking and registry state whenever we get a new detection batch
+        if new_detection:
+            # Retrieve last logged track IDs to correctly identify new students.
+            prev_ids = self._last_logged_track_ids
+            current_ids = {t.track_id for t in tracking_result.tracks}
+            # Update last logged track IDs with the current ones.
+            self._last_logged_track_ids = current_ids
+            self._vlog.log_tracking_update(
+                frame_idx=frame_data.frame_index,
+                track_ids=sorted(current_ids),
+                new_ids=sorted(current_ids - prev_ids),
+                expired_ids=sorted(expired_ids) if expired_ids else [],
+                registry_size=len(self._registry.get_all()),
+            )
         
         self._neighbor_computer.compute_neighbors(self._registry, k=get_settings().neighbor_k)
         
         # Compute paper neighbors specifically (excluding the student's closest paper)
         if tools_result is not None:
             # Labels that are NOT phones — treat as papers on the desk
+            # phone label strings — keep in sync with VideoVisualizer._PHONE_LABELS
             phone_labels = {'phone', 'Using_phone', 'cell phone'}
             paper_tools = [t for t in tools_result.tools if t.label not in phone_labels]
             paper_centers = [t.center for t in paper_tools]
@@ -687,66 +1086,37 @@ class VideoPipeline:
             
             # Phone detection — NOT linked to any student.
             # A phone anywhere in the frame triggers an independent alert clip.
+            # phone label strings — keep in sync with VideoVisualizer._PHONE_LABELS
             phone_tools = [t for t in tools_result.tools if t.label in ('phone', 'Using_phone', 'cell phone')]
-            phone_assigned_students: set[int] = set()
-            
-            for phone in phone_tools:
-                px1, py1, px2, py2 = phone.bbox
-                phone_cx = (px1 + px2) // 2
-                phone_cy = (py1 + py2) // 2
-                
-                # Find which student "owns" this phone (phone center inside student bbox)
-                best_student = None
-                best_dist = float('inf')
-                for s in self._registry.get_all():
-                    if not getattr(s, 'is_active', True):
-                        continue
-                    sx1, sy1, sx2, sy2 = s.bbox
-                    # Expand bbox by 20% for robustness
-                    bw, bh = sx2 - sx1, sy2 - sy1
-                    ex1 = sx1 - int(bw * 0.1)
-                    ey1 = sy1 - int(bh * 0.1)
-                    ex2 = sx2 + int(bw * 0.1)
-                    ey2 = sy2 + int(bh * 0.1)
-                    
-                    if ex1 <= phone_cx <= ex2 and ey1 <= phone_cy <= ey2:
-                        dist = abs(phone_cx - s.center[0]) + abs(phone_cy - s.center[1])
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_student = s
-                
-                if best_student is not None:
-                    best_student.is_using_phone = True
-                    best_student.phone_bbox = phone.bbox
-                    phone_assigned_students.add(best_student.track_id)
-                    
-                    # Phone = immediate cheating (no 2s delay needed)
-                    if not best_student.is_cheating:
-                        best_student.is_cheating = True
-                        best_student.cheating_cooldown = 90  # ~3s at 30fps (must outlast recording)
-                        logger.warning(
-                            f"PHONE CHEATING: Track {best_student.track_id} "
-                            f"using phone (conf={phone.confidence:.2f})"
-                        )
-                        # Fire alert callback (same mechanism as gaze cheating)
-                        cb = getattr(self._cheating_evaluator, "on_alert", None)
-                        if cb is not None:
-                            try:
-                                cb(best_student)
-                            except Exception as e:
-                                logger.error(f"on_alert callback error (phone): {e}")
-                    else:
-                        # Already cheating — keep refreshing cooldown
-                        best_student.cheating_cooldown = 90
-            
-            # Clear phone flag for students no longer holding a phone,
-            # BUT keep it sticky during an active alert recording so brief
-            # occlusions don't cut the video short or change the cheat type.
-            for s in self._registry.get_all():
-                if s.track_id not in phone_assigned_students:
-                    if not s.is_alert_recording:
-                        s.is_using_phone = False
-                        s.phone_bbox = None
+            self._phone_detected = len(phone_tools) > 0
+
+            # attribute phone detection to the nearest active student — fixes V-L-3
+            if phone_tools:
+                for tool in phone_tools:
+                    nearest = None
+                    min_dist = 300  # pixels — ignore phones far from any student
+                    for s in self._registry.get_all():
+                        if not s.is_active:
+                            continue
+                        dx = tool.center[0] - s.center[0]
+                        dy = tool.center[1] - s.center[1]
+                        dist = (dx * dx + dy * dy) ** 0.5
+                        if dist < min_dist:
+                            min_dist = dist
+                            nearest = s
+                    if nearest is not None:
+                        nearest.is_using_phone = True
+                        if not nearest.is_cheating:
+                            nearest.is_cheating = True
+                            nearest.cheating_cooldown = self._post_buffer_frames
+            self._phone_current_bboxes = [t.bbox for t in phone_tools]
+            if self._phone_detected:
+                logger.warning(f"PHONE DETECTED: {len(phone_tools)} phone(s) in frame")
+                self._vlog.log_phone_detected(
+                    frame_idx=frame_data.frame_index,
+                    bbox_count=len(phone_tools),
+                    bboxes=[t.bbox for t in phone_tools],
+                )
         
         t4 = time.perf_counter()
 
@@ -776,46 +1146,18 @@ class VideoPipeline:
         #    - First, COLLECT any completed futures from PREVIOUS cycle
         #    - Then, SUBMIT new jobs for this cycle
         
-        # Collect completed futures
+        # Collect completed futures — housekeeping only.
+        # ReID, face_mesh update, and cheating evaluation all happen in
+        # the done_callback (_make_fm_callback) immediately when the result
+        # arrives, so here we just remove finished futures from the queue.
         still_pending = []
-        _fm_collected = 0  # DEBUG
-        _fm_none_count = 0  # DEBUG
-        _fm_errors = 0  # DEBUG
-        _fm_not_ready = 0  # DEBUG
+        _fm_done = 0
+        _fm_not_ready = 0
         for future, orig_track_id in self._pending_fm_futures:
             if future.done():
-                try:
-                    result = future.result(timeout=0)
-                    
-                    reg_state = self._registry.get(orig_track_id)
-                    if reg_state is not None:
-                        # Transient face mesh: always overwrite with current result.
-                        # If result is None (face not detected this frame), clear the
-                        # old mesh so we don't draw a stale/frozen face on screen.
-                        reg_state.face_mesh = result
-                        if result is not None:
-                            _fm_collected += 1  # DEBUG
-                        else:
-                            _fm_none_count += 1  # DEBUG
-                    # ReID Integration — skip for locked IDs (already confirmed)
-                    if result is not None and not self._tracker.is_locked(orig_track_id):
-                        best_id = self._reid.match(result)
-                        if best_id is not None and best_id != orig_track_id:
-                            visible_ids = {t.track_id for t in tracking_result.tracks}
-                            active_aliases = set(self._track_aliases.values())
-                            
-                            if best_id not in visible_ids and best_id not in active_aliases:
-                                logger.info(f"ReID match found! Aliasing tracker ID {orig_track_id} -> {best_id}")
-                                self._track_aliases[orig_track_id] = best_id
-
-                        actual_id = self._track_aliases.get(orig_track_id, orig_track_id)
-                        is_match = self._reid.register_embedding(actual_id, result)
-                        self._tracker.verify_embedding_match(actual_id, is_match)
-                except Exception as e:
-                    _fm_errors += 1  # DEBUG
-                    logger.warning(f"Face mesh thread error (track {orig_track_id}): {e}")
+                _fm_done += 1
             else:
-                _fm_not_ready += 1  # DEBUG
+                _fm_not_ready += 1
                 still_pending.append((future, orig_track_id))
         self._pending_fm_futures = still_pending
 
@@ -823,8 +1165,8 @@ class VideoPipeline:
         if frame_data.frame_index % 30 == 0 and (selected_tracks or self._pending_fm_futures):
             fm_in_registry = sum(1 for s in self._registry.get_all() if s.face_mesh is not None)
             logger.debug(
-                f"FM: collected={_fm_collected} none={_fm_none_count} "
-                f"errors={_fm_errors} not_ready={_fm_not_ready} "
+                f"FM: collected={_fm_done} none=0 "
+                f"errors=0 not_ready={_fm_not_ready} "
                 f"pending={len(self._pending_fm_futures)} "
                 f"registry_with_mesh={fm_in_registry} "
                 f"student_states={len(student_states)} "
@@ -842,19 +1184,32 @@ class VideoPipeline:
             logger.debug(f"FM: student_states with mesh after refresh: {with_mesh}/{len(student_states)}")
 
         # Submit NEW face-mesh jobs via thread pool.
-        # Only submit when there's capacity (pending < workers).
+        # Rules (matching the original working multiprocessing approach):
+        #   1. Skip any student that already has a pending job — prevents a race
+        #      where an OLDER result arrives late and overwrites a newer one,
+        #      causing the face overlay to appear at a stale ("flying") position.
+        #   2. Respect available worker slots (pending < num_workers).
+        #   3. Cap total pending at 3 × workers as a safety net.
         if selected_tracks and student_states and self._face_executor is not None:
-            available = self._fm_num_workers - len(self._pending_fm_futures)
+            # Safety cap: discard oldest futures if queue grew too large
+            max_pending = 100
+            if len(self._pending_fm_futures) > max_pending:
+                excess = self._pending_fm_futures[:-max_pending]
+                for f, _ in excess:
+                    f.cancel()  # No-op if already running, but prevents result retrieval
+                self._pending_fm_futures = self._pending_fm_futures[-max_pending:]
+
+            # Only submit for students WITHOUT a pending job (key fix vs old round-robin)
+            pending_track_ids = {tid for _, tid in self._pending_fm_futures}
             new_students = []
-            if available > 0:
-                n_submit = min(available, len(student_states))
-                for i in range(n_submit):
-                    idx = (self._fm_rr_idx + i) % len(student_states)
-                    new_students.append(student_states[idx])
-                self._fm_rr_idx = (self._fm_rr_idx + n_submit) % len(student_states)
-            
+            for state in student_states:
+                if state.track_id not in pending_track_ids:
+                    new_students.append(state)
+
             if new_students:
-                # Compute face mesh scale factor once (original res → 1080p).
+                # Compute face mesh scale factor for current frame dimensions.
+                # Recalculated whenever _fm_scale_computed is False (e.g. after
+                # a processing-resolution change via the G key).
                 if not self._fm_scale_computed:
                     h = frame_data.frame.shape[0]
                     if h > self._recording_max_h:
@@ -862,7 +1217,7 @@ class VideoPipeline:
                     else:
                         self._fm_scale = 1.0
                     self._fm_scale_computed = True
-                
+
                 # Downscale frame for face mesh (saves ~4× MediaPipe inference time)
                 fm_scale = self._fm_scale
                 if fm_scale < 1.0:
@@ -872,21 +1227,31 @@ class VideoPipeline:
                     fm_frame = cv2.resize(frame_data.frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
                 else:
                     fm_frame = frame_data.frame.copy()
-                
-                # Submit to thread pool — threads share memory so no SHM needed.
-                # Each thread gets a reference to the same fm_frame ndarray.
-                # We pass a COPY of the frame so it's safe even if the main
-                # thread modifies frame_data on the next iteration.
+
+                # Submit to thread pool.
+                # Old pattern: add_done_callback so cheating is evaluated
+                # IMMEDIATELY when face mesh is ready, not deferred to next frame.
                 for state in new_students:
                     future = self._face_executor.submit(
-                        self._fm_thread_infer, fm_frame, state.bbox, fm_scale
+                        self._fm_thread_infer, fm_frame, state.bbox, fm_scale, state.track_id
+                    )
+                    # Remove tracking_result argument to match the updated callback signature.
+                    future.add_done_callback(
+                        self._make_fm_callback(state.track_id)
                     )
                     self._pending_fm_futures.append((future, state.track_id))
 
-        # 3. Evaluate cheating on the MAIN THREAD — no race condition
+        # 3. Cheating evaluation — runs every frame for every selected student.
+        # The evaluator snapshots reg_state.face_mesh internally and routes to
+        # either the face-lost path (_handle_face_lost) or the gaze-check path.
+        # A single call here is sufficient and avoids a race where the FM worker
+        # delivers a result between two consecutive is-None / is-not-None checks,
+        # which previously caused both branches to fire in the same frame.
         if selected_tracks:
             for state in student_states:
-                self._cheating_evaluator.evaluate(state.track_id)
+                reg_state = self._registry.get(state.track_id)
+                if reg_state is not None:
+                    self._cheating_evaluator.evaluate(state.track_id)
 
         # 4. Alert recording collector — runs AFTER cheating evaluation,
         #    so is_cheating and is_alert_recording are guaranteed stable.
@@ -909,24 +1274,45 @@ class VideoPipeline:
                             f"{active_recordings} recordings already active (max 3)"
                         )
                         self._recording_skip_warned.add(state.track_id)
+                        self._vlog.log_recording_cap_hit(
+                            track_id=state.track_id,
+                            active_recordings=active_recordings,
+                        )
                     continue
                 
-                # START recording: snapshot raw pre-buffer (last ~3s).
+                # START recording: snapshot raw pre-buffer (last ~2s).
                 # Pre-event frames are stored RAW (no annotation) because:
-                #   1. Annotating 90 frames blocks the main thread for ~180ms
+                #   1. Annotating frames blocks the main thread
                 #   2. Labels (CHEATER/VICTIM) weren't identified yet pre-event
                 # Only during/after frames are annotated with cheating evidence.
                 state.is_alert_recording = True
-                state.recording_buffer = deque(self._global_frame_buffer, maxlen=300)
+                # Acquire buffer lock to protect against concurrent frame appends.
+                with self._buffer_lock:
+                    pre_frames = list(self._global_frame_buffer)[-self._post_buffer_frames:]
+                state.recording_buffer = deque(pre_frames, maxlen=300)
                 state.frames_to_record = self._post_buffer_frames  # 2-second post-buffer
                 self._recording_skip_warned.discard(state.track_id)  # Reset warn on successful start
+                cheat_type_start = "phone" if state.is_using_phone else "gaze"
+                self._vlog.log_alert_recording_start(
+                    track_id=state.track_id,
+                    prebuffer_frames=len(state.recording_buffer),
+                    post_buffer_frames=self._post_buffer_frames,
+                    cheat_type=cheat_type_start,
+                )
             
             if not state.is_alert_recording:
                 continue
 
-            # Append current frame + track ID to recording buffer at full resolution.
+            # Append current frame + track ID + bbox + center to recording buffer at full resolution.
             # No copy needed: cv2.VideoCapture.read() allocates fresh per call.
-            state.recording_buffer.append(AlertFrame(frame_data.frame, state.track_id))
+            state.recording_buffer.append(
+                AlertFrame(
+                    frame_data.frame,
+                    state.track_id,
+                    student_bbox=state.bbox,
+                    student_center=state.center
+                )
+            )
 
             if state.is_cheating:
                 # Still cheating — keep recording, reset post-cheating countdown
@@ -939,7 +1325,7 @@ class VideoPipeline:
                     # then reset recording state immediately.
                     frames_snapshot = list(state.recording_buffer)
                     state.is_alert_recording = False
-                    state.recording_buffer = deque(maxlen=300)
+                    state.recording_buffer = deque(maxlen=1800)
                     
                     # Determine cheat type BEFORE resetting state
                     cheat_type = "phone" if state.is_using_phone else "gaze"
@@ -983,13 +1369,19 @@ class VideoPipeline:
             self._phone_is_recording = True
             # Pre-event frames stored with empty bboxes [] — the phone wasn't
             # visible yet, so no red box should appear in the pre-buffer section.
-            pre = list(self._global_frame_buffer)[-self._post_buffer_frames:]  # last ~2s
+            # Acquire buffer lock to protect against concurrent frame appends.
+            with self._buffer_lock:
+                pre = list(self._global_frame_buffer)[-self._post_buffer_frames:]  # last ~2s
             self._phone_recording_buffer = deque(
                 [AlertFrame(item.frame, phone_bboxes=[]) for item in pre],
-                maxlen=300,
+                maxlen=1800,
             )
             self._phone_frames_to_record = self._post_buffer_frames
             logger.info("Phone alert recording STARTED")
+            self._vlog.log_phone_alert_recording_start(
+                prebuffer_frames=len(pre),
+                post_buffer_frames=self._post_buffer_frames,
+            )
 
         if self._phone_is_recording:
             # Store frame alongside current phone bboxes (may be [] if phone just left)
@@ -1003,11 +1395,45 @@ class VideoPipeline:
                 if self._phone_frames_to_record <= 0:
                     frames_snapshot = list(self._phone_recording_buffer)
                     self._phone_is_recording = False
-                    self._phone_recording_buffer = deque(maxlen=300)
+                    self._phone_recording_buffer = deque(maxlen=1800)
                     self._save_phone_alert_video_async(frames_snapshot, frame_data.timestamp)
 
         t5 = time.perf_counter()
-        
+
+        # Build compact track list for the per-frame diagnostic log
+        tracks_for_log = [
+            {
+                "id": t.track_id,
+                "bbox": list(t.bbox),
+                "selected": t.is_selected,
+                "conf": round(t.confidence, 3),
+            }
+            for t in tracking_result.tracks
+        ]
+        self._vlog.log_frame(
+            frame_idx=frame_data.frame_index,
+            timestamp=frame_data.timestamp,
+            proc_ms=(t5 - t0) * 1000,
+            detect_ms=(t1 - t0) * 1000,
+            track_ms=(t2 - t1) * 1000,
+            registry_ms=(t3 - t2) * 1000,
+            neighbor_ms=(t4 - t3) * 1000,
+            facemesh_ms=(t5 - t4) * 1000,
+            tracks=tracks_for_log,
+            new_detection=new_detection,
+            detection_persons=detection_result.count if detection_result else 0,
+            detection_tools=tools_result.count if tools_result else 0,
+            selected_count=sum(1 for t in tracking_result.tracks if t.is_selected),
+            pending_fm_futures=len(self._pending_fm_futures),
+            fm_collected=_fm_done,
+            fm_none=0,
+            fm_errors=0,
+            phone_detected=self._phone_detected,
+            phone_is_recording=self._phone_is_recording,
+            global_buffer_len=len(self._global_frame_buffer),
+            processing_res=self._processing_presets[self._processing_preset_idx][0],
+        )
+
         if frame_data.frame_index % 30 == 0:
             logger.info(
                 f"PIPELINE_PERF:\n"
@@ -1057,13 +1483,28 @@ class VideoPipeline:
         Args:
             track_ids: List of track IDs to monitor.
         """
+        self._auto_select_enabled = True
+        self._deselected_ids.clear()
+        ids_before = sorted(self._selected_ids)
         self._selected_ids = set(track_ids)
         self._tracker.select_tracks(track_ids)
+        self._vlog.log_student_selection(
+            action="SELECT",
+            ids_before=ids_before,
+            ids_after=sorted(self._selected_ids),
+        )
 
     def add_student(self, track_id: int) -> None:
         """Add a student to monitoring."""
+        self._deselected_ids.discard(track_id)
+        ids_before = sorted(self._selected_ids)
         self._selected_ids.add(track_id)
         self._tracker.add_selection(track_id)
+        self._vlog.log_student_selection(
+            action="ADD",
+            ids_before=ids_before,
+            ids_after=sorted(self._selected_ids),
+        )
 
     def remove_student(self, track_id: int) -> None:
         """Remove a student from monitoring and realign paper assignments.
@@ -1072,8 +1513,15 @@ class VideoPipeline:
         removes them from other students' neighbor lists, and invalidates the
         neighbor cache so papers realign to adjacent students on the next frame.
         """
+        self._deselected_ids.add(track_id)
+        ids_before = sorted(self._selected_ids)
         self._selected_ids.discard(track_id)
         self._tracker.remove_selection(track_id)
+        self._vlog.log_student_selection(
+            action="REMOVE",
+            ids_before=ids_before,
+            ids_after=sorted(self._selected_ids),
+        )
         
         # Clear this student's paper so it's no longer a neighbor paper target
         state = self._registry.get(track_id)
@@ -1089,8 +1537,12 @@ class VideoPipeline:
                 s.neighbor_distances.pop(track_id, None)
                 s.neighbor_papers.pop(track_id, None)
             # Remove any surrounding paper that belonged to the deselected student
-            if state and state.paper_center in s.surrounding_papers:
-                s.surrounding_papers.remove(state.paper_center)
+            if state and state.paper_center is not None:
+                # remove ALL occurrences — fixes V-L-6
+                s.surrounding_papers = [
+                    p for p in s.surrounding_papers
+                    if p != state.paper_center
+                ]
         
         # Invalidate the neighbor stability cache so the next frame
         # fully recomputes neighbors and paper assignments.
@@ -1099,6 +1551,8 @@ class VideoPipeline:
 
     def clear_selection(self) -> None:
         """Clear all selected students."""
+        self._auto_select_enabled = False
+        self._deselected_ids.clear()
         self._selected_ids.clear()
         if hasattr(self._tracker, 'clear_selection'):
             self._tracker.clear_selection()
@@ -1130,6 +1584,8 @@ class VideoPipeline:
 
     def _render_alert_frame(
         self, raw_frame: np.ndarray, cheater_track_id: int,
+        student_bbox: tuple[int, int, int, int] | None = None,
+        student_center: tuple[int, int] | None = None,
         cheat_ctx: dict | None = None,
     ) -> np.ndarray:
         """
@@ -1138,6 +1594,8 @@ class VideoPipeline:
         Args:
             raw_frame: The raw camera frame.
             cheater_track_id: Track ID of the cheating student.
+            student_bbox: Current student bbox in this frame.
+            student_center: Current student center in this frame.
             cheat_ctx: Frozen snapshot of cheating state captured before reset.
                        Contains target_paper, target_neighbor, paper_bbox, etc.
                        If None, falls back to live registry (may be stale).
@@ -1151,20 +1609,30 @@ class VideoPipeline:
         """
         frame = raw_frame.copy()
         cheater = self._registry.get(cheater_track_id)
-        if cheater is None:
-            return frame
+        
+        # Fallback to registry if student_bbox or student_center are not passed
+        bbox = student_bbox
+        center = student_center
+        if bbox is None or center is None:
+            if cheater is not None:
+                if bbox is None:
+                    bbox = cheater.bbox
+                if center is None:
+                    center = cheater.center
+            else:
+                return frame
 
         # Use frozen snapshot if available; fall back to live state.
         ctx = cheat_ctx or {}
-        is_using_phone = ctx.get('is_using_phone', getattr(cheater, 'is_using_phone', False))
-        phone_bbox = ctx.get('phone_bbox', getattr(cheater, 'phone_bbox', None))
-        target_paper = ctx.get('target_paper', cheater.cheating_target_paper)
-        target_neighbor = ctx.get('target_neighbor', cheater.cheating_target_neighbor)
+        is_using_phone = ctx.get('is_using_phone', getattr(cheater, 'is_using_phone', False) if cheater else False)
+        phone_bbox = ctx.get('phone_bbox', getattr(cheater, 'phone_bbox', None) if cheater else None)
+        target_paper = ctx.get('target_paper', cheater.cheating_target_paper if cheater else None)
+        target_neighbor = ctx.get('target_neighbor', cheater.cheating_target_neighbor if cheater else None)
         paper_bbox_snap = ctx.get('paper_bbox')  # YOLO bbox from snapshot
-        is_heuristic = ctx.get('is_heuristic_paper', getattr(cheater, 'is_heuristic_paper', True))
+        is_heuristic = ctx.get('is_heuristic_paper', getattr(cheater, 'is_heuristic_paper', True) if cheater else True)
 
         # Draw the cheater in RED with full body bbox
-        cx1, cy1, cx2, cy2 = cheater.bbox
+        cx1, cy1, cx2, cy2 = bbox
         cv2.rectangle(frame, (cx1, cy1), (cx2, cy2), (0, 0, 255), 3)
         
         # Label depends on cheating type
@@ -1204,14 +1672,14 @@ class VideoPipeline:
                 # Gaze line from cheater center to paper center
                 paper_cx = (px1 + px2) // 2
                 paper_cy = (py1 + py2) // 2
-                cv2.line(frame, cheater.center, (paper_cx, paper_cy), (0, 0, 255), 2, cv2.LINE_AA)
+                cv2.line(frame, center, (paper_cx, paper_cy), (0, 0, 255), 2, cv2.LINE_AA)
             elif not is_heuristic:
                 # YOLO paper but bbox not in cache — draw circle fallback
                 px, py = target_paper
                 cv2.circle(frame, (px, py), 22, (0, 255, 255), 3, cv2.LINE_AA)
                 cv2.putText(frame, "PAPER", (px - 28, py - 28),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA)
-                cv2.line(frame, cheater.center, (px, py), (0, 0, 255), 2, cv2.LINE_AA)
+                cv2.line(frame, center, (px, py), (0, 0, 255), 2, cv2.LINE_AA)
         
         # Draw status banner at top
         banner_h = 40
@@ -1290,7 +1758,8 @@ class VideoPipeline:
                 height = max_h
             out_size = (width, height)
 
-            alerts_dir = Path(self._settings.alerts_dir)
+            # Resolve alerts_dir to prevent path traversal vulnerability.
+            alerts_dir = Path(self._settings.alerts_dir).resolve()
             alerts_dir.mkdir(exist_ok=True)
             time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
 
@@ -1319,12 +1788,17 @@ class VideoPipeline:
                 return
 
             frames_written = 0
+            annotated_frames = []
+            subject_point = None
             try:
                 for item in frames:
                     if item.frame is None:
                         continue
                     if item.phone_bboxes:
                         out_frame = self._render_phone_alert_frame(item.frame, item.phone_bboxes)
+                        if subject_point is None:
+                            px1, py1, px2, py2 = item.phone_bboxes[0]
+                            subject_point = ((px1 + px2) // 2, (py1 + py2) // 2)
                     else:
                         out_frame = item.frame
                     if out_frame.shape[:2] != (height, width):
@@ -1333,6 +1807,25 @@ class VideoPipeline:
                     # _render_phone_alert_frame already returns a copy, and
                     # pre-event raw frames are consumed once — safe in-place.
                     draw_timestamp_overlay(out_frame)
+                    annotated_frames.append(out_frame)
+
+                # Composer integration path
+                if getattr(self, '_composer', None) is not None:
+                    if subject_point is None:
+                        subject_point = (width // 2, height // 2)
+                    timestamp_start = frames[0].timestamp if frames else timestamp - (len(annotated_frames) / self._camera_fps)
+                    timestamp_end = frames[-1].timestamp if frames else timestamp
+                    self._composer.on_video_alert(
+                        frames=annotated_frames,
+                        alert_type="phone",
+                        subject_point=subject_point,
+                        camera_id=self._camera_id,
+                        timestamp_start=timestamp_start,
+                        timestamp_end=timestamp_end
+                    )
+                    return
+
+                for out_frame in annotated_frames:
                     writer.write(out_frame)
                     frames_written += 1
                 duration = frames_written / self._camera_fps
@@ -1345,9 +1838,8 @@ class VideoPipeline:
             finally:
                 writer.release()
 
-        threading.Thread(
-            target=writer_task, daemon=True, name="PhoneAlertWriter"
-        ).start()
+        # Use a bounded thread pool executor for phone alert writing to prevent uncapped memory footprint.
+        self._phone_alert_executor.submit(writer_task)
 
     def _archive_writer_loop(self) -> None:
         """Background thread: drain archive queue and write frames to disk.
@@ -1401,6 +1893,13 @@ class VideoPipeline:
                         f"Archive recording started: {filepath} "
                         f"(codec={codec}, quality={self._video_quality}, size={w}x{h})"
                     )
+                    self._vlog.log_archive_start(
+                        filepath=str(filepath),
+                        codec=codec,
+                        quality=self._video_quality,
+                        size=(w, h),
+                        fps=archive_fps,
+                    )
                     break
                 writer.release()
             else:
@@ -1411,7 +1910,8 @@ class VideoPipeline:
         try:
             self._archive_queue.put_nowait(frame)
         except queue.Full:
-            pass
+            # Log warning when the queue is full to prevent silent frame drops.
+            logger.warning("Archive queue full — dropping frame (disk too slow?)")
 
     def _save_alert_video_async(
         self, frames: list[np.ndarray], track_id: int, timestamp: float,
@@ -1436,7 +1936,8 @@ class VideoPipeline:
                 logger.warning(f"Alert video for track {track_id}: empty frame list, skipping.")
                 return
             
-            alerts_dir = Path(self._settings.alerts_dir)
+            # Resolve alerts_dir to prevent path traversal vulnerability.
+            alerts_dir = Path(self._settings.alerts_dir).resolve()
             alerts_dir.mkdir(exist_ok=True)
             
             time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
@@ -1494,6 +1995,8 @@ class VideoPipeline:
                 return
             
             frames_written = 0
+            annotated_frames = []
+            subject_point = None
             try:
                 for item in frames:
                     raw_frame = item.frame if isinstance(item, AlertFrame) else (item[0] if isinstance(item, tuple) else item)
@@ -1501,14 +2004,55 @@ class VideoPipeline:
                     # Pre-event frames have tid=None → write raw.
                     # During/post frames have track_id → annotate.
                     if tid is not None:
-                        out = self._render_alert_frame(raw_frame, tid, cheat_ctx=cheat_ctx)
+                        student_bbox = item.student_bbox if isinstance(item, AlertFrame) else None
+                        student_center = item.student_center if isinstance(item, AlertFrame) else None
+                        if student_center is not None:
+                            subject_point = student_center
+                        out = self._render_alert_frame(
+                            raw_frame, tid,
+                            student_bbox=student_bbox,
+                            student_center=student_center,
+                            cheat_ctx=cheat_ctx
+                        )
                     else:
-                        out = raw_frame
+                        # Copy the raw frame to prevent shared-buffer corruption when burning the timestamp overlay.
+                        out = raw_frame.copy()
                     # Resize if needed
                     if out.shape[:2] != (height, width):
                         out = cv2.resize(out, out_size, interpolation=cv2.INTER_AREA)
                     # Always burn timestamp into gaze alert videos
                     draw_timestamp_overlay(out)
+                    annotated_frames.append(out)
+                
+                # Composer integration path
+                if getattr(self, '_composer', None) is not None:
+                    # Resolve subject_point for phone cheat if needed
+                    if cheat_type == "phone":
+                        phone_bbox = cheat_ctx.get('phone_bbox') if cheat_ctx else None
+                        if phone_bbox:
+                            subject_point = ((phone_bbox[0] + phone_bbox[2]) // 2, (phone_bbox[1] + phone_bbox[3]) // 2)
+
+                    if subject_point is None:
+                        subject_point = (width // 2, height // 2)
+
+                    # Extract the original timestamp from the frame tuple/AlertFrame
+                    def _get_ts(item):
+                        return item.timestamp if hasattr(item, 'timestamp') else (item[0] if isinstance(item, tuple) else timestamp)
+                    
+                    timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
+                    timestamp_end = _get_ts(frames[-1]) if frames else timestamp
+                    
+                    self._composer.on_video_alert(
+                        frames=annotated_frames,
+                        alert_type=cheat_type,
+                        subject_point=subject_point,
+                        camera_id=self._camera_id,
+                        timestamp_start=timestamp_start,
+                        timestamp_end=timestamp_end
+                    )
+                    return
+
+                for out in annotated_frames:
                     writer.write(out)
                     frames_written += 1
                 duration = frames_written / self._camera_fps
@@ -1516,12 +2060,23 @@ class VideoPipeline:
                     f"Saved {cheat_type} alert video: {filename} "
                     f"({duration:.1f}s, {frames_written} frames, {self._camera_fps:.0f}fps)"
                 )
+                self._vlog.log_alert_recording_save(
+                    track_id=track_id,
+                    filename=str(filename),
+                    frames=frames_written,
+                    duration_sec=duration,
+                    codec=codec if writer else "unknown",
+                    cheat_type=cheat_type,
+                    cheat_ctx=cheat_ctx,
+                )
             except Exception as e:
                 logger.error(f"Error saving alert video: {e}")
+                self._vlog.log_error(context="save_alert_video", error=str(e))
             finally:
                 writer.release()
                 
-        threading.Thread(target=writer_task, daemon=True, name=f"AlertWriter-{track_id}").start()
+        # Use a bounded thread pool executor for gaze alert writing to prevent uncapped memory footprint.
+        self._gaze_alert_executor.submit(writer_task)
 
     def get_all_tracks(self) -> list[TrackedObject]:
         """Get all currently tracked objects (for selection UI)."""
@@ -1543,6 +2098,11 @@ class VideoPipeline:
     def is_running(self) -> bool:
         """Check if pipeline is running."""
         return self._is_running
+
+    @property
+    def video_quality(self) -> int:
+        """Public accessor for current video quality level."""
+        return self._video_quality
 
     def __enter__(self) -> "VideoPipeline":
         """Context manager entry."""

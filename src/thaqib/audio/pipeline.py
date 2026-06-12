@@ -15,6 +15,7 @@ import threading
 import time
 from dataclasses import dataclass
 import queue
+from collections import deque
 
 import numpy as np
 
@@ -70,64 +71,126 @@ class EpisodeTracker:
         self._min_sec   = episode_min_sec
         self._grace_sec = episode_grace_sec
         self._episodes: dict[int, CheatEpisode] = {}   # keyed by mic_id
+        self._lock = threading.Lock()
 
     def on_alert(self, alert: "AudioAlert") -> None:
         """Register a new cheating alert — opens or extends the episode."""
-        mic_id = alert.mic_id
-        now    = alert.timestamp
+        with self._lock:
+            mic_id = alert.mic_id
+            now    = alert.timestamp
 
-        if mic_id not in self._episodes:
-            ep = CheatEpisode(
-                mic_id=mic_id,
-                start_time=now,
-                last_alert_time=now,
-                sample_rate=alert.sample_rate,
-            )
-            self._episodes[mic_id] = ep
-            logger.info(f"Episode OPENED  mic{mic_id} @ {now:.1f}")
-        else:
-            ep = self._episodes[mic_id]
+            if mic_id not in self._episodes:
+                ep = CheatEpisode(
+                    mic_id=mic_id,
+                    start_time=now,
+                    last_alert_time=now,
+                    sample_rate=alert.sample_rate,
+                )
+                # Initialize with the alert's audio clip which contains [1.0s pre-event] + [first incident chunk/buffer]
+                ep.audio_chunks = [alert.audio_clip.copy()]
+                self._episodes[mic_id] = ep
+                logger.info(f"Episode OPENED  mic{mic_id} @ {now:.1f}")
+            else:
+                ep = self._episodes[mic_id]
 
-        ep.on_alert(alert)
+            ep.on_alert(alert)
 
-        if not ep.confirmed and (now - ep.start_time) >= self._min_sec:
-            ep.confirmed = True
-            logger.warning(
-                f"Episode CONFIRMED mic{mic_id}: sustained={now - ep.start_time:.1f}s "
-                f"alerts={ep.alert_count} keywords={ep.all_keywords}"
-            )
+            if not ep.confirmed and (now - ep.start_time) >= self._min_sec:
+                ep.confirmed = True
+                logger.warning(
+                    f"Episode CONFIRMED mic{mic_id}: sustained={now - ep.start_time:.1f}s "
+                    f"alerts={ep.alert_count} keywords={ep.all_keywords}"
+                )
 
-    def on_chunk(self, chunk: "AudioChunk") -> "list[CheatEpisode]":
+    def on_chunk(self, chunk: "AudioChunk", processed_mics: "list[np.ndarray] | None" = None) -> "list[CheatEpisode]":
         """Accumulate audio + check if any episodes should close."""
         now = chunk.timestamp
         completed = []
+        with self._lock:
+            for mic_id, ep in list(self._episodes.items()):
+                if mic_id < chunk.mic_data.shape[0]:
+                    if processed_mics is not None and mic_id < len(processed_mics):
+                        ep.audio_chunks.append(processed_mics[mic_id].copy())
+                    else:
+                        ep.audio_chunks.append(chunk.mic_data[mic_id].copy())
 
-        for mic_id, ep in list(self._episodes.items()):
-            if mic_id < chunk.mic_data.shape[0]:
-                ep.audio_chunks.append(chunk.mic_data[mic_id].copy())
-
-            idle_sec = now - ep.last_alert_time
-            if idle_sec >= self._grace_sec:
-                if ep.confirmed:
-                    completed.append(ep)
-                    logger.info(
-                        f"Episode CLOSED  mic{mic_id}: "
-                        f"duration={ep.duration_sec:.1f}s idle={idle_sec:.1f}s"
-                    )
-                else:
-                    logger.debug(
-                        f"Episode DISCARDED mic{mic_id}: "
-                        f"not confirmed ({ep.duration_sec:.1f}s < {self._min_sec}s)"
-                    )
-                del self._episodes[mic_id]
-
+                idle_sec = now - ep.last_alert_time
+                if idle_sec >= self._grace_sec:
+                    if ep.confirmed:
+                        # Slice out grace period chunks from the end
+                        chunk_duration_sec = chunk.duration_ms / 1000.0
+                        num_grace_chunks = int(idle_sec / chunk_duration_sec)
+                        if num_grace_chunks > 0 and len(ep.audio_chunks) > num_grace_chunks:
+                            ep.audio_chunks = ep.audio_chunks[:-num_grace_chunks]
+                        completed.append(ep)
+                        logger.info(
+                            f"Episode CLOSED  mic{mic_id}: "
+                            f"duration={ep.duration_sec:.1f}s idle={idle_sec:.1f}s"
+                        )
+                    else:
+                        logger.debug(
+                            f"Episode DISCARDED mic{mic_id}: "
+                            f"not confirmed ({ep.duration_sec:.1f}s < {self._min_sec}s)"
+                        )
+                    del self._episodes[mic_id]
         return completed
 
     def flush(self) -> "list[CheatEpisode]":
         """Force-close all open confirmed episodes (on pipeline shutdown)."""
-        confirmed = [ep for ep in self._episodes.values() if ep.confirmed]
-        self._episodes.clear()
+        with self._lock:
+            confirmed = [ep for ep in self._episodes.values() if ep.confirmed]
+            self._episodes.clear()
         return confirmed
+
+
+class AsyncAudioWriter:
+    """Thread-safe background queue worker for non-blocking file writes."""
+
+    def __init__(self):
+        self._queue = queue.Queue(maxsize=200)
+        self._is_running = False
+        self._thread = None
+
+    def start(self):
+        if self._is_running:
+            return
+        self._is_running = True
+        self._thread = threading.Thread(
+            target=self._run_loop, daemon=True, name="AsyncAudioWriter"
+        )
+        self._thread.start()
+
+    def enqueue_write(self, func, *args, **kwargs):
+        if not self._is_running:
+            return
+        try:
+            self._queue.put_nowait((func, args, kwargs))
+        except queue.Full:
+            logger.error("AsyncAudioWriter queue full! Dropping write task.")
+
+    def stop(self):
+        self._is_running = False
+        self._queue.put(None)
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)
+            self._thread = None
+
+    def _run_loop(self):
+        while self._is_running:
+            try:
+                task = self._queue.get(timeout=0.5)
+                if task is None:
+                    self._queue.task_done()
+                    break
+                func, args, kwargs = task
+                try:
+                    func(*args, **kwargs)
+                except Exception as e:
+                    logger.error(f"AsyncAudioWriter error executing {func.__name__}: {e}", exc_info=True)
+                finally:
+                    self._queue.task_done()
+            except queue.Empty:
+                continue
 
 
 class AudioPipeline:
@@ -181,6 +244,11 @@ class AudioPipeline:
         recalibration_interval_sec: float | None = None,
         session_recording: bool | None = None,
         sessions_dir: str | None = None,
+        vad_context_ms: int | None = None,
+        composer=None,
+        audio_buffers: dict[str, deque] | None = None,
+        mic_ids: list[str] | None = None,
+        clock=None,
     ):
         """
         Initialize the audio pipeline.
@@ -238,6 +306,7 @@ class AudioPipeline:
         _recalib_interval    = recalibration_interval_sec if recalibration_interval_sec is not None else s.audio_recalibration_interval_sec
         _session_recording   = session_recording   if session_recording   is not None else s.audio_session_recording
         _sessions_dir        = sessions_dir        if sessions_dir        is not None else s.audio_sessions_dir
+        _vad_context_ms      = vad_context_ms      if vad_context_ms      is not None else s.audio_vad_context_ms
 
         logger.info(
             f"AudioPipeline init: model={_whisper_model} lang={_language} "
@@ -247,6 +316,7 @@ class AudioPipeline:
             f"vad_only={getattr(s, 'audio_vad_only', False)}"
         )
 
+        self._settings = s
         self._source = source
         self._alert_queue = alert_queue
         self._use_cross_correlation = _cross_correlation
@@ -255,14 +325,10 @@ class AudioPipeline:
         self._clip_sec_before = _clip_sec_before
         self._clip_sec_after = _clip_sec_after
 
-        self._discriminator = GlobalLocalDiscriminator(
-            silence_threshold=_silence_threshold,
-            global_ratio=_global_ratio,
-            global_fraction=_global_fraction,
-            calibration_chunks=_calibration_chunks,
-            local_ratio_multiplier=_local_ratio_mult,
-            recalibration_interval_sec=_recalib_interval,
-        )
+        self._composer = composer
+        self._audio_buffers = audio_buffers
+        self._mic_ids = mic_ids if mic_ids is not None else [f"mic{i}" for i in range(source.num_mics)]
+        self._clock = clock
 
         # ── Audio Preprocessor (HPF + noise reduction + adaptive gain) ──────────
         self._preprocessor = AudioPreprocessor(
@@ -270,6 +336,20 @@ class AudioPipeline:
             noise_reduction=getattr(s, 'audio_noise_reduction', True),
             noise_reduction_strength=getattr(s, 'audio_noise_reduction_strength', 0.75),
             adaptive_gain=getattr(s, 'audio_adaptive_gain', True),
+            transient_suppression=getattr(s, 'audio_transient_suppression', True),
+            transient_threshold=getattr(s, 'audio_transient_threshold', 0.65),
+            transient_damping=getattr(s, 'audio_transient_damping', 0.15),
+        )
+
+        self._discriminator = GlobalLocalDiscriminator(
+            silence_threshold=_silence_threshold,
+            global_ratio=_global_ratio,
+            global_fraction=_global_fraction,
+            calibration_chunks=_calibration_chunks,
+            local_ratio_multiplier=_local_ratio_mult,
+            recalibration_interval_sec=_recalib_interval,
+            on_recalibrate=self._preprocessor.reset_noise_profile,
+            chunk_ms=s.audio_chunk_ms,
         )
 
         self._keyword_detector = KeywordDetector(
@@ -285,6 +365,7 @@ class AudioPipeline:
             adaptive_vad=getattr(s, 'audio_adaptive_vad', True),
             vad_calibration_chunks=getattr(s, 'audio_vad_calibration_chunks', 50),
             preprocessor=self._preprocessor,
+            vad_context_ms=_vad_context_ms,
         )
 
         self._evidence_recorder = AudioEvidenceRecorder(
@@ -326,6 +407,7 @@ class AudioPipeline:
         # Lock protecting _pending_alerts, _stats, and _alerts
         # from concurrent access by main loop and inference worker.
         self._lock = threading.Lock()
+        self._async_writer = AsyncAudioWriter()
 
         # ── VAD-only detection mode ───────────────────────────────────────────
         # When True, the Whisper worker is bypassed entirely: as soon as Silero
@@ -335,6 +417,10 @@ class AudioPipeline:
         self._vad_alert_cooldown: float = getattr(s, 'audio_vad_alert_cooldown', 3.0)
         # dict[mic_id -> monotonic time when next alert is allowed]
         self._vad_alert_times: dict[int, float] = {}
+
+        self._last_vad_dom_mic = None
+        self._vad_hangover_chunks = 6
+        self._vad_hangover_counter = 0
 
         # Statistics for dashboard
         self._stats = {
@@ -349,6 +435,13 @@ class AudioPipeline:
             "start_time": 0.0,
         }
         self._alerts: list[AudioAlert] = []
+
+        # Pipeline Health Monitor settings & locks
+        self._monitor_thread = None
+        self._monitor_lock = threading.Lock()
+        self._monitor_stop_event = threading.Event()
+        self._original_beam_size = self._keyword_detector._beam_size
+        self._health_state = "NORMAL"
 
     @property
     def stats(self) -> dict:
@@ -369,15 +462,17 @@ class AudioPipeline:
         Call this BEFORE start() to eliminate first-chunk inference delay.
         Blocks until both models are fully loaded and ready.
         """
-        logger.info("[MODEL LOAD] Loading Silero VAD...")
+        logger.info("[MODEL LOAD] Loading Silero VAD models...")
         t0 = time.time()
-        self._keyword_detector._ensure_vad_loaded()
+        for i in range(self._source.num_mics):
+            self._keyword_detector._ensure_vad_loaded_for_mic(i)
         logger.info(f"[MODEL LOAD] VAD ready in {time.time()-t0:.1f}s")
 
-        logger.info(f"[MODEL LOAD] Loading Whisper '{self._keyword_detector._model_size}'...")
-        t1 = time.time()
-        self._keyword_detector._ensure_whisper_loaded()
-        logger.info(f"[MODEL LOAD] Whisper ready in {time.time()-t1:.1f}s")
+        if not self._vad_only:
+            logger.info(f"[MODEL LOAD] Loading Whisper '{self._keyword_detector._model_size}'...")
+            t1 = time.time()
+            self._keyword_detector._ensure_whisper_loaded()
+            logger.info(f"[MODEL LOAD] Whisper ready in {time.time()-t1:.1f}s")
 
         logger.info(f"[MODEL LOAD] All models ready. Total: {time.time()-t0:.1f}s")
 
@@ -397,6 +492,7 @@ class AudioPipeline:
         self._recording_start_time = time.time()
         self._stats["start_time"] = self._recording_start_time
         self._source.start()
+        self._async_writer.start()
 
         self._thread = threading.Thread(
             target=self._run_loop, daemon=True, name="AudioPipeline",
@@ -414,6 +510,13 @@ class AudioPipeline:
         )
         self._whisper_worker_thread.start()
 
+        # Start Pipeline Health Monitor Agent
+        self._monitor_stop_event.clear()
+        self._monitor_thread = threading.Thread(
+            target=self._monitor_loop, daemon=True, name="AudioPipelineMonitor"
+        )
+        self._monitor_thread.start()
+
         # ── Phase 3: Open session recorder (streams all audio to WAV) ──────────
         if self._session_recorder:
             self._session_recorder.open(
@@ -427,6 +530,13 @@ class AudioPipeline:
         """Stop the audio pipeline and all worker threads."""
         self._is_running = False
         self._source.stop()
+        self._async_writer.stop()
+
+        # Shutdown Health Monitor Agent
+        self._monitor_stop_event.set()
+        if self._monitor_thread is not None:
+            self._monitor_thread.join(timeout=3.0)
+            self._monitor_thread = None
 
         if self._thread is not None:
             self._thread.join(timeout=3.0)
@@ -469,6 +579,7 @@ class AudioPipeline:
         self._recording_start_time = time.time()
         self._stats["start_time"] = self._recording_start_time
         self._source.start()
+        self._async_writer.start()
 
         # ── Phase 3: Open session recorder ──────────────────────────────
         if self._session_recorder:
@@ -490,10 +601,25 @@ class AudioPipeline:
         )
         self._whisper_worker_thread.start()
 
+        # Start Pipeline Health Monitor Agent
+        self._monitor_stop_event.clear()
+        self._monitor_thread = threading.Thread(
+            target=self._monitor_loop, daemon=True, name="AudioPipelineMonitor"
+        )
+        self._monitor_thread.start()
+
         try:
             self._run_loop()
         finally:
             self._source.stop()
+            self._async_writer.stop()
+            
+            # Shutdown Health Monitor Agent
+            self._monitor_stop_event.set()
+            if self._monitor_thread is not None:
+                self._monitor_thread.join(timeout=3.0)
+                self._monitor_thread = None
+
             self._inference_queue.put(None)
             if self._worker_thread is not None:
                 self._worker_thread.join(timeout=5.0)
@@ -517,6 +643,45 @@ class AudioPipeline:
 
         return list(self._alerts)
 
+    def _monitor_loop(self) -> None:
+        """
+        Background thread monitoring the audio pipeline queues and dynamically
+        swapping Whisper decoding parameters to handle load spikes.
+        """
+        logger.info("[Health Monitor] Agent started background monitoring loop.")
+        while self._is_running and not self._monitor_stop_event.is_set():
+            try:
+                inf_qsize = self._inference_queue.qsize()
+                wh_qsize = self._whisper_queue.qsize()
+
+                # Swapping logic based on whisper queue thresholds with hysteresis
+                with self._monitor_lock:
+                    if wh_qsize >= 3:
+                        if self._health_state != "CRITICAL":
+                            logger.warning(
+                                f"[Health Monitor] Pipeline WARNING/CRITICAL state! "
+                                f"VAD queue={inf_qsize}, Whisper queue={wh_qsize}. "
+                                f"Activating load-shedding: swapping beam_size {self._original_beam_size} -> 1."
+                            )
+                            self._health_state = "CRITICAL"
+                            self._keyword_detector._beam_size = 1
+                    elif wh_qsize <= 1:
+                        if self._health_state != "NORMAL":
+                            logger.info(
+                                f"[Health Monitor] Pipeline recovered to NORMAL state. "
+                                f"VAD queue={inf_qsize}, Whisper queue={wh_qsize}. "
+                                f"Restoring original beam_size -> {self._original_beam_size}."
+                            )
+                            self._health_state = "NORMAL"
+                            self._keyword_detector._beam_size = self._original_beam_size
+
+            except Exception as e:
+                logger.error(f"[Health Monitor] Error: {e}", exc_info=True)
+
+            # Wait on stop event instead of sleeping to terminate immediately on exit
+            if self._monitor_stop_event.wait(timeout=1.0):
+                break
+        logger.info("[Health Monitor] Agent stopped background monitoring loop.")
 
     def _run_loop(self) -> None:
         """Main processing loop."""
@@ -530,6 +695,11 @@ class AudioPipeline:
                     self._is_running = False
                     break
 
+                if getattr(self, '_audio_buffers', None) is not None:
+                    for idx, mic_id_str in enumerate(self._mic_ids):
+                        if idx < chunk.mic_data.shape[0]:
+                            self._audio_buffers[mic_id_str].append((chunk.timestamp, chunk.mic_data[idx].copy()))
+
                 # 0. Compute processed audio ONCE per chunk.
                 #    Reused by: session recorder (processed/ folder) + Two-Pass discriminator.
                 #    Computing it twice caused adaptive-gain state drift that suppressed the 3rd alert.
@@ -540,7 +710,7 @@ class AudioPipeline:
                     try:
                         _processed_mics_cache = [
                             self._preprocessor.process(
-                                chunk.mic_data[i], chunk.sample_rate
+                                chunk.mic_data[i], chunk.sample_rate, mic_id=i
                             )
                             for i in range(chunk.mic_data.shape[0])
                         ]
@@ -548,7 +718,9 @@ class AudioPipeline:
                         logger.debug(f"Preprocessor error (chunk {chunk.chunk_index}): {_pe}")
 
                 if self._session_recorder and self._session_recorder.is_open:
-                    self._session_recorder.write_chunk(chunk, processed_mics=_processed_mics_cache)
+                    self._async_writer.enqueue_write(
+                        self._session_recorder.write_chunk, chunk, processed_mics=_processed_mics_cache
+                    )
 
                 # 1. Provide the new chunk to any pending alerts
                 completed_alerts = []
@@ -566,10 +738,7 @@ class AudioPipeline:
                 for completed in completed_alerts:
                     full_audio = np.concatenate(completed.audio_sequence)
                     completed.alert.audio_clip = full_audio
-                    try:
-                        self._evidence_recorder.save_alert(completed.alert)
-                    except Exception as e:
-                        logger.error(f"Failed to save evidence: {e}")
+                    self._dispatch_audio_alert(completed.alert)
 
                 # 3. Process the chunk (fast classification)
                 #    Pass the already-computed processed audio so Two-Pass
@@ -590,36 +759,47 @@ class AudioPipeline:
                 if classification and (classification.is_global or classification.is_silent):
                     for mic_id in range(chunk.mic_data.shape[0]):
                         self._preprocessor.add_noise_sample(
-                            chunk.mic_data[mic_id], chunk.sample_rate
+                            chunk.mic_data[mic_id], chunk.sample_rate, mic_id=mic_id
                         )
 
                 # 3c. Episode tracker — accumulate audio + detect closed episodes
                 if self._episode_tracker is not None:
-                    closed_episodes = self._episode_tracker.on_chunk(chunk)
+                    use_processed = getattr(self._settings, 'audio_episode_use_processed', False)
+                    tracker_processed_mics = _processed_mics_cache if use_processed else None
+                    closed_episodes = self._episode_tracker.on_chunk(chunk, processed_mics=tracker_processed_mics)
                     for ep in closed_episodes:
-                        try:
-                            self._evidence_recorder.save_episode(ep)
-                        except Exception as e:
-                            logger.error(f"Failed to save episode: {e}")
+                        self._async_writer.enqueue_write(
+                            self._evidence_recorder.save_episode, ep
+                        )
 
                 # 4. Add to history buffer
                 self._chunk_history.append(chunk)
                 
                 # 5. Enqueue for slow inference if local
                 if classification and classification.is_local:
-                    chunk_duration_sec = chunk.duration_ms / 1000.0
-                    pre_chunks_needed = int(self._clip_sec_before / chunk_duration_sec)
                     history_list = list(self._chunk_history)
+                    n_mics = chunk.mic_data.shape[0]
+                    # Snapshot the last 20 chunks for all mics to ensure history is always available
                     history_snapshot = [
-                        {mic_id: c.mic_data[mic_id].copy() for mic_id in classification.active_mics}
-                        for c in history_list[-pre_chunks_needed:]
+                        {mic_id: c.mic_data[mic_id].copy() for mic_id in range(n_mics)}
+                        for c in history_list[-20:]
                     ]
                     try:
                         self._inference_queue.put_nowait(
                             (chunk, classification, history_snapshot, _processed_mics_cache)
                         )
                     except queue.Full:
-                        logger.warning(f"Inference queue full — dropping chunk {chunk.chunk_index}")
+                        logger.warning(f"Inference queue full — dropping oldest VAD task to enqueue chunk {chunk.chunk_index}")
+                        try:
+                            self._inference_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+                        try:
+                            self._inference_queue.put_nowait(
+                                (chunk, classification, history_snapshot, _processed_mics_cache)
+                            )
+                        except queue.Full:
+                            pass
                         with self._lock:
                             self._stats["dropped_chunks"] += 1
         finally:
@@ -630,18 +810,14 @@ class AudioPipeline:
             for pending in remaining:
                 full_audio = np.concatenate(pending.audio_sequence)
                 pending.alert.audio_clip = full_audio
-                try:
-                    self._evidence_recorder.save_alert(pending.alert)
-                except Exception as e:
-                    logger.error(f"Failed to save evidence on shutdown: {e}")
+                self._dispatch_audio_alert(pending.alert)
 
             # Flush any open confirmed episodes on shutdown
             if self._episode_tracker is not None:
                 for ep in self._episode_tracker.flush():
-                    try:
-                        self._evidence_recorder.save_episode(ep)
-                    except Exception as e:
-                        logger.error(f"Failed to save episode on shutdown: {e}")
+                    self._async_writer.enqueue_write(
+                        self._evidence_recorder.save_episode, ep
+                    )
 
     def _process_chunk(
         self,
@@ -683,16 +859,12 @@ class AudioPipeline:
         # Cost: one denoising call per mic (~1–3ms, negligible vs Whisper).
         if classification.is_global and self._preprocessor.noise_profile_ready:
             try:
-                # Reuse the pre-computed denoised audio from the run loop
-                # (already computed at step 0 to avoid double processing).
-                if precomputed_processed is not None:
-                    denoised_mics = precomputed_processed
-                else:
-                    # Fallback: compute on the fly (e.g. during unit tests)
-                    denoised_mics = [
-                        self._preprocessor.process(chunk.mic_data[i], chunk.sample_rate)
-                        for i in range(chunk.mic_data.shape[0])
-                    ]
+                # For classification, we always compute denoised audio with bypass_agc=True
+                # to prevent independent channel AGC from flattening spatial energy ratios.
+                denoised_mics = [
+                    self._preprocessor.process(chunk.mic_data[i], chunk.sample_rate, mic_id=i, bypass_agc=True)
+                    for i in range(chunk.mic_data.shape[0])
+                ]
                 denoised_chunk = AudioChunk(
                     timestamp=chunk.timestamp,
                     mic_data=np.stack(denoised_mics, axis=0),
@@ -782,21 +954,21 @@ class AudioPipeline:
         processed_mics: "list[np.ndarray] | None" = None,
     ) -> None:
         """
-        Per-Mic VAD with Spatial Comparison (Smart Pipeline).
+        Execution step for the VAD Worker Thread.
 
-        New pipeline order (per user request):
-            1. Denoise each mic independently   <- removes shared room noise
-            2. Run VAD on each denoised mic     <- detect human speech per-mic
-            3. Find dominant mic (highest VAD confidence)
-            4. Compare VAD confidence across mics:
-               - All mics similar? -> GLOBAL (bilateral speech, not cheating)
-               - Only dominant mic high? -> LOCAL -> ALERT!
-
-        Why this is better than energy-ratio comparison:
-            - VAD confidence measures SPEECH probability, not raw energy.
-            - After denoising, the comparison is speech-specific.
-            - A noisy room raises energy on all mics equally, but VAD
-              confidence only rises when human speech is actually present.
+        Operational Modes:
+            1. VAD-Only Mode (self._vad_only = True):
+               Applies per-mic VAD with spatial Voice Content Matching:
+               - Denoise each mic independently (removes shared room noise)
+               - Run Silero VAD on each denoised mic independently
+               - Find the dominant mic (highest VAD confidence)
+               - Validate against other mics: if another mic has speech, compute
+                 spectral cosine similarity. If similarity >= 0.80, same voice (GLOBAL).
+                 If similarity < 0.80, distinct voices (LOCAL -> immediate Alert).
+            2. Whisper STT Mode (self._vad_only = False):
+               - Selects the dominant mic using the energy-ratio classification.
+               - Runs VAD on that mic and accumulates speech in a buffer.
+               - When buffer is full, enqueues to Whisper STT queue.
         """
         from thaqib.audio.models import SoundClassification as SC
         n_mics = chunk.mic_data.shape[0]
@@ -818,20 +990,44 @@ class AudioPipeline:
                     audio = processed_mics[mic_id]
                 else:
                     audio = chunk.mic_data[mic_id]
-                _, conf = self._keyword_detector.is_speech(audio, chunk.sample_rate)
+                _, conf = self._keyword_detector.is_speech(audio, chunk.sample_rate, mic_id=mic_id)
                 per_mic_vad.append((mic_id, conf))
 
-            # Step 3: Find dominant mic (highest VAD confidence)
-            dom_mic_id, dom_conf = max(per_mic_vad, key=lambda x: x[1])
+            # Step 3: Find dominant mic (highest VAD confidence) with hangover
+            candidate_dom_mic, candidate_dom_conf = max(per_mic_vad, key=lambda x: x[1])
+
+            if candidate_dom_conf >= self._keyword_detector.get_vad_threshold(candidate_dom_mic):
+                if self._last_vad_dom_mic is not None and self._vad_hangover_counter > 0:
+                    if candidate_dom_mic != self._last_vad_dom_mic:
+                        dom_mic_id = self._last_vad_dom_mic
+                        self._vad_hangover_counter -= 1
+                        # Get the confidence score for the locked mic
+                        dom_conf = dict(per_mic_vad)[dom_mic_id]
+                    else:
+                        dom_mic_id = candidate_dom_mic
+                        dom_conf = candidate_dom_conf
+                        self._vad_hangover_counter = self._vad_hangover_chunks
+                else:
+                    dom_mic_id = candidate_dom_mic
+                    dom_conf = candidate_dom_conf
+                    self._last_vad_dom_mic = dom_mic_id
+                    self._vad_hangover_counter = self._vad_hangover_chunks
+            else:
+                dom_mic_id = candidate_dom_mic
+                dom_conf = candidate_dom_conf
+                if self._vad_hangover_counter > 0:
+                    self._vad_hangover_counter -= 1
+                    if self._vad_hangover_counter == 0:
+                        self._last_vad_dom_mic = None
 
             # No speech anywhere?
-            if dom_conf < self._keyword_detector._vad_threshold:
+            if dom_conf < self._keyword_detector.get_vad_threshold(dom_mic_id):
                 return  # silence — nothing to do
 
             logger.debug(
                 f"[Per-Mic-VAD] Chunk {chunk.chunk_index}: "
                 + ", ".join(f"mic{mid}={conf:.3f}" for mid, conf in per_mic_vad)
-                + f" | dominant=mic{dom_mic_id} ({dom_conf:.3f})"
+                + f" | dominant=mic{dom_mic_id} (candidate=mic{candidate_dom_mic}, conf={dom_conf:.3f}, hangover={self._vad_hangover_counter})"
             )
 
             # Step 4: Enhanced bilateral check — Voice Content Matching
@@ -860,10 +1056,12 @@ class AudioPipeline:
                 if other_mic_id == dom_mic_id:
                     continue
 
-                vad_ratio = other_conf / dom_conf if dom_conf > 0 else 0.0
-
-                if vad_ratio >= 0.70:
-                    # Both mics detected speech — but is it the SAME voice?
+                # Perform voice cosine similarity check whenever both microphones show a low absolute confidence threshold (e.g. >= 0.15)
+                # This ensures global ambient sounds (like the instructor speaking) are correctly matched as global noise
+                # regardless of non-linear VAD confidence ratio drops.
+                min_conf = getattr(self._settings, 'audio_voice_min_confidence', 0.15)
+                sim_threshold = getattr(self._settings, 'audio_voice_similarity_threshold', 0.80)
+                if other_conf >= min_conf:
                     other_audio = (
                         processed_mics[other_mic_id]
                         if processed_mics is not None and other_mic_id < len(processed_mics)
@@ -871,22 +1069,21 @@ class AudioPipeline:
                     )
                     similarity = self._voice_similarity(dom_audio, other_audio)
 
-                    if similarity >= 0.80:
-                        # Same voice content at similar level → GLOBAL (not cheating)
+                    if similarity >= sim_threshold:
+                        # Same voice content (highly correlated spectrum) → GLOBAL (not cheating)
                         logger.debug(
                             f"[Voice-Match] Chunk {chunk.chunk_index} GLOBAL: "
                             f"mic{dom_mic_id} vs mic{other_mic_id} — "
-                            f"vad_ratio={vad_ratio:.0%}, similarity={similarity:.3f} >= 0.80"
+                            f"other_conf={other_conf:.3f}, similarity={similarity:.3f} >= {sim_threshold:.2f}"
                         )
                         is_local = False
                         break
                     else:
-                        # Similar VAD level but DIFFERENT voice content
-                        # → two different people near different mics → both cheating
+                        # Different voice/sound content → LOCAL (cheating)
                         logger.debug(
                             f"[Voice-Match] Chunk {chunk.chunk_index} LOCAL (diff voices): "
                             f"mic{dom_mic_id} vs mic{other_mic_id} — "
-                            f"vad_ratio={vad_ratio:.0%}, similarity={similarity:.3f} < 0.80"
+                            f"other_conf={other_conf:.3f}, similarity={similarity:.3f} < {sim_threshold:.2f}"
                         )
                 # else: vad_ratio < 70% → dominant mic clearly unique → LOCAL (no change)
 
@@ -908,11 +1105,16 @@ class AudioPipeline:
             reverse=True,
         )
         for mic_id in active_mics[:1]:
-            mic_audio = chunk.mic_data[mic_id]
+            if processed_mics is not None and mic_id < len(processed_mics):
+                mic_audio = processed_mics[mic_id]
+                is_preprocessed = True
+            else:
+                mic_audio = chunk.mic_data[mic_id]
+                is_preprocessed = False
 
             # ── Normal path: accumulate speech → Whisper ──────────────────────
             speech_buffer = self._keyword_detector.vad_and_buffer(
-                mic_audio, chunk.sample_rate, mic_id=mic_id
+                mic_audio, chunk.sample_rate, mic_id=mic_id, preprocessed=is_preprocessed
             )
             if speech_buffer is not None:
                 # Speech buffer is full — push to Whisper worker
@@ -998,11 +1200,13 @@ class AudioPipeline:
                     existing_pending = pending
                     break
 
+            if existing_pending:
+                existing_pending.post_collected = 0
+                existing_pending.alert.confidence = max(
+                    existing_pending.alert.confidence, vad_confidence
+                )
+
         if existing_pending:
-            existing_pending.post_collected = 0
-            existing_pending.alert.confidence = max(
-                existing_pending.alert.confidence, vad_confidence
-            )
             logger.info(
                 f"[VAD-Only] Extended alert [{mic_name}]: "
                 f"chunk={chunk.chunk_index} vad_conf={vad_confidence:.3f}"
@@ -1012,18 +1216,20 @@ class AudioPipeline:
         # Build pre-event audio buffer from history
         chunk_duration_sec = chunk.duration_ms / 1000.0
         pre_chunks_needed  = int(self._clip_sec_before / chunk_duration_sec)
-        post_chunks_needed = int(self._clip_sec_after  / chunk_duration_sec)
 
-        pre_buffer = [frame[mic_id] for frame in history_snapshot if mic_id in frame]
+        pre_buffer_frames = history_snapshot[-pre_chunks_needed:] if len(history_snapshot) >= pre_chunks_needed else history_snapshot
+        pre_buffer = [frame[mic_id] for frame in pre_buffer_frames if mic_id in frame]
         pre_buffer.append(mic_audio.copy())
 
         alert = AudioAlert(
             timestamp=chunk.timestamp,
             mic_id=mic_id,
-            active_mics=classification.active_mics,
+            active_mics=[mic_id],
             transcript="",                          # no Whisper → no transcript
             matched_keywords=["*HUMAN_SPEECH_DETECTED*"],
-            audio_clip=mic_audio.copy(),
+            timestamp_start=chunk.timestamp - (len(np.concatenate(pre_buffer)) / chunk.sample_rate),
+            timestamp_end=chunk.timestamp,
+            audio_clip=np.concatenate(pre_buffer),
             sample_rate=chunk.sample_rate,
             confidence=float(vad_confidence),
             chunk_index=chunk.chunk_index,
@@ -1042,15 +1248,21 @@ class AudioPipeline:
         if self._episode_tracker is not None:
             self._episode_tracker.on_alert(alert)
 
-        # Save evidence WAV + JSON (includes pre-buffer + cooldown-length post-buffer)
-        pending = _PendingAlert(
-            alert=alert,
-            audio_sequence=pre_buffer,
-            target_post_chunks=post_chunks_needed,
-            post_collected=0,
-        )
-        with self._lock:
-            self._pending_alerts.append(pending)
+        # Defer evidence write if clip_sec_after is configured
+        chunk_duration_sec = chunk.duration_ms / 1000.0
+        target_post_chunks = int(self._clip_sec_after / chunk_duration_sec) if self._clip_sec_after > 0 else 0
+
+        if target_post_chunks > 0:
+            pending_alert = _PendingAlert(
+                alert=alert,
+                audio_sequence=[alert.audio_clip.copy()],
+                target_post_chunks=target_post_chunks,
+                post_collected=0,
+            )
+            with self._lock:
+                self._pending_alerts.append(pending_alert)
+        else:
+            self._dispatch_audio_alert(alert)
 
         # Dispatch to external consumers
         if self._alert_queue is not None:
@@ -1067,6 +1279,22 @@ class AudioPipeline:
             f"mic {mic_id} ({mic_name}), vad_conf={vad_confidence:.3f}, "
             f"chunk={chunk.chunk_index}"
         )
+
+    def _dispatch_audio_alert(self, alert: "AudioAlert") -> None:
+        if getattr(self, '_composer', None) is not None:
+            mic_id_str = self._mic_ids[alert.mic_id] if hasattr(self, '_mic_ids') and alert.mic_id < len(self._mic_ids) else str(alert.mic_id)
+            self._composer.on_audio_alert(
+                audio_clip=alert.audio_clip,
+                mic_id=mic_id_str,
+                timestamp_start=alert.timestamp_start,
+                timestamp_end=alert.timestamp_end,
+                keywords=alert.matched_keywords if hasattr(alert, 'matched_keywords') else [],
+                sample_rate=alert.sample_rate
+            )
+        else:
+            self._async_writer.enqueue_write(
+                self._evidence_recorder.save_alert, alert
+            )
 
     def _whisper_worker(self) -> None:
         """
@@ -1163,15 +1391,17 @@ class AudioPipeline:
                         existing_pending = pending
                         break
 
+                if existing_pending:
+                    existing_pending.post_collected = 0
+                    for kw in result.matched_keywords:
+                        if kw not in existing_pending.alert.matched_keywords:
+                            existing_pending.alert.matched_keywords.append(kw)
+                    existing_pending.alert.transcript += " " + result.transcript
+                    existing_pending.alert.confidence = max(
+                        existing_pending.alert.confidence, result.confidence
+                    )
+
             if existing_pending:
-                existing_pending.post_collected = 0
-                for kw in result.matched_keywords:
-                    if kw not in existing_pending.alert.matched_keywords:
-                        existing_pending.alert.matched_keywords.append(kw)
-                existing_pending.alert.transcript += " " + result.transcript
-                existing_pending.alert.confidence = max(
-                    existing_pending.alert.confidence, result.confidence
-                )
                 logger.warning(
                     f"EXTENDED ALERT [{mic_name}]: keywords={result.matched_keywords}"
                 )
@@ -1182,6 +1412,8 @@ class AudioPipeline:
                     active_mics=classification.active_mics,
                     transcript=result.transcript,
                     matched_keywords=result.matched_keywords,
+                    timestamp_start=chunk.timestamp - (len(mic_audio) / chunk.sample_rate),
+                    timestamp_end=chunk.timestamp,
                     audio_clip=mic_audio.copy(),
                     sample_rate=chunk.sample_rate,
                     confidence=result.confidence,
@@ -1203,29 +1435,52 @@ class AudioPipeline:
 
                 chunk_duration_sec = chunk.duration_ms / 1000.0
                 pre_chunks_needed = int(self._clip_sec_before / chunk_duration_sec)
-                post_chunks_needed = int(self._clip_sec_after / chunk_duration_sec)
 
-                pre_buffer = [frame[mic_id] for frame in history_snapshot if mic_id in frame]
-                pre_buffer.append(mic_audio.copy())
+                # Get the history chunks before the speech buffer started
+                if precomputed_buffer is not None:
+                    speech_chunks = len(precomputed_buffer) // len(mic_audio)
+                else:
+                    speech_chunks = 1
 
-                # Read _chunk_history under lock to avoid race condition
-                with self._lock:
-                    history_snap = list(self._chunk_history)
+                hist_len = len(history_snapshot)
+                raw_start = -(speech_chunks + pre_chunks_needed)
+                raw_end = -speech_chunks if speech_chunks > 0 else None
 
-                current_index = history_snap[-1].chunk_index if history_snap else chunk.chunk_index
-                already_elapsed = max(0, current_index - chunk.chunk_index)
-                post_already = history_snap[-already_elapsed:] if already_elapsed > 0 else []
-                post_buffer_start = [c.mic_data[mic_id].copy() for c in post_already]
-                remaining_post = max(0, post_chunks_needed - already_elapsed)
+                # Protect negative slicing indices from overrunning history buffer boundaries
+                if raw_end is not None:
+                    if speech_chunks >= hist_len:
+                        pre_buffer_frames = []
+                    else:
+                        bounded_start = max(-hist_len, raw_start)
+                        pre_buffer_frames = history_snapshot[bounded_start:raw_end]
+                else:
+                    bounded_start = max(-hist_len, raw_start)
+                    pre_buffer_frames = history_snapshot[bounded_start:]
 
-                pending = _PendingAlert(
-                    alert=alert,
-                    audio_sequence=pre_buffer + post_buffer_start,
-                    target_post_chunks=remaining_post,
-                    post_collected=0,
-                )
-                with self._lock:
-                    self._pending_alerts.append(pending)
+                pre_buffer = [frame[mic_id] for frame in pre_buffer_frames if mic_id in frame]
+
+                if precomputed_buffer is not None:
+                    alert.audio_clip = np.concatenate(pre_buffer + [precomputed_buffer])
+                else:
+                    alert.audio_clip = np.concatenate(pre_buffer + [mic_audio.copy()])
+
+                # Defer evidence write if clip_sec_after is configured
+                chunk_duration_sec = chunk.duration_ms / 1000.0
+                target_post_chunks = int(self._clip_sec_after / chunk_duration_sec) if self._clip_sec_after > 0 else 0
+
+                if target_post_chunks > 0:
+                    pending_alert = _PendingAlert(
+                        alert=alert,
+                        audio_sequence=[alert.audio_clip.copy()],
+                        target_post_chunks=target_post_chunks,
+                        post_collected=0,
+                    )
+                    with self._lock:
+                        self._pending_alerts.append(pending_alert)
+                else:
+                    self._async_writer.enqueue_write(
+                        self._evidence_recorder.save_alert, alert
+                    )
 
                 if self._alert_queue is not None:
                     self._alert_queue.put(alert)

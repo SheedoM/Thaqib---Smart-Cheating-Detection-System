@@ -111,9 +111,9 @@ class FaceMeshExtractor:
                 ),
                 running_mode=vision.RunningMode.VIDEO,
                 num_faces=1,
-                min_face_detection_confidence=0.50,   # Lowered from 0.80 — distant faces need slack
-                min_face_presence_confidence=0.50,     # Lowered from 0.80
-                min_tracking_confidence=0.50,           # Lowered from 0.80
+                min_face_detection_confidence=0.80,
+                min_face_presence_confidence=0.80,
+                min_tracking_confidence=0.80,
                 output_face_blendshapes=False,
                 output_facial_transformation_matrixes=True,
             )
@@ -210,10 +210,11 @@ class FaceMeshExtractor:
             detection = landmarker.detect_for_video(mp_image, ts_ms)
         except Exception as exc:
             logger.debug(f"FaceLandmarker inference error: {exc}")
-            return None  # Detection failure — don't return stale cache
+            return self._get_cached(track_id, reason="failure")
 
         if not detection.face_landmarks:
-            return None  # Detection failure — don't mask real gaze changes
+            # Return cached result (up to 0.3 s old) on detection failure
+            return self._get_cached(track_id, reason="failure")
 
         raw = detection.face_landmarks[0]  # First (and only) face
 
@@ -252,9 +253,7 @@ class FaceMeshExtractor:
         """Return cached mesh only for small_crop scenarios, not detection failures."""
         if track_id is not None and track_id in self._mesh_cache:
             cache_time, cached_mesh = self._mesh_cache[track_id]
-            # Only use cache for small crops — detection failures should return None
-            # to avoid masking real gaze changes (false negatives on cheating)
-            max_age = 0.3 if reason == "small_crop" else 0.0
+            max_age = 0.3  # use cache for both small crops and detection failures
             if time.time() - cache_time <= max_age:
                 return cached_mesh
         return None

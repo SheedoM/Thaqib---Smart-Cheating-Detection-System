@@ -125,6 +125,25 @@ class Settings(BaseSettings):
     alerts_dir: str = "alerts"    # Directory for cheating/phone alert clips
 
     # =========================================================================
+    # Diagnostic Video Logging
+    # =========================================================================
+    # Master switch — set to False to disable file logging entirely.
+    video_log_enabled: bool = True
+
+    # Verbosity level written to the log file.
+    #   DEBUG   -> every frame: timings, all track states, gaze dot products
+    #   INFO    -> events only: detection results, alert start/save, selections
+    #   WARNING -> alerts only: phone detected, cheating detected, cap hits
+    video_log_level: str = "DEBUG"
+
+    # Directory where video_YYYYMMDD_HHMMSS.log files are written.
+    video_log_dir: str = "logs"
+
+    # Maximum log file size in bytes before rotation (default: 100 MB).
+    # After rotation up to 5 backup files are kept.
+    video_log_max_bytes: int = 100 * 1024 * 1024
+
+    # =========================================================================
     # Audio Detection
     # =========================================================================
 
@@ -290,6 +309,11 @@ class Settings(BaseSettings):
     # At 500ms chunks: 50 = 25 seconds of noise observation before first update.
     audio_vad_calibration_chunks: int = 50
 
+    # Acoustic context window size in milliseconds to prepend to VAD chunks.
+    # Enables temporal continuity for the Silero VAD recurrent neural network.
+    # 0 = disabled. Recommended: 150-250 ms.
+    audio_vad_context_ms: int = 200
+
     # =========================================================================
     # SUSTAINED CHEAT EPISODE DETECTION
     # =========================================================================
@@ -328,6 +352,31 @@ class Settings(BaseSettings):
     # Example: 3.0 = after one alert, wait 3 seconds before firing another on
     # the same mic (the EpisodeTracker will group them into one episode anyway).
     audio_vad_alert_cooldown: float = 3.0
+
+    # =========================================================================
+    # VOICE SIMILARITY & TRANSIENT & EPISODE OPTIONS
+    # =========================================================================
+
+    # VAD-only Voice Content Matching similarity threshold.
+    # If the spectral similarity between dominant and another mic is >= this,
+    # it is considered the same sound source (GLOBAL).
+    audio_voice_similarity_threshold: float = 0.80
+
+    # VAD-only Voice Content Matching minimum VAD confidence.
+    # The other mic must have at least this VAD confidence to trigger similarity check.
+    audio_voice_min_confidence: float = 0.15
+
+    # Enable transient suppression to filter pen clicks, paper shuffling.
+    audio_transient_suppression: bool = True
+
+    # High-frequency energy ratio threshold to classify a sound as a transient.
+    audio_transient_threshold: float = 0.65
+
+    # Attenuation factor for high frequency bins when a transient is detected.
+    audio_transient_damping: float = 0.15
+
+    # Use processed (denoised) audio instead of raw audio for cheat episodes.
+    audio_episode_use_processed: bool = False
 
     # =========================================================================
 
