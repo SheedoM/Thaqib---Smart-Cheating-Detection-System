@@ -31,7 +31,7 @@ class CheatingEvaluator:
     is_alert_recording fields that are also used by the recording collector.
     """
 
-    def __init__(self, registry: GlobalStudentRegistry, cooldown_frames: int = 30):
+    def __init__(self, registry: GlobalStudentRegistry, cooldown_frames: int = 30, clock=None):
         self._registry = registry
         self._cooldown_frames = cooldown_frames
         self._on_alert: Callable | None = None
@@ -42,6 +42,10 @@ class CheatingEvaluator:
         self._face_lost_times: dict[int, float] = {}  # track_id → time face was lost
         self._GRACE_PERIOD: float = 2.0  # seconds
         self._vlog = get_video_logger()
+        # Fix T-1: use SimClock when available so that file-based sources
+        # (where SimClock advances at a different rate than wall time) produce
+        # correct suspicious-duration thresholds.
+        self._clock = clock
 
         # Intercept registry update to reset is_using_phone at the start of every frame
         original_update = registry.update
@@ -70,7 +74,7 @@ class CheatingEvaluator:
         brief detection glitches from resetting a genuine cheating event.
         After the grace period expires, the timer is cleared as usual.
         """
-        now = time.time()
+        now = self._clock.now() if self._clock else time.time()
 
         # Record the moment the face was first lost (don't overwrite if already set)
         if track_id not in self._face_lost_times:
@@ -194,7 +198,7 @@ class CheatingEvaluator:
                 break
 
         # Apply the suspicious duration rule from settings
-        current_time = time.time()
+        current_time = self._clock.now() if self._clock else time.time()
         duration_threshold = settings.suspicious_duration_threshold
         
         # Compute the best dot product for logging (max over all papers).

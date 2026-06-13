@@ -73,7 +73,8 @@ def main():
     clock = SimClock()
 
     # 4. Create shared rolling buffers
-    audio_buffers = {mic_id: deque(maxlen=200) for mic_id in mic_sources}
+    # 500 chunks = 250 seconds of audio history
+    audio_buffers = {mic_id: deque(maxlen=500) for mic_id in mic_sources}
     # 1800 frames = 60 seconds at 30fps — must be long enough to cover
     # the full VAD+Whisper latency so on_audio_alert still finds frames.
     video_buffers = {cam_id: deque(maxlen=1800) for cam_id in video_sources.keys()}
@@ -151,7 +152,11 @@ def main():
 
         cv2.setMouseCallback(window_name, mouse_callback)
 
-        barrier.wait()
+        try:
+            barrier.wait(timeout=30)
+        except threading.BrokenBarrierError:
+            logger.error(f"Barrier broken or timed out in run_video ({vp._camera_id}). Aborting.")
+            return
         
         try:
             with vp:
@@ -226,7 +231,12 @@ def main():
         logger.info("Loading audio models...")
         ap.load_models()
         logger.info("Audio models ready.")
-        barrier.wait()
+        try:
+            barrier.wait(timeout=30)
+        except threading.BrokenBarrierError:
+            logger.error("Barrier broken or timed out in run_audio. Aborting.")
+            return
+            
         try:
             ap.run_sync()
         except Exception as e:
@@ -234,26 +244,35 @@ def main():
         finally:
             ap.stop()
 
-    threads = []
+    video_threads = []
     for vp in video_pipelines:
         t = threading.Thread(target=run_video, args=(vp, barrier, layout, mic_sources))
         t.start()
-        threads.append(t)
+        video_threads.append(t)
 
-    t = threading.Thread(target=run_audio, args=(ap,))
-    t.start()
-    threads.append(t)
+    audio_thread = threading.Thread(target=run_audio, args=(ap,))
+    audio_thread.start()
 
     try:
-        for t in threads:
+        # Wait for all video streams to finish (e.g. reach EOF)
+        for t in video_threads:
             t.join()
+            
+        logger.info("All video streams ended. Stopping audio pipeline and composer...")
+        ap.stop()
+        composer.stop()
+        audio_thread.join()
+        
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received, stopping pipelines...")
         for vp in video_pipelines:
             vp.stop()
         ap.stop()
-        for t in threads:
+        composer.stop()
+        
+        for t in video_threads:
             t.join()
+        audio_thread.join()
 
 if __name__ == "__main__":
     main()
