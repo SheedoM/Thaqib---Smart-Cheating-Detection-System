@@ -55,17 +55,28 @@ def main():
     parser.add_argument("--audio", nargs='+', help="Audio sources in format mic0=front.wav", required=True)
     args = parser.parse_args()
 
+    def _parse_kv(arg: str, flag: str) -> tuple[str, str]:
+        """Parse a key=value argument, exiting with a clear message on bad format."""
+        if "=" not in arg:
+            logger.error(
+                f"Bad {flag} argument: '{arg}'\n"
+                f"  Expected format: id=path  e.g.  cam0=hall.mp4  or  mic0=front.wav\n"
+                f"  Got: '{arg}' (no '=' found — check your shell quoting)"
+            )
+            sys.exit(1)
+        return arg.split("=", 1)
+
     # 1. Parse arguments
     video_sources = {}
     for arg in args.video:
-        k, v = arg.split("=", 1)
+        k, v = _parse_kv(arg, "--video")
         video_sources[k] = v
 
     audio_sources = {}
     mic_sources = []
     audio_paths = []
     for arg in args.audio:
-        k, v = arg.split("=", 1)
+        k, v = _parse_kv(arg, "--audio")
         audio_sources[k] = v
         mic_sources.append(k)
         audio_paths.append(v)
