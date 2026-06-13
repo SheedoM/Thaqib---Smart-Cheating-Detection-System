@@ -80,8 +80,9 @@ class GlobalStudentRegistry:
                     state.paper_center = track.paper_center
                     state.frame_index = frame_index
                     state.timestamp = timestamp
-                    state.last_seen_frame = frame_index
-                    state.last_seen_time = timestamp
+                    if not getattr(track, 'is_predicted', False):
+                        state.last_seen_frame = frame_index
+                        state.last_seen_time = timestamp
                     state.is_active = True
                 else:
                     self._states[track.track_id] = StudentSpatialState(

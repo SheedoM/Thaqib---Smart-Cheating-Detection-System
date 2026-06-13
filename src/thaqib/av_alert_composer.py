@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -14,6 +15,7 @@ import scipy.io.wavfile as wavfile
 from thaqib.mic_layout import MicLayout
 from thaqib.video.registry import GlobalStudentRegistry
 from thaqib.video.timestamps import draw_timestamp_overlay
+from thaqib.video.jpeg_buffer import decode_frame as jpeg_decode
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,39 @@ class AVAlertComposer:
         
         os.makedirs(self.output_dir, exist_ok=True)
 
+    # ------------------------------------------------------------------
+    # Shared mic-pin overlay helper
+    # ------------------------------------------------------------------
+
+    def _draw_mic_pins(
+        self,
+        frame: np.ndarray,
+        camera_id: str,
+        source_mic_id: str | None,
+    ) -> None:
+        """Draw all configured mic pins for *camera_id* on *frame* in-place.
+
+        The pin whose mic_id == source_mic_id is drawn RED (BGR 0,0,255);
+        every other pin for that camera is drawn GREEN (BGR 0,255,0).
+        If source_mic_id is None all pins are drawn GREEN (no source known).
+        Does nothing if no pins are configured for this camera.
+        """
+        pins = self.layout.get_pins_for_camera(camera_id)
+        if not pins:
+            return
+        h, w = frame.shape[:2]
+        for pin in pins:
+            px = int(pin.norm_pos[0] * w)
+            py = int(pin.norm_pos[1] * h)
+            color = (0, 0, 255) if pin.mic_id == source_mic_id else (0, 255, 0)
+            cv2.circle(frame, (px, py), 9, color, -1, cv2.LINE_AA)
+            cv2.circle(frame, (px, py), 9, (255, 255, 255), 1, cv2.LINE_AA)  # white outline
+            cv2.putText(
+                frame, pin.mic_id,
+                (px + 12, py + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA
+            )
+
     def on_video_alert(
         self,
         frames: list[np.ndarray],
@@ -52,10 +87,13 @@ class AVAlertComposer:
         timestamp_start: float,
         timestamp_end: float,
     ):
-        # Fallback helper to save video only
+        # Fallback helper to save video only (with mic-pin overlay, no source)
         def save_video_only():
             timestamp = time.time()
             output_path = os.path.join(self.output_dir, f"{alert_type}_{camera_id}_{timestamp:.1f}.mp4")
+            # Still draw all pins green so the viewer knows mic layout even without audio
+            for ev_f in frames:
+                self._draw_mic_pins(ev_f, camera_id, source_mic_id=None)
             self._save_video_only(frames, output_path)
 
         mic_pin = None
@@ -70,6 +108,11 @@ class AVAlertComposer:
             
         mic_id = mic_pin.mic_id
         audio_buffer = self.audio_buffers.get(mic_id)
+        
+        # Buffer identity debug logging requested by user
+        if audio_buffer is not None:
+            logger.info(f"[DEBUG] on_video_alert - audio_buffer id: {id(audio_buffer)}, len: {len(audio_buffer)}")
+            
         if not audio_buffer:
             logger.info(f"No audio buffer found for mic {mic_id}. Saving video-only alert.")
             save_video_only()
@@ -95,21 +138,30 @@ class AVAlertComposer:
             pre_frames = []
             for ts, f in buffer_snapshot:
                 if window_start <= ts < timestamp_start:
-                    out_f = f.copy()
+                    # f is JPEG bytes (from jpeg_buffer) or a raw ndarray (legacy).
+                    out_f = jpeg_decode(f) if isinstance(f, (bytes, bytearray)) else f.copy()
                     if target_shape and out_f.shape[:2] != target_shape:
                         out_f = cv2.resize(out_f, (target_shape[1], target_shape[0]))
                     draw_timestamp_overlay(out_f)
+                    # mic-pin overlay — resize first, draw second (correct pixel coords)
+                    self._draw_mic_pins(out_f, camera_id, mic_pin.mic_id)
                     pre_frames.append(out_f)
                     
             post_frames = []
             for ts, f in buffer_snapshot:
                 if timestamp_end < ts <= window_end:
-                    out_f = f.copy()
+                    out_f = jpeg_decode(f) if isinstance(f, (bytes, bytearray)) else f.copy()
                     if target_shape and out_f.shape[:2] != target_shape:
                         out_f = cv2.resize(out_f, (target_shape[1], target_shape[0]))
                     draw_timestamp_overlay(out_f)
+                    # mic-pin overlay — resize first, draw second
+                    self._draw_mic_pins(out_f, camera_id, mic_pin.mic_id)
                     post_frames.append(out_f)
-                    
+
+            # Apply mic-pin overlay to the event frames that arrived pre-assembled
+            for ev_f in frames:
+                self._draw_mic_pins(ev_f, camera_id, mic_pin.mic_id)
+
             frames = pre_frames + frames + post_frames
         else:
             window_start = timestamp_start
@@ -158,6 +210,11 @@ class AVAlertComposer:
             wavfile.write(output_path, rate, audio_int16)
             logger.info(f"Saved audio-only alert: {output_path}")
 
+        # Buffer identity debug logging requested by user
+        audio_buffer = self.audio_buffers.get(mic_id)
+        if audio_buffer is not None:
+            logger.info(f"[DEBUG] on_audio_alert - audio_buffer id: {id(audio_buffer)}, len: {len(audio_buffer)}")
+
         camera_id = self.layout.camera_for_mic(mic_id)
         if not camera_id:
             logger.info(f"No camera mapped for mic {mic_id}. Saving audio-only alert.")
@@ -186,7 +243,9 @@ class AVAlertComposer:
             frames = []
             for ts, frame in buffer_snapshot:
                 if window_start <= ts <= window_end:
-                    frames.append(frame.copy())
+                    # Decode JPEG bytes if stored in compressed form.
+                    raw = jpeg_decode(frame) if isinstance(frame, (bytes, bytearray)) else frame
+                    frames.append(raw.copy())
         else:
             frames = []
                 
@@ -218,27 +277,18 @@ class AVAlertComposer:
                 if nearest_pin and nearest_pin.mic_id == mic_id:
                     nearby_students.append(state)
 
-        # Annotate frames
+        # Annotate frames — draw order: resize (done above) → student boxes → timestamp → mic pins
         annotated_frames = []
         for frame in frames:
             ann_frame = frame.copy()
-            # Draw mic pin
-            if mic_pin and frames:
-                h, w = frames[0].shape[:2]
-                px, py = int(mic_pin.norm_pos[0] * w), int(mic_pin.norm_pos[1] * h)
-                cv2.circle(ann_frame, (px, py), 10, (0, 255, 255), -1)
-                cv2.putText(
-                    ann_frame, mic_id,
-                    (px + 12, py + 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1
-                )
-            
             # Draw nearby students
             for student in nearby_students:
                 x1, y1, x2, y2 = student.bbox
                 cv2.rectangle(ann_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
-                
             draw_timestamp_overlay(ann_frame)
+            # mic-pin overlay: source mic = red, all others = green
+            # Frame is already at its final dimensions here (no resize after this).
+            self._draw_mic_pins(ann_frame, camera_id, source_mic_id=mic_id)
             annotated_frames.append(ann_frame)
             
         timestamp = time.time()
@@ -271,13 +321,19 @@ class AVAlertComposer:
             return
             
         _id = uuid.uuid4().hex
-        temp_video = f"temp_video_{_id}.mp4"
-        temp_audio = f"temp_audio_{_id}.wav"
+        # Declare here for reference in finally block; actual paths assigned inside try.
+        temp_video = ""
+        temp_audio = ""
         
         try:
             # 1. Write frames to temp MP4
             h, w = frames[0].shape[:2]
             frames = [cv2.resize(f, (w, h)) if f.shape[:2] != (h, w) else f for f in frames]
+            
+            # Use OS temp dir so macOS sandbox restrictions don't block writes in cwd.
+            tmp_dir = tempfile.gettempdir()
+            temp_video = os.path.join(tmp_dir, f"temp_video_{_id}.mp4")
+            temp_audio = os.path.join(tmp_dir, f"temp_audio_{_id}.wav")
             
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(temp_video, fourcc, self.video_fps, (w, h))

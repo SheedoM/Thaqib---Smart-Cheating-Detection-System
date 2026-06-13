@@ -887,14 +887,14 @@ class VideoPipeline:
             for track in tracking_result.tracks:
                 self._extrapolator.update(track.track_id, track.bbox, frame_data.timestamp)
         elif self._last_tracking_result is not None:
-            # Extrapolate track coordinates on intermediate frames for smooth 30 FPS tracking
-            extrapolated_tracks = []
+            # Use sticky last-known bounding boxes instead of velocity extrapolation.
+            # Linear velocity extrapolation overshoots wildly when frame rates drop
+            # (e.g. during CUDA timeouts) in a mostly static exam environment.
+            sticky_tracks = []
             for track in self._last_tracking_result.tracks:
-                pred_bbox = self._extrapolator.extrapolate(track.track_id, frame_data.timestamp)
-                bbox = pred_bbox if pred_bbox is not None else track.bbox
-                extrapolated_tracks.append(TrackedObject(
+                sticky_tracks.append(TrackedObject(
                     track_id=track.track_id,
-                    bbox=bbox,
+                    bbox=track.bbox,
                     confidence=track.confidence,
                     is_selected=track.is_selected,
                     label=track.label,
@@ -903,7 +903,7 @@ class VideoPipeline:
             tracking_result = TrackingResult(
                 frame_index=frame_data.frame_index,
                 timestamp=frame_data.timestamp,
-                tracks=extrapolated_tracks,
+                tracks=sticky_tracks,
             )
         else:
             tracking_result = TrackingResult(
