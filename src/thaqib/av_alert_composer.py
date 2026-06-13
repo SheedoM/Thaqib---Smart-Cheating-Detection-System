@@ -6,6 +6,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
 
 import cv2
@@ -42,8 +43,13 @@ class AVAlertComposer:
         self.output_dir = output_dir
         self.video_fps = video_fps
         self.audio_sample_rate = audio_sample_rate
+        self._mux_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ComposerMux")
         
         os.makedirs(self.output_dir, exist_ok=True)
+
+    def stop(self):
+        """Stop the composer and wait for pending mux operations to complete."""
+        self._mux_executor.shutdown(wait=True)
 
     # ------------------------------------------------------------------
     # Shared mic-pin overlay helper
@@ -186,12 +192,10 @@ class AVAlertComposer:
         output_path = os.path.join(self.output_dir, f"{alert_type}_{camera_id}_{timestamp:.1f}.mp4")
         
         # Mux in background
-        threading.Thread(
-            target=self._mux_and_save,
-            args=(frames, audio_clip, output_path),
-            daemon=True,
-            name=f"ComposerMux_{timestamp}"
-        ).start()
+        self._mux_executor.submit(
+            self._mux_and_save,
+            frames, audio_clip, output_path
+        )
 
     def on_audio_alert(
         self,
@@ -250,7 +254,12 @@ class AVAlertComposer:
             frames = []
                 
         if not frames:
-            logger.info(f"No frames found in extended range {window_start}-{window_end} for camera {camera_id}. Saving audio-only alert.")
+            logger.warning(
+                f"No video frames found for audio alert window "
+                f"[{window_start:.1f}, {window_end:.1f}] in camera {camera_id}. "
+                f"Buffer oldest={oldest_ts:.1f}, newest={newest_ts:.1f}. "
+                f"Possible cause: Whisper latency exceeded video buffer depth."
+            )
             save_audio_only()
             return
 
@@ -295,12 +304,10 @@ class AVAlertComposer:
         output_path = os.path.join(self.output_dir, f"audio_alert_{mic_id}_{timestamp:.1f}.mp4")
         
         # Mux in background
-        threading.Thread(
-            target=self._mux_and_save,
-            args=(annotated_frames, final_audio_clip, output_path, sample_rate),
-            daemon=True,
-            name=f"ComposerMux_{timestamp}"
-        ).start()
+        self._mux_executor.submit(
+            self._mux_and_save,
+            annotated_frames, final_audio_clip, output_path, sample_rate
+        )
 
     def _save_video_only(self, frames: list[np.ndarray], output_path: str):
         if not frames:
@@ -358,8 +365,11 @@ class AVAlertComposer:
                 output_path
             ]
             
-            # Run silently
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            # Run and capture stderr for debugging
+            result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            if result.returncode != 0:
+                stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
+                raise RuntimeError(f"ffmpeg exited {result.returncode}:\n{stderr_text}")
             logger.info(f"Successfully created AV alert: {output_path}")
             
         except Exception as e:

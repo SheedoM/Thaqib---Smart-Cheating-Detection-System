@@ -242,7 +242,7 @@ class VideoPipeline:
         self._registry = GlobalStudentRegistry()
         self._neighbor_computer = NeighborComputer()
         self._reid = FaceReIdentifier()
-        self._cheating_evaluator = CheatingEvaluator(self._registry)
+        self._cheating_evaluator = CheatingEvaluator(self._registry, clock=clock)
         self._cheating_evaluator.on_alert = on_alert
 
 
@@ -267,8 +267,9 @@ class VideoPipeline:
         # None by default so headless/test usage is unaffected.
         self._visualizer = None
 
-        self._frame_lock = threading.Lock()
+        # Stores alias mappings for tracks (from tracker ID to ReID main ID)
         self._track_aliases: dict[int, int] = {}
+        self._alias_lock = threading.Lock()
         self._global_frame_buffer: deque[tuple[np.ndarray, None]] = deque(maxlen=90)
         
         # Initialize buffer lock and bounded executors to manage thread safety and memory.
@@ -413,14 +414,17 @@ class VideoPipeline:
                             # use live registry instead of stale closure — fixes V-L-1
                             visible_ids = {s.track_id for s in self._registry.get_all()
                                            if s.is_active}
-                            active_aliases = set(self._track_aliases.values())
+                            with self._alias_lock:
+                                active_aliases = set(self._track_aliases.values())
                             if best_id not in visible_ids and best_id not in active_aliases:
                                 logger.info(
                                     f"ReID match found! Aliasing tracker ID {track_id} -> {best_id}"
                                 )
-                                self._track_aliases[track_id] = best_id
+                                with self._alias_lock:
+                                    self._track_aliases[track_id] = best_id
 
-                        actual_id = self._track_aliases.get(track_id, track_id)
+                        with self._alias_lock:
+                            actual_id = self._track_aliases.get(track_id, track_id)
                         is_match = self._reid.register_embedding(actual_id, result)
                         self._tracker.verify_embedding_match(actual_id, is_match)
 
@@ -695,6 +699,7 @@ class VideoPipeline:
                     'is_heuristic_paper': state.is_heuristic_paper,
                     'is_using_phone': getattr(state, 'is_using_phone', False),
                     'phone_bbox': getattr(state, 'phone_bbox', None),
+                    'suspicious_start_time': getattr(state, 'suspicious_start_time', 0.0),
                 }
                 self._save_alert_video_async(
                     frames_snapshot, state.track_id, time.time(),
@@ -912,10 +917,11 @@ class VideoPipeline:
                 tracks=[],
             )
 
-        # Apply ID Alias Translation Layer
-        for track in tracking_result.tracks:
-            if track.track_id in self._track_aliases:
-                track.track_id = self._track_aliases[track.track_id]
+        # Apply track aliasing
+        with self._alias_lock:
+            for track in tracking_result.tracks:
+                if track.track_id in self._track_aliases:
+                    track.track_id = self._track_aliases[track.track_id]
 
         t2 = time.perf_counter()
 
@@ -1040,6 +1046,7 @@ class VideoPipeline:
                         'is_heuristic_paper': state.is_heuristic_paper,
                         'is_using_phone': state.is_using_phone,
                         'phone_bbox': state.phone_bbox,
+                        'suspicious_start_time': state.suspicious_start_time,
                     }
                     self._save_alert_video_async(
                         frames_snapshot, state.track_id, frame_data.timestamp,
@@ -1051,12 +1058,18 @@ class VideoPipeline:
             # Use the public API to prune tracker state — avoids reaching
             # into private dicts/sets from outside the tracker class.
             self._tracker.remove_tracks(expired_ids)
-            keys_to_delete = [
-                bot_id for bot_id, thaqib_id in self._track_aliases.items()
-                if bot_id in expired_ids or thaqib_id in expired_ids
-            ]
-            for k in keys_to_delete:
-                del self._track_aliases[k]
+            
+            with self._fm_cache_lock:
+                for track_id in expired_ids:
+                    self._fm_cache.pop(track_id, None)
+                    
+            with self._alias_lock:
+                keys_to_delete = [
+                    bot_id for bot_id, thaqib_id in self._track_aliases.items()
+                    if bot_id in expired_ids or thaqib_id in expired_ids
+                ]
+                for k in keys_to_delete:
+                    del self._track_aliases[k]
 
         t3 = time.perf_counter()
 
@@ -1345,6 +1358,7 @@ class VideoPipeline:
                         'is_heuristic_paper': state.is_heuristic_paper,
                         'is_using_phone': state.is_using_phone,
                         'phone_bbox': state.phone_bbox,
+                        'suspicious_start_time': state.suspicious_start_time,
                     }
                     
                     # Fully reset cheating state — the event is captured.
@@ -1877,7 +1891,12 @@ class VideoPipeline:
                     writer = None
 
                 if writer is None or not writer.isOpened():
-                    logger.error("Phone alert: all codecs failed — video not saved")
+                    logger.error("Phone alert: all codecs failed — video not saved. Attempting JPEG fallback.")
+                    jpg_dir = alerts_dir / f"phone_alert_frames_{time_str}"
+                    jpg_dir.mkdir(exist_ok=True)
+                    for i, out_frame in enumerate(annotated_frames):
+                        cv2.imwrite(str(jpg_dir / f"frame_{i:04d}.jpg"), out_frame)
+                    logger.warning(f"Saved JPEG sequence fallback to {jpg_dir}")
                     return
 
                 for out_frame in annotated_frames:
@@ -2097,7 +2116,10 @@ class VideoPipeline:
                             return itm[0]
                         return timestamp
 
-                    timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
+                    if cheat_ctx and cheat_ctx.get('suspicious_start_time', 0.0) > 0.0:
+                        timestamp_start = cheat_ctx['suspicious_start_time'] - 2.0
+                    else:
+                        timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
                     timestamp_end = _get_ts(frames[-1]) if frames else timestamp
                     
                     self._composer.on_video_alert(
@@ -2131,7 +2153,12 @@ class VideoPipeline:
                     writer = None
                 
                 if writer is None or not writer.isOpened():
-                    logger.error(f"Failed to create video writer — all codecs failed for track {track_id}")
+                    logger.error(f"Failed to create video writer — all codecs failed for track {track_id}. Attempting JPEG fallback.")
+                    jpg_dir = alerts_dir / f"{prefix}_frames_track{track_id}_{time_str}"
+                    jpg_dir.mkdir(exist_ok=True)
+                    for i, frame in enumerate(annotated_frames):
+                        cv2.imwrite(str(jpg_dir / f"frame_{i:04d}.jpg"), frame)
+                    logger.warning(f"Saved JPEG sequence fallback to {jpg_dir}")
                     return
 
                 for out in annotated_frames:
