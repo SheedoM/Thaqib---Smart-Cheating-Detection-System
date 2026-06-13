@@ -654,6 +654,9 @@ class AudioPipeline:
         swapping Whisper decoding parameters to handle load spikes.
         """
         logger.info("[Health Monitor] Agent started background monitoring loop.")
+        _drop_report_interval = 60  # seconds between dropped-chunk summary logs
+        _drop_report_timer = 0.0    # wall-clock seconds since last report
+
         while self._is_running and not self._monitor_stop_event.is_set():
             try:
                 inf_qsize = self._inference_queue.qsize()
@@ -679,6 +682,21 @@ class AudioPipeline:
                             )
                             self._health_state = "NORMAL"
                             self._keyword_detector._beam_size = self._original_beam_size
+
+                # M-5: Periodic drop summary so the proctor/log sees degradation.
+                # Read and reset counter under lock so the increment in _run_loop is atomic.
+                _drop_report_timer += 1.0
+                if _drop_report_timer >= _drop_report_interval:
+                    _drop_report_timer = 0.0
+                    with self._lock:
+                        dropped = self._stats.get("dropped_chunks", 0)
+                        self._stats["dropped_chunks"] = 0
+                    if dropped > 0:
+                        logger.warning(
+                            f"[Health Monitor] Audio inference queue: {dropped} chunk(s) dropped "
+                            f"in the last {_drop_report_interval}s. "
+                            "Consider reducing audio quality or upgrading hardware."
+                        )
 
             except Exception as e:
                 logger.error(f"[Health Monitor] Error: {e}", exc_info=True)

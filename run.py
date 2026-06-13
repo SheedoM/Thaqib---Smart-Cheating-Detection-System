@@ -1,6 +1,9 @@
 import argparse
 import logging
+import os
+import shutil
 import threading
+from pathlib import Path
 from threading import Lock
 import time
 import sys
@@ -66,6 +69,32 @@ def main():
         audio_sources[k] = v
         mic_sources.append(k)
         audio_paths.append(v)
+
+    # E-8: Validate all file-based sources exist BEFORE creating any threads or buffers.
+    # Failing here gives a clear error message instead of a cryptic barrier timeout.
+    for cam_id, path in video_sources.items():
+        if isinstance(path, str) and not path.isdigit() and not path.startswith("rtsp"):
+            if not os.path.exists(path):
+                logger.error(f"Video file not found for {cam_id}: {path}")
+                sys.exit(1)
+        # NOTE: webcam index sources (e.g. cam0=0) cannot be pre-validated without
+        # opening the device. If the camera fails to open, the barrier.wait(timeout=30)
+        # will fire BrokenBarrierError after 30 s and abort cleanly. (EC-10)
+
+    for mic_id, path in audio_sources.items():
+        if not os.path.exists(path):
+            logger.error(f"Audio file not found for {mic_id}: {path}")
+            sys.exit(1)
+
+    # EC-7: Check available disk space in the alerts output directory.
+    alerts_path = Path("alerts")
+    alerts_path.mkdir(exist_ok=True)
+    free_bytes = shutil.disk_usage(alerts_path).free
+    if free_bytes < 1 * 1024 ** 3:  # less than 1 GB
+        logger.warning(
+            f"Low disk space: {free_bytes / 1024**3:.1f} GB free in alerts/. "
+            "Alert clips may fail to save."
+        )
 
     # 2. Load MicLayout
     layout = MicLayout("mic_layout.json")
