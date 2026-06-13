@@ -1,9 +1,12 @@
 import json
+import logging
 import math
 import os
 import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,12 +26,17 @@ class MicLayout:
     def load(self):
         with self._lock:
             if not os.path.exists(self.layout_file):
+                # EC-11: warn the operator instead of silently proceeding with no pins
+                logger.warning(
+                    "mic_layout.json not found — mic-pin features disabled. "
+                    "Press 'I' in the video window to configure mic positions."
+                )
                 return
             try:
                 with open(self.layout_file, 'r') as f:
                     data = json.load(f)
                     for mic_id, info in data.items():
-                        # Backward compatibility: if it has pixel_pos, we can't easily convert without frame size, 
+                        # Backward compatibility: if it has pixel_pos, we can't easily convert without frame size,
                         # so we assume it was already norm_pos or we just read norm_pos
                         if "norm_pos" in info:
                             pos = tuple(info["norm_pos"])
@@ -37,15 +45,21 @@ class MicLayout:
                             # Let's just read it as norm_pos and hope for the best, or migrate it
                             pos = (info["pixel_pos"][0] / 1280.0, info["pixel_pos"][1] / 720.0)
                         else:
-                            pos = (0.5, 0.5)
-                        
+                            # E-2: skip entries with no valid position rather than silently placing at centre
+                            logger.warning(
+                                f"mic_layout.json: '{mic_id}' has no valid position "
+                                f"(neither 'norm_pos' nor 'pixel_pos') — skipping"
+                            )
+                            continue
+
                         self.pins[mic_id] = MicPin(
                             mic_id=mic_id,
                             camera_id=info["camera_id"],
                             norm_pos=pos
                         )
             except Exception as e:
-                print(f"Error loading mic layout: {e}")
+                # E-3: use logger.error, not print, so this reaches the log file
+                logger.error(f"Error loading mic_layout.json: {e}")
 
     def save(self):
         with self._lock:
@@ -60,7 +74,8 @@ class MicLayout:
                 with open(self.layout_file, 'w') as f:
                     json.dump(data, f, indent=4)
             except Exception as e:
-                print(f"Error saving mic layout: {e}")
+                # E-3: use logger.error consistently
+                logger.error(f"Error saving mic_layout.json: {e}")
 
     def add_pin(self, mic_id: str, camera_id: str, norm_pos: Tuple[float, float]):
         with self._lock:
@@ -79,9 +94,9 @@ class MicLayout:
         camera_pins = self.get_pins_for_camera(camera_id)
         if not camera_pins:
             return None
-        
+
         w, h = frame_size
-        
+
         def dist(p1, p2):
             return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 

@@ -1374,10 +1374,13 @@ class AudioPipeline:
 
         mic_audio = chunk.mic_data[mic_id]
 
-        # Use pre-computed speech buffer if provided (two-thread path)
+        # C-4: snapshot _beam_size under lock so the monitor thread cannot
+        # change it between the read and Whisper's use of it.
         if precomputed_buffer is not None:
+            with self._monitor_lock:
+                beam_size_snapshot = self._keyword_detector._beam_size
             result = self._keyword_detector.transcribe_and_match(
-                precomputed_buffer, chunk.sample_rate
+                precomputed_buffer, chunk.sample_rate, beam_size=beam_size_snapshot
             )
         else:
             # Legacy single-thread path (fallback)

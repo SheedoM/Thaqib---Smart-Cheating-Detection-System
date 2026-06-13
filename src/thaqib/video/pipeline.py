@@ -26,7 +26,7 @@ from thaqib.config import get_settings
 from thaqib.video.camera import CameraStream, FrameData
 from thaqib.video.detector import HumanDetector, DetectionResult
 from thaqib.video.tracker import ObjectTracker, TrackingResult, TrackedObject
-from thaqib.video.registry import GlobalStudentRegistry, StudentSpatialState
+from thaqib.video.registry import GlobalStudentRegistry, StudentSpatialState, _MAX_RECORDING_FRAMES
 from thaqib.video.timestamps import draw_timestamp_overlay
 from thaqib.video.neighbors import NeighborComputer
 from thaqib.video.face_mesh import FaceMeshResult
@@ -431,7 +431,7 @@ class VideoPipeline:
                     # Avoid evaluating cheating on worker threads to prevent race conditions on student state fields.
 
             except Exception as exc:
-                logger.debug(f"FM callback error (track {track_id}): {exc}")
+                logger.warning(f"FM callback error (track {track_id}): {exc}")
 
         return callback
 
@@ -1340,7 +1340,7 @@ class VideoPipeline:
                     # then reset recording state immediately.
                     frames_snapshot = list(state.recording_buffer)
                     state.is_alert_recording = False
-                    state.recording_buffer = deque(maxlen=1800)
+                    state.recording_buffer = deque(maxlen=_MAX_RECORDING_FRAMES)
                     
                     # Determine cheat type BEFORE resetting state
                     cheat_type = "phone" if state.is_using_phone else "gaze"
@@ -1399,7 +1399,7 @@ class VideoPipeline:
                     )
                     for item in pre
                 ],
-                maxlen=1800,
+                maxlen=_MAX_RECORDING_FRAMES,
             )
             self._phone_frames_to_record = self._post_buffer_frames
             logger.info("Phone alert recording STARTED")
@@ -1424,7 +1424,7 @@ class VideoPipeline:
                 if self._phone_frames_to_record <= 0:
                     frames_snapshot = list(self._phone_recording_buffer)
                     self._phone_is_recording = False
-                    self._phone_recording_buffer = deque(maxlen=1800)
+                    self._phone_recording_buffer = deque(maxlen=_MAX_RECORDING_FRAMES)
                     self._save_phone_alert_video_async(frames_snapshot, frame_data.timestamp)
 
         t5 = time.perf_counter()

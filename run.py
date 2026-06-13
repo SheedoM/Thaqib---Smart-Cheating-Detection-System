@@ -1,6 +1,7 @@
 import argparse
 import logging
 import threading
+from threading import Lock
 import time
 import sys
 import subprocess
@@ -80,6 +81,10 @@ def main():
     video_buffers = {cam_id: deque(maxlen=1800) for cam_id in video_sources.keys()}
     video_registries = {}
 
+    # C-2/C-3: per-buffer locks so AVAlertComposer snapshots are race-free
+    video_buffer_locks = {cam_id: Lock() for cam_id in video_sources}
+    audio_buffer_locks = {mic_id: Lock() for mic_id in mic_sources}
+
     # 5. Create Composer
     from thaqib.config import get_settings as _gs
     _s = _gs()
@@ -91,6 +96,8 @@ def main():
         output_dir="alerts",
         video_fps=float(_s.camera_fps),
         audio_sample_rate=int(_s.audio_sample_rate),
+        video_buffer_locks=video_buffer_locks,
+        audio_buffer_locks=audio_buffer_locks,
     )
 
     # 6. Create Pipelines
