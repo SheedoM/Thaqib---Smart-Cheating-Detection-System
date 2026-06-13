@@ -182,11 +182,14 @@ def main():
         _latest_frame = [None]
 
         def mouse_callback(event, x, y, flags, param):
-            if event != cv2.EVENT_LBUTTONDOWN:
-                return
             # Mic placement takes priority when active
             if visualizer._mic_placement_mode:
                 visualizer.handle_mouse(event, x, y, flags, param)
+                if event in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_RBUTTONDOWN):
+                    return
+            
+            # Normal modes only care about left click
+            if event != cv2.EVENT_LBUTTONDOWN:
                 return
             # Deselect mode
             if _deselect_mode[0] and _latest_frame[0] is not None:

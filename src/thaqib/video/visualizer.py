@@ -7,10 +7,14 @@ import cv2
 import numpy as np
 import functools
 
+import logging
+
 from thaqib.video.pipeline import PipelineFrame
 from thaqib.video.registry import GlobalStudentRegistry
 from thaqib.video.gaze import compute_gaze_direction
 from thaqib.video.timestamps import draw_timestamp_overlay
+
+logger = logging.getLogger(__name__)
 
 
 @functools.lru_cache(maxsize=1024)
@@ -111,6 +115,7 @@ class VideoVisualizer:
         if event == cv2.EVENT_RBUTTONDOWN:
             if self._available_mic_ids:
                 self._selected_mic_idx = (self._selected_mic_idx + 1) % len(self._available_mic_ids)
+                logger.debug(f"Mic placement: switched to {self._available_mic_ids[self._selected_mic_idx]}")
         elif event == cv2.EVENT_LBUTTONDOWN:
             if self._available_mic_ids and self._last_frame_size is not None:
                 mic_id = self._available_mic_ids[self._selected_mic_idx]
@@ -380,9 +385,9 @@ class VideoVisualizer:
         if self._mic_placement_mode and self._available_mic_ids:
             mic_id = self._available_mic_ids[self._selected_mic_idx]
             h, w = frame.shape[:2]
-            msg = f"MIC PLACEMENT MODE [I to exit] - L-Click to pin {mic_id}, R-Click to cycle mics"
+            msg = f"MIC PLACEMENT MODE [I=exit | L-Click=pin {mic_id} | R-Click=cycle mics]"
             cv2.putText(frame, msg, (int(20 * sc), h - int(60 * sc)),
-                        cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.6), (255, 0, 255), _th(sc, 2), cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.6), (0, 255, 255), _th(sc, 2), cv2.LINE_AA)
 
 
     def _draw_instructions(self, frame: np.ndarray, sc: float) -> None:
