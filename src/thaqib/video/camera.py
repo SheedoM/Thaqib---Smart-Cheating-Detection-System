@@ -217,7 +217,9 @@ class CameraStream:
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 
-        logger.warning("Camera stream disconnected — video buffer is now stale.")
+        # Stop event already set in the EOF branch above; set it again here
+        # in case the loop exited through the while-condition (stop_event or
+        # _is_opened cleared from outside), so callers always see it set.
         self._stop_event.set()
 
     def close(self) -> None:

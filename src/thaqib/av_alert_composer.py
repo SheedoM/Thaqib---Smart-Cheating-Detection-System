@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import os
 import subprocess
@@ -35,6 +36,8 @@ class AVAlertComposer:
         output_dir: str,
         video_fps: float = 30.0,
         audio_sample_rate: int = 16000,
+        video_buffer_locks: Dict[str, object] | None = None,  # C-2: per-camera lock for snapshot
+        audio_buffer_locks: Dict[str, object] | None = None,  # C-3: per-mic lock for snapshot
     ):
         self.layout = layout
         self.audio_buffers = audio_buffers
@@ -44,12 +47,18 @@ class AVAlertComposer:
         self.video_fps = video_fps
         self.audio_sample_rate = audio_sample_rate
         self._mux_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ComposerMux")
+        self._video_buffer_locks: Dict[str, object] = video_buffer_locks or {}
+        self._audio_buffer_locks: Dict[str, object] = audio_buffer_locks or {}
         
         os.makedirs(self.output_dir, exist_ok=True)
 
     def stop(self):
         """Stop the composer and wait for pending mux operations to complete."""
         self._mux_executor.shutdown(wait=True)
+
+    def shutdown(self, wait: bool = True):
+        """Gracefully shut down the mux executor. Alias for stop() with cancel option."""
+        self._mux_executor.shutdown(wait=wait, cancel_futures=not wait)
 
     # ------------------------------------------------------------------
     # Shared mic-pin overlay helper
@@ -130,7 +139,9 @@ class AVAlertComposer:
 
         video_buffer = self.video_buffers.get(camera_id)
         if video_buffer and len(video_buffer) > 0:
-            buffer_snapshot = list(video_buffer)
+            lock = self._video_buffer_locks.get(camera_id)
+            with lock if lock else contextlib.nullcontext():
+                buffer_snapshot = list(video_buffer)
             oldest_ts = buffer_snapshot[0][0]
             newest_ts = buffer_snapshot[-1][0]
             
@@ -177,7 +188,10 @@ class AVAlertComposer:
         audio_segments = []
         # Need to ensure threading safety if audio buffer is updated concurrently
         # Assuming audio buffer contains (timestamp, chunk_data)
-        buffer_snapshot = list(audio_buffer)
+        # C-3: acquire per-mic lock if available for atomic snapshot
+        audio_lock = self._audio_buffer_locks.get(mic_id)
+        with audio_lock if audio_lock else contextlib.nullcontext():
+            buffer_snapshot = list(audio_buffer)
         for ts, data in buffer_snapshot:
             if window_start <= ts <= window_end:
                 audio_segments.append(data)
@@ -236,7 +250,9 @@ class AVAlertComposer:
         window_end = timestamp_end + AUDIO_ALERT_PAD_AFTER_S
         
         if len(video_buffer) > 0:
-            buffer_snapshot = list(video_buffer)
+            lock = self._video_buffer_locks.get(camera_id)
+            with lock if lock else contextlib.nullcontext():
+                buffer_snapshot = list(video_buffer)
             oldest_ts = buffer_snapshot[0][0]
             newest_ts = buffer_snapshot[-1][0]
             
@@ -267,9 +283,11 @@ class AVAlertComposer:
         audio_segments = []
         audio_buffer = self.audio_buffers.get(mic_id)
         if audio_buffer:
-            for ts, data in list(audio_buffer):
-                if window_start <= ts <= window_end:
-                    audio_segments.append(data)
+            audio_lock = self._audio_buffer_locks.get(mic_id)
+            with audio_lock if audio_lock else contextlib.nullcontext():
+                for ts, data in list(audio_buffer):
+                    if window_start <= ts <= window_end:
+                        audio_segments.append(data)
                     
         final_audio_clip = np.concatenate(audio_segments) if audio_segments else audio_clip
 
