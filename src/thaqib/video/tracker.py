@@ -176,13 +176,13 @@ class ObjectTracker:
                     if track_id in self._smoothed_bboxes:
                         raw_bbox = self._smoothed_bboxes[track_id]
 
-                # EMA bbox smoothing (0.2 × prev + 0.8 × current) - favors current frame
+                # EMA bbox smoothing (0.5 × prev + 0.5 × current) - favors stability
                 if track_id in self._smoothed_bboxes:
                     pb = self._smoothed_bboxes[track_id]
-                    sx1 = int(0.2 * pb[0] + 0.8 * raw_bbox[0])
-                    sy1 = int(0.2 * pb[1] + 0.8 * raw_bbox[1])
-                    sx2 = int(0.2 * pb[2] + 0.8 * raw_bbox[2])
-                    sy2 = int(0.2 * pb[3] + 0.8 * raw_bbox[3])
+                    sx1 = int(0.5 * pb[0] + 0.5 * raw_bbox[0])
+                    sy1 = int(0.5 * pb[1] + 0.5 * raw_bbox[1])
+                    sx2 = int(0.5 * pb[2] + 0.5 * raw_bbox[2])
+                    sy2 = int(0.5 * pb[3] + 0.5 * raw_bbox[3])
                     smoothed = (sx1, sy1, sx2, sy2)
                 else:
                     smoothed = raw_bbox

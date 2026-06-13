@@ -327,6 +327,11 @@ class AudioPipeline:
 
         self._composer = composer
         self._audio_buffers = audio_buffers
+
+        # Buffer identity debug logging requested by user
+        if self._audio_buffers is not None and "mic0" in self._audio_buffers:
+            logger.info(f"[DEBUG] AudioPipeline.__init__ - audio_buffers['mic0'] id: {id(self._audio_buffers['mic0'])}")
+
         self._mic_ids = mic_ids if mic_ids is not None else [f"mic{i}" for i in range(source.num_mics)]
         self._clock = clock
 
@@ -738,6 +743,11 @@ class AudioPipeline:
                 for completed in completed_alerts:
                     full_audio = np.concatenate(completed.audio_sequence)
                     completed.alert.audio_clip = full_audio
+                    # Update timestamp_end to the actual last post-chunk so the
+                    # composer's video window covers the full post-buffer period.
+                    # Without this update, the video window ended at the original
+                    # detection chunk and post-chunk audio was truncated by ffmpeg -shortest.
+                    completed.alert.timestamp_end = chunk.timestamp
                     self._dispatch_audio_alert(completed.alert)
 
                 # 3. Process the chunk (fast classification)
@@ -1412,6 +1422,10 @@ class AudioPipeline:
                     active_mics=classification.active_mics,
                     transcript=result.transcript,
                     matched_keywords=result.matched_keywords,
+                    # timestamp_start covers the FULL window: pre-buffer + speech.
+                    # Computed after pre_buffer is built below so the composer
+                    # fetches a video window of the correct duration.
+                    # Set to a temporary value here; overwritten below.
                     timestamp_start=chunk.timestamp - (len(mic_audio) / chunk.sample_rate),
                     timestamp_end=chunk.timestamp,
                     audio_clip=mic_audio.copy(),
@@ -1464,6 +1478,11 @@ class AudioPipeline:
                 else:
                     alert.audio_clip = np.concatenate(pre_buffer + [mic_audio.copy()])
 
+                # Now that audio_clip covers the full pre+speech window, update
+                # timestamp_start to match so on_audio_alert fetches the right
+                # video frames (= duration of audio_clip before the chunk end).
+                alert.timestamp_start = alert.timestamp_end - (len(alert.audio_clip) / chunk.sample_rate)
+
                 # Defer evidence write if clip_sec_after is configured
                 chunk_duration_sec = chunk.duration_ms / 1000.0
                 target_post_chunks = int(self._clip_sec_after / chunk_duration_sec) if self._clip_sec_after > 0 else 0
@@ -1478,9 +1497,9 @@ class AudioPipeline:
                     with self._lock:
                         self._pending_alerts.append(pending_alert)
                 else:
-                    self._async_writer.enqueue_write(
-                        self._evidence_recorder.save_alert, alert
-                    )
+                    # Route through _dispatch_audio_alert so the composer is
+                    # called when connected (same as VAD-only path).
+                    self._dispatch_audio_alert(alert)
 
                 if self._alert_queue is not None:
                     self._alert_queue.put(alert)
