@@ -5,7 +5,6 @@ import subprocess
 import tempfile
 import threading
 import time
-import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
@@ -344,57 +343,48 @@ class AVAlertComposer:
     def _mux_and_save(self, frames: list[np.ndarray], audio: np.ndarray, output_path: str, sample_rate: int = None):
         if not frames:
             return
-            
-        _id = uuid.uuid4().hex
-        # Declare here for reference in finally block; actual paths assigned inside try.
-        temp_video = ""
-        temp_audio = ""
-        
+
         try:
             # 1. Write frames to temp MP4
             h, w = frames[0].shape[:2]
             frames = [cv2.resize(f, (w, h)) if f.shape[:2] != (h, w) else f for f in frames]
-            
-            # Use OS temp dir so macOS sandbox restrictions don't block writes in cwd.
-            tmp_dir = tempfile.gettempdir()
-            temp_video = os.path.join(tmp_dir, f"temp_video_{_id}.mp4")
-            temp_audio = os.path.join(tmp_dir, f"temp_audio_{_id}.wav")
-            
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(temp_video, fourcc, self.video_fps, (w, h))
-            for frame in frames:
-                out.write(frame)
-            out.release()
-            
-            # 2. Write audio to temp WAV
-            audio_int16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
-            rate = sample_rate if sample_rate else self.audio_sample_rate
-            wavfile.write(temp_audio, rate, audio_int16)
-            
-            # 3. Run ffmpeg
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", temp_video,
-                "-i", temp_audio,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-af", "apad",
-                "-shortest",
-                output_path
-            ]
-            
-            # Run and capture stderr for debugging
-            result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            if result.returncode != 0:
-                stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
-                raise RuntimeError(f"ffmpeg exited {result.returncode}:\n{stderr_text}")
-            logger.info(f"Successfully created AV alert: {output_path}")
-            
+
+            # EC-6: Use TemporaryDirectory so the OS cleans up even if SIGKILL hits.
+            # tempfile.TemporaryDirectory() guarantees deletion on __exit__, including
+            # on exception — no separate finally block needed.
+            with tempfile.TemporaryDirectory(prefix="thaqib_mux_") as tmpdir:
+                temp_video = os.path.join(tmpdir, "video.mp4")
+                temp_audio = os.path.join(tmpdir, "audio.wav")
+
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(temp_video, fourcc, self.video_fps, (w, h))
+                for frame in frames:
+                    out.write(frame)
+                out.release()
+
+                # 2. Write audio to temp WAV
+                audio_int16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+                rate = sample_rate if sample_rate else self.audio_sample_rate
+                wavfile.write(temp_audio, rate, audio_int16)
+
+                # 3. Run ffmpeg
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", temp_video,
+                    "-i", temp_audio,
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-af", "apad",
+                    "-shortest",
+                    output_path
+                ]
+
+                # Run and capture stderr for debugging
+                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                if result.returncode != 0:
+                    stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
+                    raise RuntimeError(f"ffmpeg exited {result.returncode}:\n{stderr_text}")
+                logger.info(f"Successfully created AV alert: {output_path}")
+
         except Exception as e:
             logger.error(f"Error creating AV alert {output_path}: {e}")
-        finally:
-            # 4. Delete temp files
-            if os.path.exists(temp_video):
-                os.remove(temp_video)
-            if os.path.exists(temp_audio):
-                os.remove(temp_audio)
