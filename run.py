@@ -153,7 +153,7 @@ def main():
         video_pipelines.append(vp)
         video_registries[cam_id] = vp._registry
 
-    source = FileAudioSource(audio_paths, clock=clock)
+    source = FileAudioSource(audio_paths, clock=clock, real_time=True)
     ap = AudioPipeline(
         source=source,
         composer=composer,

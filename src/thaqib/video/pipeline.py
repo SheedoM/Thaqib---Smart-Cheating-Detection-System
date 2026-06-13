@@ -274,6 +274,8 @@ class VideoPipeline:
         
         # Initialize buffer lock and bounded executors to manage thread safety and memory.
         self._buffer_lock = threading.Lock()
+        # _frame_lock: guards _current_frame_data written by run() and read by _detection_worker.
+        self._frame_lock = threading.Lock()
         self._phone_alert_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="PhoneAlertWriter"
         )
