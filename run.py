@@ -108,7 +108,7 @@ def main():
         )
 
     # 2. Load MicLayout
-    layout = MicLayout("mic_layout.json")
+    layout = MicLayout()
 
     # 3. Create SimClock
     clock = SimClock()
