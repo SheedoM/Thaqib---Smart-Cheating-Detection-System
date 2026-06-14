@@ -16,16 +16,27 @@ class MicPin:
 
 class MicLayout:
     def __init__(self):
-        self.pins: Dict[str, MicPin] = {}
+        self.pins: Dict[str, List[MicPin]] = {}
         self._lock = threading.Lock()
 
     def add_pin(self, mic_id: str, camera_id: str, norm_pos: Tuple[float, float]):
         with self._lock:
-            self.pins[mic_id] = MicPin(mic_id, camera_id, norm_pos)
+            if mic_id not in self.pins:
+                self.pins[mic_id] = []
+            for i, pin in enumerate(self.pins[mic_id]):
+                if pin.camera_id == camera_id:
+                    self.pins[mic_id][i] = MicPin(mic_id, camera_id, norm_pos)
+                    return
+            self.pins[mic_id].append(MicPin(mic_id, camera_id, norm_pos))
 
     def get_pins_for_camera(self, camera_id: str) -> List[MicPin]:
         with self._lock:
-            return [pin for pin in self.pins.values() if pin.camera_id == camera_id]
+            result = []
+            for pin_list in self.pins.values():
+                for pin in pin_list:
+                    if pin.camera_id == camera_id:
+                        result.append(pin)
+            return result
 
     def nearest_mic_for_point(self, point_xy: Tuple[int, int], camera_id: str, frame_size: Tuple[int, int]) -> Optional[MicPin]:
         """
@@ -48,7 +59,11 @@ class MicLayout:
         nearest_pin = min(camera_pins, key=lambda p: dist(point_xy, get_pixel_pos(p)))
         return nearest_pin
 
-    def camera_for_mic(self, mic_id: str) -> Optional[str]:
+    def cameras_for_mic(self, mic_id: str) -> List[str]:
         with self._lock:
-            pin = self.pins.get(mic_id)
-            return pin.camera_id if pin else None
+            pin_list = self.pins.get(mic_id, [])
+            return [pin.camera_id for pin in pin_list]
+
+    def camera_for_mic(self, mic_id: str) -> Optional[str]:
+        cameras = self.cameras_for_mic(mic_id)
+        return cameras[0] if cameras else None

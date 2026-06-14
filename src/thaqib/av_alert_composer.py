@@ -219,29 +219,41 @@ class AVAlertComposer:
         keywords: list[str],
         sample_rate: int = None
     ):
-        def save_audio_only():
-            timestamp = time.time()
-            output_path = os.path.join(self.output_dir, f"audio_alert_{mic_id}_{timestamp:.1f}.wav")
-            audio_int16 = (np.clip(audio_clip, -1.0, 1.0) * 32767).astype(np.int16)
-            rate = sample_rate if sample_rate else self.audio_sample_rate
-            wavfile.write(output_path, rate, audio_int16)
-            logger.info(f"Saved audio-only alert: {output_path}")
+        camera_ids = self.layout.cameras_for_mic(mic_id)
 
+        if not camera_ids:
+            logger.info(
+                f"Mic {mic_id} triggered alert but is not mapped to any camera — suppressed."
+            )
+            return
+
+        for camera_id in camera_ids:
+            self._produce_audio_alert_video(
+                audio_clip=audio_clip,
+                mic_id=mic_id,
+                camera_id=camera_id,
+                timestamp_start=timestamp_start,
+                timestamp_end=timestamp_end,
+                sample_rate=sample_rate,
+            )
+
+    def _produce_audio_alert_video(
+        self,
+        audio_clip: np.ndarray,
+        mic_id: str,
+        camera_id: str,
+        timestamp_start: float,
+        timestamp_end: float,
+        sample_rate: int = None
+    ):
         # Buffer identity debug logging requested by user
         audio_buffer = self.audio_buffers.get(mic_id)
         if audio_buffer is not None:
-            logger.info(f"[DEBUG] on_audio_alert - audio_buffer id: {id(audio_buffer)}, len: {len(audio_buffer)}")
+            logger.info(f"[DEBUG] _produce_audio_alert_video - audio_buffer id: {id(audio_buffer)}, len: {len(audio_buffer)}")
 
-        camera_id = self.layout.camera_for_mic(mic_id)
-        if not camera_id:
-            logger.info(f"No camera mapped for mic {mic_id}. Saving audio-only alert.")
-            save_audio_only()
-            return
-            
         video_buffer = self.video_buffers.get(camera_id)
         if not video_buffer:
-            logger.info(f"No video buffer found for camera {camera_id}. Saving audio-only alert.")
-            save_audio_only()
+            logger.info(f"No video buffer found for camera {camera_id}. Skipping this camera for mic {mic_id}.")
             return
             
         # Expand window for audio alerts
@@ -275,7 +287,6 @@ class AVAlertComposer:
                 f"Buffer oldest={oldest_ts:.1f}, newest={newest_ts:.1f}. "
                 f"Possible cause: Whisper latency exceeded video buffer depth."
             )
-            save_audio_only()
             return
 
         # Extract extended audio segment
@@ -318,7 +329,7 @@ class AVAlertComposer:
             annotated_frames.append(ann_frame)
             
         timestamp = time.time()
-        output_path = os.path.join(self.output_dir, f"audio_alert_{mic_id}_{timestamp:.1f}.mp4")
+        output_path = os.path.join(self.output_dir, f"audio_alert_{mic_id}_{camera_id}_{timestamp:.1f}.mp4")
         
         # Mux in background
         self._mux_executor.submit(
