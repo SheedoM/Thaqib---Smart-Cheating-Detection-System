@@ -35,6 +35,10 @@ from thaqib.video.cheating_evaluator import CheatingEvaluator
 from thaqib.video.video_logger import get_video_logger
 from thaqib.video.jpeg_buffer import JPEGFrame, encode_frame, decode_frame
 
+# Run face mesh every N frames per student to prevent executor backlog.
+# At 30 FPS with N=3: ~10 updates/sec per student — sufficient for gaze accuracy.
+FACE_MESH_INTERVAL: int = 3
+
 
 class ConstantVelocityExtrapolator:
     """Extrapolates bounding boxes on intermediate frames using historical velocity."""
@@ -1216,55 +1220,68 @@ class VideoPipeline:
         #   2. Respect available worker slots (pending < num_workers).
         #   3. Cap total pending at 3 × workers as a safety net.
         if selected_tracks and student_states and self._face_executor is not None:
-            # Safety cap: discard oldest futures if queue grew too large
-            max_pending = 100
-            if len(self._pending_fm_futures) > max_pending:
-                excess = self._pending_fm_futures[:-max_pending]
-                for f, _ in excess:
-                    f.cancel()  # No-op if already running, but prevents result retrieval
-                self._pending_fm_futures = self._pending_fm_futures[-max_pending:]
+            # Cleanup completed futures to keep list small
+            self._pending_fm_futures = [(f, tid) for f, tid in self._pending_fm_futures if not f.done()]
 
-            # Only submit for students WITHOUT a pending job (key fix vs old round-robin)
-            pending_track_ids = {tid for _, tid in self._pending_fm_futures}
-            new_students = []
-            for state in student_states:
-                if state.track_id not in pending_track_ids:
-                    new_students.append(state)
+            # Safety net: if too many pending futures, skip all new submissions this frame
+            MAX_PENDING_FM = self._fm_num_workers * 4   # e.g. 4 workers × 4 = 16 max queued
+            if len(self._pending_fm_futures) >= MAX_PENDING_FM:
+                logger.warning(
+                    f"Face mesh executor backlogged ({len(self._pending_fm_futures)} pending) "
+                    f"— skipping face mesh this frame."
+                )
+            else:
+                # Only submit for students WITHOUT a pending job (key fix vs old round-robin)
+                pending_track_ids = {tid for _, tid in self._pending_fm_futures}
+                new_students = []
+                for state in student_states:
+                    if state.track_id in pending_track_ids:
+                        continue
+                    
+                    reg_state = self._registry.get(state.track_id)
+                    if reg_state is None:
+                        continue
+                        
+                    if (frame_data.frame_index - reg_state.fm_last_frame) < FACE_MESH_INTERVAL:
+                        continue
+                        
+                    new_students.append((state, reg_state))
 
-            if new_students:
-                # Compute face mesh scale factor for current frame dimensions.
-                # Recalculated whenever _fm_scale_computed is False (e.g. after
-                # a processing-resolution change via the G key).
-                if not self._fm_scale_computed:
-                    h = frame_data.frame.shape[0]
-                    if h > self._recording_max_h:
-                        self._fm_scale = self._recording_max_h / h
+                if new_students:
+                    # Compute face mesh scale factor for current frame dimensions.
+                    # Recalculated whenever _fm_scale_computed is False (e.g. after
+                    # a processing-resolution change via the G key).
+                    if not self._fm_scale_computed:
+                        h = frame_data.frame.shape[0]
+                        if h > self._recording_max_h:
+                            self._fm_scale = self._recording_max_h / h
+                        else:
+                            self._fm_scale = 1.0
+                        self._fm_scale_computed = True
+
+                    # Downscale frame for face mesh (saves ~4× MediaPipe inference time)
+                    fm_scale = self._fm_scale
+                    if fm_scale < 1.0:
+                        h, w = frame_data.frame.shape[:2]
+                        new_w = int(w * fm_scale)
+                        new_h = int(h * fm_scale)
+                        fm_frame = cv2.resize(frame_data.frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
                     else:
-                        self._fm_scale = 1.0
-                    self._fm_scale_computed = True
+                        fm_frame = frame_data.frame.copy()
 
-                # Downscale frame for face mesh (saves ~4× MediaPipe inference time)
-                fm_scale = self._fm_scale
-                if fm_scale < 1.0:
-                    h, w = frame_data.frame.shape[:2]
-                    new_w = int(w * fm_scale)
-                    new_h = int(h * fm_scale)
-                    fm_frame = cv2.resize(frame_data.frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-                else:
-                    fm_frame = frame_data.frame.copy()
-
-                # Submit to thread pool.
-                # Old pattern: add_done_callback so cheating is evaluated
-                # IMMEDIATELY when face mesh is ready, not deferred to next frame.
-                for state in new_students:
-                    future = self._face_executor.submit(
-                        self._fm_thread_infer, fm_frame, state.bbox, fm_scale, state.track_id
-                    )
-                    # Remove tracking_result argument to match the updated callback signature.
-                    future.add_done_callback(
-                        self._make_fm_callback(state.track_id)
-                    )
-                    self._pending_fm_futures.append((future, state.track_id))
+                    # Submit to thread pool.
+                    # Old pattern: add_done_callback so cheating is evaluated
+                    # IMMEDIATELY when face mesh is ready, not deferred to next frame.
+                    for state, reg_state in new_students:
+                        future = self._face_executor.submit(
+                            self._fm_thread_infer, fm_frame, state.bbox, fm_scale, state.track_id
+                        )
+                        # Remove tracking_result argument to match the updated callback signature.
+                        future.add_done_callback(
+                            self._make_fm_callback(state.track_id)
+                        )
+                        self._pending_fm_futures.append((future, state.track_id))
+                        reg_state.fm_last_frame = frame_data.frame_index
 
         # 3. Cheating evaluation — runs every frame for every selected student.
         # The evaluator snapshots reg_state.face_mesh internally and routes to
