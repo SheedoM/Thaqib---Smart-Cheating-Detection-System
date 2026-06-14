@@ -46,6 +46,7 @@ class AVAlertComposer:
         self.video_fps = video_fps
         self.audio_sample_rate = audio_sample_rate
         self._mux_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ComposerMux")
+        self._wait_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="ComposerWait")
         self._video_buffer_locks: Dict[str, object] = video_buffer_locks or {}
         self._audio_buffer_locks: Dict[str, object] = audio_buffer_locks or {}
         
@@ -53,10 +54,12 @@ class AVAlertComposer:
 
     def stop(self):
         """Stop the composer and wait for pending mux operations to complete."""
+        self._wait_executor.shutdown(wait=True)
         self._mux_executor.shutdown(wait=True)
 
     def shutdown(self, wait: bool = True):
         """Gracefully shut down the mux executor. Alias for stop() with cancel option."""
+        self._wait_executor.shutdown(wait=wait, cancel_futures=not wait)
         self._mux_executor.shutdown(wait=wait, cancel_futures=not wait)
 
     # ------------------------------------------------------------------
@@ -102,13 +105,13 @@ class AVAlertComposer:
         timestamp_end: float,
     ):
         # Fallback helper to save video only (with mic-pin overlay, no source)
-        def save_video_only():
+        def save_video_only(fps=self.video_fps):
             timestamp = time.time()
             output_path = os.path.join(self.output_dir, f"{alert_type}_{camera_id}_{timestamp:.1f}.mp4")
             # Still draw all pins green so the viewer knows mic layout even without audio
             for ev_f in frames:
                 self._draw_mic_pins(ev_f, camera_id, source_mic_id=None)
-            self._save_video_only(frames, output_path)
+            self._save_video_only(frames, output_path, fps=fps)
 
         mic_pin = None
         if frames:
@@ -197,17 +200,28 @@ class AVAlertComposer:
                 
         if not audio_segments:
             logger.info(f"No audio found in timestamp range {window_start}-{window_end} for mic {mic_id}. Saving video-only alert.")
-            save_video_only()
+            actual_duration = window_end - window_start
+            effective_fps = len(frames) / actual_duration if actual_duration > 0 else self.video_fps
+            effective_fps = max(1.0, min(effective_fps, 60.0))
+            save_video_only(fps=effective_fps)
             return
             
         audio_clip = np.concatenate(audio_segments)
         timestamp = time.time()
         output_path = os.path.join(self.output_dir, f"{alert_type}_{camera_id}_{timestamp:.1f}.mp4")
         
+        actual_duration = window_end - window_start
+        effective_fps = len(frames) / actual_duration if actual_duration > 0 else self.video_fps
+        effective_fps = max(1.0, min(effective_fps, 60.0))
+        
         # Mux in background
         self._mux_executor.submit(
             self._mux_and_save,
-            frames, audio_clip, output_path
+            frames,
+            audio_clip,
+            output_path,
+            None, # sample_rate
+            effective_fps
         )
 
     def on_audio_alert(
@@ -260,52 +274,82 @@ class AVAlertComposer:
         window_start = timestamp_start - AUDIO_ALERT_PAD_BEFORE_S
         window_end = timestamp_end + AUDIO_ALERT_PAD_AFTER_S
         
-        if len(video_buffer) > 0:
-            lock = self._video_buffer_locks.get(camera_id)
-            with lock if lock else contextlib.nullcontext():
-                buffer_snapshot = list(video_buffer)
-            oldest_ts = buffer_snapshot[0][0]
-            newest_ts = buffer_snapshot[-1][0]
+        # Submit the waiting and extraction process to a background thread
+        # This prevents blocking the fast audio pipeline while waiting for the slow video pipeline
+        self._wait_executor.submit(
+            self._wait_and_extract_audio_alert,
+            audio_clip, mic_id, camera_id, window_start, window_end, sample_rate
+        )
+        
+    def _wait_and_extract_audio_alert(
+        self,
+        audio_clip: np.ndarray,
+        mic_id: str,
+        camera_id: str,
+        window_start: float,
+        window_end: float,
+        sample_rate: int = None
+    ):
+        video_buffer = self.video_buffers.get(camera_id)
+        if not video_buffer:
+            return
             
-            # Clamp to buffer bounds
-            window_start = max(window_start, oldest_ts)
-            window_end = min(window_end, newest_ts)
+        # 1. Wait for video buffer to catch up indefinitely
+        while True:
+            if len(video_buffer) > 0:
+                lock = self._video_buffer_locks.get(camera_id)
+                with lock if lock else contextlib.nullcontext():
+                    newest_ts = video_buffer[-1][0]
+                if newest_ts >= window_end:
+                    break  # Video has caught up!
+            time.sleep(0.5)
             
-            frames = []
-            for ts, frame in buffer_snapshot:
-                if window_start <= ts <= window_end:
-                    # Decode JPEG bytes if stored in compressed form.
-                    raw = jpeg_decode(frame) if isinstance(frame, (bytes, bytearray)) else frame
-                    frames.append(raw.copy())
-        else:
-            frames = []
+        # 2. Extract video frames
+        lock = self._video_buffer_locks.get(camera_id)
+        with lock if lock else contextlib.nullcontext():
+            buffer_snapshot = list(video_buffer)
+            
+        if not buffer_snapshot:
+            return
+            
+        oldest_ts = buffer_snapshot[0][0]
+        newest_ts = buffer_snapshot[-1][0]
+        
+        # Clamp to buffer bounds in case of timeout or buffer rotation
+        clamped_window_start = max(window_start, oldest_ts)
+        clamped_window_end = min(window_end, newest_ts)
+        
+        frames = []
+        for ts, frame in buffer_snapshot:
+            if clamped_window_start <= ts <= clamped_window_end:
+                # Decode JPEG bytes if stored in compressed form.
+                raw = jpeg_decode(frame) if isinstance(frame, (bytes, bytearray)) else frame
+                frames.append(raw.copy())
                 
         if not frames:
             logger.warning(
                 f"No video frames found for audio alert window "
-                f"[{window_start:.1f}, {window_end:.1f}] in camera {camera_id}. "
+                f"[{clamped_window_start:.1f}, {clamped_window_end:.1f}] in camera {camera_id}. "
                 f"Buffer oldest={oldest_ts:.1f}, newest={newest_ts:.1f}. "
                 f"Possible cause: Whisper latency exceeded video buffer depth."
             )
             return
 
-        # Extract extended audio segment
+        # 3. Extract extended audio segment
         audio_segments = []
         audio_buffer = self.audio_buffers.get(mic_id)
         if audio_buffer:
             audio_lock = self._audio_buffer_locks.get(mic_id)
             with audio_lock if audio_lock else contextlib.nullcontext():
                 for ts, data in list(audio_buffer):
-                    if window_start <= ts <= window_end:
+                    if clamped_window_start <= ts <= clamped_window_end:
                         audio_segments.append(data)
                     
         final_audio_clip = np.concatenate(audio_segments) if audio_segments else audio_clip
 
+        # 4. Annotate frames
         registry = self.video_registries.get(camera_id)
         nearby_students = []
-        
-        # Identify mic pin to draw on frame
-        mic_pin = next((p for p in self.layout.get_pins_for_camera(camera_id) if p.mic_id == mic_id), None)
         
         if registry and frames:
             h, w = frames[0].shape[:2]
@@ -314,7 +358,6 @@ class AVAlertComposer:
                 if nearest_pin and nearest_pin.mic_id == mic_id:
                     nearby_students.append(state)
 
-        # Annotate frames — draw order: resize (done above) → student boxes → timestamp → mic pins
         annotated_frames = []
         for frame in frames:
             ann_frame = frame.copy()
@@ -324,36 +367,42 @@ class AVAlertComposer:
                 cv2.rectangle(ann_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
             draw_timestamp_overlay(ann_frame)
             # mic-pin overlay: source mic = red, all others = green
-            # Frame is already at its final dimensions here (no resize after this).
             self._draw_mic_pins(ann_frame, camera_id, source_mic_id=mic_id)
             annotated_frames.append(ann_frame)
             
         timestamp = time.time()
         output_path = os.path.join(self.output_dir, f"audio_alert_{mic_id}_{camera_id}_{timestamp:.1f}.mp4")
         
-        # Mux in background
+        actual_duration = clamped_window_end - clamped_window_start
+        effective_fps = len(annotated_frames) / actual_duration if actual_duration > 0 else self.video_fps
+        effective_fps = max(1.0, min(effective_fps, 60.0))
+
+        # 5. Mux in background
         self._mux_executor.submit(
             self._mux_and_save,
-            annotated_frames, final_audio_clip, output_path, sample_rate
+            annotated_frames, final_audio_clip, output_path, sample_rate, effective_fps
         )
 
-    def _save_video_only(self, frames: list[np.ndarray], output_path: str):
+    def _save_video_only(self, frames: list[np.ndarray], output_path: str, fps: float = None):
         if not frames:
             return
         
+        fps = fps if fps is not None else self.video_fps
         h, w = frames[0].shape[:2]
         frames = [cv2.resize(f, (w, h)) if f.shape[:2] != (h, w) else f for f in frames]
         
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, self.video_fps, (w, h))
+        out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
         for frame in frames:
             out.write(frame)
         out.release()
         logger.info(f"Saved video-only alert: {output_path}")
 
-    def _mux_and_save(self, frames: list[np.ndarray], audio: np.ndarray, output_path: str, sample_rate: int = None):
+    def _mux_and_save(self, frames: list[np.ndarray], audio: np.ndarray, output_path: str, sample_rate: int = None, fps: float = None):
         if not frames:
             return
+
+        fps = fps if fps is not None else self.video_fps
 
         try:
             # 1. Write frames to temp MP4
@@ -368,7 +417,7 @@ class AVAlertComposer:
                 temp_audio = os.path.join(tmpdir, "audio.wav")
 
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                out = cv2.VideoWriter(temp_video, fourcc, self.video_fps, (w, h))
+                out = cv2.VideoWriter(temp_video, fourcc, fps, (w, h))
                 for frame in frames:
                     out.write(frame)
                 out.release()
