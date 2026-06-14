@@ -70,7 +70,13 @@ class VideoVisualizer:
 
         self._last_frame_size: tuple[int, int] | None = None  # (height, width)
         self._mic_placement_mode = False
-        self._selected_mic_idx = 0
+        self._current_mic_index: int = 0
+
+    @property
+    def _selected_mic_id(self) -> str | None:
+        if not self._available_mic_ids:
+            return None
+        return self._available_mic_ids[self._current_mic_index % len(self._available_mic_ids)]
 
     def toggle_neighbors(self) -> None:
         """Toggle neighbor graph rendering on/off."""
@@ -107,6 +113,8 @@ class VideoVisualizer:
     def toggle_mic_placement_mode(self) -> None:
         """Toggle mic placement interactive mode."""
         self._mic_placement_mode = not self._mic_placement_mode
+        if self._mic_placement_mode:
+            self._current_mic_index = 0
 
     def handle_mouse(self, event, x, y, flags, param):
         """Handle mouse clicks for mic pinning."""
@@ -114,11 +122,11 @@ class VideoVisualizer:
             return
         if event == cv2.EVENT_RBUTTONDOWN:
             if self._available_mic_ids:
-                self._selected_mic_idx = (self._selected_mic_idx + 1) % len(self._available_mic_ids)
-                logger.debug(f"Mic placement: switched to {self._available_mic_ids[self._selected_mic_idx]}")
+                self._current_mic_index = (self._current_mic_index + 1) % len(self._available_mic_ids)
+                logger.debug(f"Mic placement: switched to {self._selected_mic_id}")
         elif event == cv2.EVENT_LBUTTONDOWN:
             if self._available_mic_ids and self._last_frame_size is not None:
-                mic_id = self._available_mic_ids[self._selected_mic_idx]
+                mic_id = self._selected_mic_id
                 h, w = self._last_frame_size
                 norm_pos = (x / float(w), y / float(h))
                 self._layout.add_pin(mic_id, self._camera_id, norm_pos)
@@ -383,9 +391,9 @@ class VideoVisualizer:
                             cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.5), (255, 0, 255), _th(sc, 2))
 
         if self._mic_placement_mode and self._available_mic_ids:
-            mic_id = self._available_mic_ids[self._selected_mic_idx]
+            selected = self._selected_mic_id or "none"
             h, w = frame.shape[:2]
-            msg = f"MIC PLACEMENT MODE [I=exit | L-Click=pin {mic_id} | R-Click=cycle mics]"
+            msg = f"MIC PLACEMENT MODE [I=exit | L-Click=pin {selected} | R-Click=cycle mics]"
             cv2.putText(frame, msg, (int(20 * sc), h - int(60 * sc)),
                         cv2.FONT_HERSHEY_SIMPLEX, _fs(sc, 0.6), (0, 255, 255), _th(sc, 2), cv2.LINE_AA)
 
