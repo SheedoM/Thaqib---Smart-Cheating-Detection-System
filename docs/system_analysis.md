@@ -159,7 +159,7 @@ if writer is None or not writer.isOpened():
     return
 ```
 
-**Problem**: If all four codecs (`avc1`, `mp4v`, `XVID`, `MJPG`) fail to open a `VideoWriter` (can happen on minimal Linux installs or macOS without the right GStreamer backends), the alert video is silently discarded. The error IS logged, but there is no fallback to save even a JPEG sequence or a WAV of the synchronized audio. The evidence is permanently lost.
+**Problem**: If all four codecs (`avc1`, `mp4v`, `XVID`, `MJPG`) fail to open a `VideoWriter` (can happen on minimal Linux installs without the right GStreamer backends), the alert video is silently discarded. The error IS logged, but there is no fallback to save even a JPEG sequence or a WAV of the synchronized audio. The evidence is permanently lost.
 
 **Status**: **FIXED**. JPEG sequence fallback added when all codecs fail.
 
