@@ -591,6 +591,12 @@ class VideoPipeline:
             
             time.sleep(0.01)  # Yield CPU
 
+    def preload_models(self) -> None:
+        """Pre-load YOLO and tools detector weights before pipeline starts."""
+        self._detector.load()
+        if self._tools_detector:
+            self._tools_detector.load()
+
     def start(self) -> bool:
         """
         Start the pipeline.

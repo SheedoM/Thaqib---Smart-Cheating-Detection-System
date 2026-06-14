@@ -202,8 +202,12 @@ def main():
 
         cv2.setMouseCallback(window_name, mouse_callback)
 
+        logger.info(f"[{vp._camera_id}] Pre-loading YOLO detector...")
+        vp.preload_models()
+        logger.info(f"[{vp._camera_id}] Models ready.")
+
         try:
-            barrier.wait(timeout=30)
+            barrier.wait(timeout=60)
         except threading.BrokenBarrierError:
             logger.error(f"Barrier broken or timed out in run_video ({vp._camera_id}). Aborting.")
             return
