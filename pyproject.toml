@@ -53,6 +53,15 @@ gpu = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
 ]
+# macOS (Apple Silicon M1/M2) extra dependencies
+# Install with: pip install -e '.[macos]'
+# Prerequisites: brew install ffmpeg portaudio
+# Then: pip install -e '.[macos]'
+macos = [
+    # Pre-built binary wheel for webrtcvad — the original source package
+    # requires MSVC/GCC; this ships arm64 macOS binaries directly.
+    "webrtcvad-wheels>=2.0.10",
+]
 
 [project.scripts]
 # Run: python scripts/demo_video.py --source 0

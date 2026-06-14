@@ -138,12 +138,29 @@ class FileAudioSource(AudioSource):
         Load an audio file using pydub (primary) or librosa (fallback).
         """
         import os
+        import sys
+        import platform
         import numpy as np
 
-        # Add the ffmpeg-downloader bin path to the environment PATH so pydub can find it
-        ffmpeg_bin = os.path.expanduser(r"~\AppData\Local\ffmpegio\ffmpeg-downloader\ffmpeg\bin")
-        if os.path.exists(ffmpeg_bin) and ffmpeg_bin not in os.environ.get("PATH", ""):
-            os.environ["PATH"] += os.pathsep + ffmpeg_bin
+        # ── Ensure ffmpeg is findable by pydub ──────────────────────────────
+        # Windows: ffmpeg-downloader installs to AppData; add its bin dir if present.
+        # macOS:   Homebrew installs to /opt/homebrew/bin (Apple Silicon) or
+        #          /usr/local/bin (Intel). Add whichever exists if not already on PATH.
+        # Linux:   Usually system-wide; no extra lookup needed.
+        _system = platform.system()
+        if _system == "Windows":
+            ffmpeg_bin = os.path.expanduser(
+                r"~\AppData\Local\ffmpegio\ffmpeg-downloader\ffmpeg\bin"
+            )
+            if os.path.exists(ffmpeg_bin) and ffmpeg_bin not in os.environ.get("PATH", ""):
+                os.environ["PATH"] += os.pathsep + ffmpeg_bin
+        elif _system == "Darwin":
+            # Apple Silicon Homebrew first, then Intel Homebrew fallback
+            for brew_dir in ("/opt/homebrew/bin", "/usr/local/bin"):
+                if os.path.exists(os.path.join(brew_dir, "ffmpeg")):
+                    if brew_dir not in os.environ.get("PATH", ""):
+                        os.environ["PATH"] += os.pathsep + brew_dir
+                    break
 
         pydub_error_msg = None
 
@@ -384,7 +401,21 @@ class LiveAudioSource(AudioSource):
                     blocksize=self._chunk_samples // 4,
                     callback=make_callback(i, accum),
                 )
-                stream.start()
+                try:
+                    stream.start()
+                except OSError as e:
+                    # macOS TCC: if the process hasn't been granted Microphone
+                    # permission in System Settings → Privacy & Security → Microphone,
+                    # sounddevice raises OSError(-9986) with a cryptic message.
+                    err_str = str(e)
+                    if "-9986" in err_str or "Permission" in err_str or "denied" in err_str.lower():
+                        raise PermissionError(
+                            f"Microphone access denied for mic {i} (device {dev_id}). "
+                            "On macOS, grant Microphone permission to Terminal (or your IDE) "
+                            "in System Settings → Privacy & Security → Microphone, "
+                            "then restart the application."
+                        ) from e
+                    raise
                 self._streams.append(stream)
                 logger.info(f"Mic {i} (device {dev_id}): capture started")
 

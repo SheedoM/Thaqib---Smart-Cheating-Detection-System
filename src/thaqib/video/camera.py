@@ -99,8 +99,14 @@ class CameraStream:
 
         # Create video capture
         if isinstance(self.source, int):
-            # DirectShow is Windows-only; use generic backend on other platforms
-            backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
+            # Choose platform-appropriate backend for index-based webcam sources.
+            # DirectShow (Windows), AVFoundation (macOS), or auto-detect (Linux).
+            if platform.system() == "Windows":
+                backend = cv2.CAP_DSHOW
+            elif platform.system() == "Darwin":
+                backend = cv2.CAP_AVFOUNDATION
+            else:
+                backend = cv2.CAP_ANY
             self._cap = cv2.VideoCapture(self.source, backend)
         else:
             self._cap = cv2.VideoCapture(self.source)
@@ -151,7 +157,12 @@ class CameraStream:
                 
                 # Attempt to reconnect
                 if isinstance(self.source, int):
-                    backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
+                    if platform.system() == "Windows":
+                        backend = cv2.CAP_DSHOW
+                    elif platform.system() == "Darwin":
+                        backend = cv2.CAP_AVFOUNDATION
+                    else:
+                        backend = cv2.CAP_ANY
                     self._cap = cv2.VideoCapture(self.source, backend)
                 else:
                     self._cap = cv2.VideoCapture(self.source)

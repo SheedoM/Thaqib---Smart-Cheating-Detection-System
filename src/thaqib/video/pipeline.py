@@ -33,6 +33,7 @@ from thaqib.video.face_mesh import FaceMeshResult
 from thaqib.video.tools_detector import ToolsDetector, ToolsDetectionResult
 from thaqib.video.cheating_evaluator import CheatingEvaluator
 from thaqib.video.video_logger import get_video_logger
+from thaqib.video.jpeg_buffer import JPEGFrame, encode_frame, decode_frame
 
 
 class ConstantVelocityExtrapolator:
@@ -785,13 +786,16 @@ class VideoPipeline:
         t0 = time.perf_counter()
 
         # Add to global frame ring buffer for alert recordings.
-        # Always buffer — needed for both student gaze alerts AND phone alerts.
-        # No copy needed: cv2.VideoCapture.read() allocates a fresh ndarray per call.
+        # Frames are JPEG-encoded before storage to reduce memory footprint by ~30×.
+        # Decode happens only at alert-composition time (background thread).
         # Acquire buffer lock to protect against concurrent list snapshots from alert writers.
         with self._buffer_lock:
-            self._global_frame_buffer.append(AlertFrame(frame_data.frame))
+            _jpeg_bytes = encode_frame(frame_data.frame)
+            self._global_frame_buffer.append(
+                JPEGFrame(data=_jpeg_bytes, timestamp=frame_data.timestamp)
+            )
             if self._frame_buffer is not None:
-                self._frame_buffer.append((frame_data.timestamp, frame_data.frame.copy()))
+                self._frame_buffer.append((frame_data.timestamp, _jpeg_bytes))
 
         # Check for new detection async result
         new_detection = False
@@ -883,14 +887,14 @@ class VideoPipeline:
             for track in tracking_result.tracks:
                 self._extrapolator.update(track.track_id, track.bbox, frame_data.timestamp)
         elif self._last_tracking_result is not None:
-            # Extrapolate track coordinates on intermediate frames for smooth 30 FPS tracking
-            extrapolated_tracks = []
+            # Use sticky last-known bounding boxes instead of velocity extrapolation.
+            # Linear velocity extrapolation overshoots wildly when frame rates drop
+            # (e.g. during CUDA timeouts) in a mostly static exam environment.
+            sticky_tracks = []
             for track in self._last_tracking_result.tracks:
-                pred_bbox = self._extrapolator.extrapolate(track.track_id, frame_data.timestamp)
-                bbox = pred_bbox if pred_bbox is not None else track.bbox
-                extrapolated_tracks.append(TrackedObject(
+                sticky_tracks.append(TrackedObject(
                     track_id=track.track_id,
-                    bbox=bbox,
+                    bbox=track.bbox,
                     confidence=track.confidence,
                     is_selected=track.is_selected,
                     label=track.label,
@@ -899,7 +903,7 @@ class VideoPipeline:
             tracking_result = TrackingResult(
                 frame_index=frame_data.frame_index,
                 timestamp=frame_data.timestamp,
-                tracks=extrapolated_tracks,
+                tracks=sticky_tracks,
             )
         else:
             tracking_result = TrackingResult(
@@ -1280,11 +1284,9 @@ class VideoPipeline:
                         )
                     continue
                 
-                # START recording: snapshot raw pre-buffer (last ~2s).
-                # Pre-event frames are stored RAW (no annotation) because:
-                #   1. Annotating frames blocks the main thread
-                #   2. Labels (CHEATER/VICTIM) weren't identified yet pre-event
-                # Only during/after frames are annotated with cheating evidence.
+                # START recording: snapshot pre-buffer (last ~2s) from global_frame_buffer.
+                # Frames are already JPEG-encoded (JPEGFrame objects) — cheap to copy.
+                # Pre-event frames carry tid=None so the writer renders them raw.
                 state.is_alert_recording = True
                 # Acquire buffer lock to protect against concurrent frame appends.
                 with self._buffer_lock:
@@ -1303,14 +1305,14 @@ class VideoPipeline:
             if not state.is_alert_recording:
                 continue
 
-            # Append current frame + track ID + bbox + center to recording buffer at full resolution.
-            # No copy needed: cv2.VideoCapture.read() allocates fresh per call.
+            # Append current frame JPEG-encoded to keep per-frame cost ~100 KB (vs 2.76 MB raw).
             state.recording_buffer.append(
-                AlertFrame(
-                    frame_data.frame,
-                    state.track_id,
+                JPEGFrame(
+                    data=encode_frame(frame_data.frame),
+                    timestamp=frame_data.timestamp,
+                    track_id=state.track_id,
                     student_bbox=state.bbox,
-                    student_center=state.center
+                    student_center=state.center,
                 )
             )
 
@@ -1367,13 +1369,22 @@ class VideoPipeline:
         # POST: phone gone → count down 2s (60 frames), then save
         if self._phone_detected and not self._phone_is_recording:
             self._phone_is_recording = True
-            # Pre-event frames stored with empty bboxes [] — the phone wasn't
-            # visible yet, so no red box should appear in the pre-buffer section.
+            # Pre-event frames are already JPEGFrames from global_frame_buffer.
+            # Wrap them as phone-context JPEGFrames (phone_bboxes=[]) so the
+            # writer knows no phone was visible yet in the pre-roll section.
             # Acquire buffer lock to protect against concurrent frame appends.
             with self._buffer_lock:
                 pre = list(self._global_frame_buffer)[-self._post_buffer_frames:]  # last ~2s
+            # Re-wrap: copy JPEG bytes, set phone_bboxes=[] (no phone visible yet)
             self._phone_recording_buffer = deque(
-                [AlertFrame(item.frame, phone_bboxes=[]) for item in pre],
+                [
+                    JPEGFrame(
+                        data=item.data,
+                        timestamp=item.timestamp,
+                        phone_bboxes=[],
+                    )
+                    for item in pre
+                ],
                 maxlen=1800,
             )
             self._phone_frames_to_record = self._post_buffer_frames
@@ -1384,9 +1395,13 @@ class VideoPipeline:
             )
 
         if self._phone_is_recording:
-            # Store frame alongside current phone bboxes (may be [] if phone just left)
+            # Store JPEG-encoded frame alongside current phone bboxes.
             self._phone_recording_buffer.append(
-                AlertFrame(frame_data.frame, phone_bboxes=list(self._phone_current_bboxes))
+                JPEGFrame(
+                    data=encode_frame(frame_data.frame),
+                    timestamp=frame_data.timestamp,
+                    phone_bboxes=list(self._phone_current_bboxes),
+                )
             )
             if self._phone_detected:
                 self._phone_frames_to_record = self._post_buffer_frames  # reset post-countdown
@@ -1737,75 +1752,82 @@ class VideoPipeline:
         def writer_task():
             from pathlib import Path
             from datetime import datetime
-
-            if not frames:
-                return
-
-            # Determine frame size from first valid frame
-            height, width = None, None
-            for item in frames:
-                if item.frame is not None:
-                    height, width = item.frame.shape[:2]
-                    break
-            if height is None:
-                return
-
-            # Downscale to alert_max_height if needed (same as gaze alert)
-            max_h = self._settings.alert_max_height
-            if max_h > 0 and height > max_h:
-                scale = max_h / height
-                width  = int(width * scale)
-                height = max_h
-            out_size = (width, height)
-
-            # Resolve alerts_dir to prevent path traversal vulnerability.
-            alerts_dir = Path(self._settings.alerts_dir).resolve()
-            alerts_dir.mkdir(exist_ok=True)
-            time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
-
-            codec_options = [
-                ('avc1', '.mp4'),
-                ('mp4v', '.mp4'),
-                ('XVID', '.avi'),
-                ('MJPG', '.avi'),
-            ]
-
+            
             writer = None
-            filename = None
-            for codec, ext in codec_options:
-                filename = alerts_dir / f"phone_alert_{time_str}{ext}"
-                fourcc = cv2.VideoWriter_fourcc(*codec)
-                writer = cv2.VideoWriter(str(filename), fourcc, self._camera_fps, out_size)
-                if writer.isOpened():
-                    writer.set(cv2.VIDEOWRITER_PROP_QUALITY, self._video_quality)
-                    logger.info(f"Phone alert: using codec '{codec}' → {filename}")
-                    break
-                writer.release()
-                writer = None
-
-            if writer is None:
-                logger.error("Phone alert: all codecs failed — video not saved")
-                return
-
-            frames_written = 0
-            annotated_frames = []
-            subject_point = None
             try:
+                if not frames:
+                    return
+
+                # Decode the first valid frame to determine dimensions.
+                height, width = None, None
                 for item in frames:
-                    if item.frame is None:
+                    if isinstance(item, JPEGFrame):
+                        raw = item.decode()
+                        height, width = raw.shape[:2]
+                        break
+                    elif isinstance(item, AlertFrame):
+                        height, width = item.frame.shape[:2]
+                        break
+                    elif isinstance(item, tuple):
+                        raw = item[1].frame if hasattr(item[1], 'frame') else item[1]
+                        if raw is not None:
+                            height, width = raw.shape[:2]
+                            break
+                    elif hasattr(item, 'frame') and item.frame is not None:
+                        height, width = item.frame.shape[:2]
+                        break
+
+                if height is None:
+                    return
+
+                # Downscale to alert_max_height if needed (same as gaze alert)
+                max_h = self._settings.alert_max_height
+                if max_h > 0 and height > max_h:
+                    scale = max_h / height
+                    width  = int(width * scale)
+                    height = max_h
+                out_size = (width, height)
+
+                # Resolve alerts_dir to prevent path traversal vulnerability.
+                alerts_dir = Path(self._settings.alerts_dir).resolve()
+                alerts_dir.mkdir(exist_ok=True)
+                time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
+
+                frames_written = 0
+                annotated_frames = []
+                subject_point = None
+
+                for item in frames:
+                    # Decode JPEG bytes if needed (JPEGFrame), else use raw frame.
+                    if isinstance(item, JPEGFrame):
+                        raw_frame = item.decode()
+                        phone_bboxes = item.phone_bboxes
+                    elif isinstance(item, tuple):
+                        raw_frame = item[1].frame if hasattr(item[1], 'frame') else item[1]
+                        phone_bboxes = getattr(item[1], 'phone_bboxes', [])
+                    elif hasattr(item, 'frame'):
+                        raw_frame = item.frame
+                        phone_bboxes = getattr(item, 'phone_bboxes', [])
+                    else:
                         continue
-                    if item.phone_bboxes:
-                        out_frame = self._render_phone_alert_frame(item.frame, item.phone_bboxes)
+
+                    if raw_frame is None:
+                        continue
+
+                    if phone_bboxes:
+                        out_frame = self._render_phone_alert_frame(raw_frame, phone_bboxes)
                         if subject_point is None:
-                            px1, py1, px2, py2 = item.phone_bboxes[0]
+                            px1, py1, px2, py2 = phone_bboxes[0]
                             subject_point = ((px1 + px2) // 2, (py1 + py2) // 2)
                     else:
-                        out_frame = item.frame
+                        out_frame = raw_frame
+
                     if out_frame.shape[:2] != (height, width):
                         out_frame = cv2.resize(out_frame, out_size, interpolation=cv2.INTER_AREA)
+
                     # Always burn timestamp into phone alert videos.
-                    # _render_phone_alert_frame already returns a copy, and
-                    # pre-event raw frames are consumed once — safe in-place.
+                    if out_frame is raw_frame:
+                        out_frame = out_frame.copy()
                     draw_timestamp_overlay(out_frame)
                     annotated_frames.append(out_frame)
 
@@ -1813,8 +1835,17 @@ class VideoPipeline:
                 if getattr(self, '_composer', None) is not None:
                     if subject_point is None:
                         subject_point = (width // 2, height // 2)
-                    timestamp_start = frames[0].timestamp if frames else timestamp - (len(annotated_frames) / self._camera_fps)
-                    timestamp_end = frames[-1].timestamp if frames else timestamp
+                        
+                    def _get_ts(itm):
+                        if hasattr(itm, 'timestamp'):
+                            return itm.timestamp
+                        if isinstance(itm, tuple):
+                            return itm[0]
+                        return timestamp
+
+                    timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
+                    timestamp_end = _get_ts(frames[-1]) if frames else timestamp
+                    
                     self._composer.on_video_alert(
                         frames=annotated_frames,
                         alert_type="phone",
@@ -1825,9 +1856,34 @@ class VideoPipeline:
                     )
                     return
 
+                # Standalone Fallback Path
+                codec_options = [
+                    ('avc1', '.mp4'),
+                    ('mp4v', '.mp4'),
+                    ('XVID', '.avi'),
+                    ('MJPG', '.avi'),
+                ]
+
+                filename = None
+                for codec, ext in codec_options:
+                    filename = alerts_dir / f"phone_alert_{time_str}{ext}"
+                    fourcc = cv2.VideoWriter_fourcc(*codec)
+                    writer = cv2.VideoWriter(str(filename), fourcc, self._camera_fps, out_size)
+                    if writer.isOpened():
+                        writer.set(cv2.VIDEOWRITER_PROP_QUALITY, self._video_quality)
+                        logger.info(f"Phone alert: using codec '{codec}' → {filename}")
+                        break
+                    writer.release()
+                    writer = None
+
+                if writer is None or not writer.isOpened():
+                    logger.error("Phone alert: all codecs failed — video not saved")
+                    return
+
                 for out_frame in annotated_frames:
                     writer.write(out_frame)
                     frames_written += 1
+                    
                 duration = frames_written / self._camera_fps
                 logger.info(
                     f"Saved phone alert video: {filename} "
@@ -1836,7 +1892,8 @@ class VideoPipeline:
             except Exception as e:
                 logger.error(f"Error saving phone alert video: {e}")
             finally:
-                writer.release()
+                if writer is not None:
+                    writer.release()
 
         # Use a bounded thread pool executor for phone alert writing to prevent uncapped memory footprint.
         self._phone_alert_executor.submit(writer_task)
@@ -1932,80 +1989,77 @@ class VideoPipeline:
             from pathlib import Path
             from datetime import datetime
             
-            if not frames:
-                logger.warning(f"Alert video for track {track_id}: empty frame list, skipping.")
-                return
-            
-            # Resolve alerts_dir to prevent path traversal vulnerability.
-            alerts_dir = Path(self._settings.alerts_dir).resolve()
-            alerts_dir.mkdir(exist_ok=True)
-            
-            time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
-            
-            height, width = None, None
-            for item in frames:
-                raw_frame = item.frame if isinstance(item, AlertFrame) else (
-                    item[0] if isinstance(item, tuple) else item
-                )
-                if raw_frame is not None:
-                    height, width = raw_frame.shape[:2]
-                    break
-
-            if height is None:
-                logger.warning(f"Alert video for track {track_id}: no valid frames, skipping.")
-                return
-
-            # Downscale alert videos to alert_max_height if needed.
-            max_h = self._settings.alert_max_height
-            if max_h > 0 and height > max_h:
-                scale = max_h / height
-                width  = int(width  * scale)
-                height = max_h
-            out_size = (width, height)
-            
-            prefix = "phone_alert" if cheat_type == "phone" else "gaze_alert"
-            
-            # Codec fallback chain — prefer browser-friendly formats first:
-            #   1. avc1 + .mp4  (H.264, best browser compatibility if supported)
-            #   2. mp4v + .mp4  (fallback mp4 format)
-            #   3. XVID + .avi  (universally available, no external DLLs)
-            #   4. MJPG + .avi  (always works, larger files)
-            codec_options = [
-                ('avc1', '.mp4'),
-                ('mp4v', '.mp4'),
-                ('XVID', '.avi'),
-                ('MJPG', '.avi'),
-            ]
-            
             writer = None
-            filename = None
-            for codec, ext in codec_options:
-                filename = alerts_dir / f"{prefix}_track{track_id}_{time_str}{ext}"
-                fourcc = cv2.VideoWriter_fourcc(*codec)
-                writer = cv2.VideoWriter(str(filename), fourcc, self._camera_fps, out_size)
-                if writer.isOpened():
-                    writer.set(cv2.VIDEOWRITER_PROP_QUALITY, self._video_quality)
-                    logger.info(f"Using codec '{codec}' for {filename}")
-                    break
-                writer.release()
-                writer = None
-            
-            if writer is None or not writer.isOpened():
-                logger.error(f"Failed to create video writer — all codecs failed for track {track_id}")
-                return
-            
-            frames_written = 0
-            annotated_frames = []
-            subject_point = None
             try:
+                if not frames:
+                    logger.warning(f"Alert video for track {track_id}: empty frame list, skipping.")
+                    return
+                
+                # Resolve alerts_dir to prevent path traversal vulnerability.
+                alerts_dir = Path(self._settings.alerts_dir).resolve()
+                alerts_dir.mkdir(exist_ok=True)
+                
+                time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
+                
+                # Determine frame dimensions by decoding the first valid item.
+                height, width = None, None
                 for item in frames:
-                    raw_frame = item.frame if isinstance(item, AlertFrame) else (item[0] if isinstance(item, tuple) else item)
-                    tid = item.track_id if isinstance(item, AlertFrame) else (item[1] if isinstance(item, tuple) else None)
+                    if isinstance(item, JPEGFrame):
+                        raw_frame = item.decode()
+                    elif isinstance(item, AlertFrame):
+                        raw_frame = item.frame
+                    elif isinstance(item, tuple):
+                        raw_frame = item[1].frame if hasattr(item[1], 'frame') else item[1]
+                    else:
+                        raw_frame = item
+                    if raw_frame is not None:
+                        height, width = raw_frame.shape[:2]
+                        break
+
+                if height is None:
+                    logger.warning(f"Alert video for track {track_id}: no valid frames, skipping.")
+                    return
+
+                # Downscale alert videos to alert_max_height if needed.
+                max_h = self._settings.alert_max_height
+                if max_h > 0 and height > max_h:
+                    scale = max_h / height
+                    width  = int(width  * scale)
+                    height = max_h
+                out_size = (width, height)
+                
+                prefix = "phone_alert" if cheat_type == "phone" else "gaze_alert"
+                
+                frames_written = 0
+                annotated_frames = []
+                subject_point = None
+                
+                for item in frames:
+                    # Decode JPEG bytes if needed (JPEGFrame), else extract raw array.
+                    if isinstance(item, JPEGFrame):
+                        raw_frame = item.decode()
+                        tid = item.track_id
+                        student_bbox = item.student_bbox
+                        student_center = item.student_center
+                    elif isinstance(item, AlertFrame):
+                        raw_frame = item.frame
+                        tid = item.track_id
+                        student_bbox = item.student_bbox
+                        student_center = item.student_center
+                    elif isinstance(item, tuple):
+                        raw_frame = item[1].frame if hasattr(item[1], 'frame') else item[1]
+                        tid = getattr(item[1], 'track_id', None)
+                        student_bbox = getattr(item[1], 'bbox', None)
+                        student_center = getattr(item[1], 'center', None)
+                    else:
+                        raw_frame = item
+                        tid = None
+                        student_bbox = None
+                        student_center = None
+
                     # Pre-event frames have tid=None → write raw.
                     # During/post frames have track_id → annotate.
                     if tid is not None:
-                        student_bbox = item.student_bbox if isinstance(item, AlertFrame) else None
-                        student_center = item.student_center if isinstance(item, AlertFrame) else None
                         if student_center is not None:
                             subject_point = student_center
                         out = self._render_alert_frame(
@@ -2015,7 +2069,7 @@ class VideoPipeline:
                             cheat_ctx=cheat_ctx
                         )
                     else:
-                        # Copy the raw frame to prevent shared-buffer corruption when burning the timestamp overlay.
+                        # Pre-event frame: copy to prevent shared-buffer corruption.
                         out = raw_frame.copy()
                     # Resize if needed
                     if out.shape[:2] != (height, width):
@@ -2023,7 +2077,7 @@ class VideoPipeline:
                     # Always burn timestamp into gaze alert videos
                     draw_timestamp_overlay(out)
                     annotated_frames.append(out)
-                
+
                 # Composer integration path
                 if getattr(self, '_composer', None) is not None:
                     # Resolve subject_point for phone cheat if needed
@@ -2036,9 +2090,13 @@ class VideoPipeline:
                         subject_point = (width // 2, height // 2)
 
                     # Extract the original timestamp from the frame tuple/AlertFrame
-                    def _get_ts(item):
-                        return item.timestamp if hasattr(item, 'timestamp') else (item[0] if isinstance(item, tuple) else timestamp)
-                    
+                    def _get_ts(itm):
+                        if hasattr(itm, 'timestamp'):
+                            return itm.timestamp
+                        if isinstance(itm, tuple):
+                            return itm[0]
+                        return timestamp
+
                     timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
                     timestamp_end = _get_ts(frames[-1]) if frames else timestamp
                     
@@ -2050,6 +2108,30 @@ class VideoPipeline:
                         timestamp_start=timestamp_start,
                         timestamp_end=timestamp_end
                     )
+                    return
+
+                # Standalone Fallback Path (if no composer)
+                codec_options = [
+                    ('avc1', '.mp4'),
+                    ('mp4v', '.mp4'),
+                    ('XVID', '.avi'),
+                    ('MJPG', '.avi'),
+                ]
+                
+                filename = None
+                for codec, ext in codec_options:
+                    filename = alerts_dir / f"{prefix}_track{track_id}_{time_str}{ext}"
+                    fourcc = cv2.VideoWriter_fourcc(*codec)
+                    writer = cv2.VideoWriter(str(filename), fourcc, self._camera_fps, out_size)
+                    if writer.isOpened():
+                        writer.set(cv2.VIDEOWRITER_PROP_QUALITY, self._video_quality)
+                        logger.info(f"Using codec '{codec}' for {filename}")
+                        break
+                    writer.release()
+                    writer = None
+                
+                if writer is None or not writer.isOpened():
+                    logger.error(f"Failed to create video writer — all codecs failed for track {track_id}")
                     return
 
                 for out in annotated_frames:
@@ -2073,7 +2155,8 @@ class VideoPipeline:
                 logger.error(f"Error saving alert video: {e}")
                 self._vlog.log_error(context="save_alert_video", error=str(e))
             finally:
-                writer.release()
+                if writer is not None:
+                    writer.release()
                 
         # Use a bounded thread pool executor for gaze alert writing to prevent uncapped memory footprint.
         self._gaze_alert_executor.submit(writer_task)

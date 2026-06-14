@@ -23,6 +23,11 @@ from thaqib.av_alert_composer import AVAlertComposer
 
 # Video
 import cv2
+import platform as _platform
+if _platform.system() == "Darwin":
+    # macOS: register the Cocoa event-loop handler so cv2.imshow() windows
+    # remain responsive when called from background threads.
+    cv2.startWindowThread()
 from thaqib.video.pipeline import VideoPipeline
 from thaqib.video.visualizer import VideoVisualizer
 from thaqib.video.timestamps import draw_timestamp_overlay
@@ -69,16 +74,22 @@ def main():
 
     # 4. Create shared rolling buffers
     audio_buffers = {mic_id: deque(maxlen=200) for mic_id in mic_sources}
-    video_buffers = {cam_id: deque(maxlen=900) for cam_id in video_sources.keys()}
+    # 1800 frames = 60 seconds at 30fps — must be long enough to cover
+    # the full VAD+Whisper latency so on_audio_alert still finds frames.
+    video_buffers = {cam_id: deque(maxlen=1800) for cam_id in video_sources.keys()}
     video_registries = {}
 
     # 5. Create Composer
+    from thaqib.config import get_settings as _gs
+    _s = _gs()
     composer = AVAlertComposer(
         layout=layout,
         audio_buffers=audio_buffers,
         video_buffers=video_buffers,
         video_registries=video_registries,
-        output_dir="alerts"
+        output_dir="alerts",
+        video_fps=float(_s.camera_fps),
+        audio_sample_rate=int(_s.audio_sample_rate),
     )
 
     # 6. Create Pipelines
@@ -131,12 +142,10 @@ def main():
                 return
             # Deselect mode
             if _deselect_mode[0] and _latest_frame[0] is not None:
-                for track in _latest_frame[0].tracking_result.tracks:
-                    if not track.is_selected:
-                        continue
-                    x1, y1, x2, y2 = track.bbox
+                for state in _latest_frame[0].student_states:
+                    x1, y1, x2, y2 = state.bbox
                     if x1 <= x <= x2 and y1 <= y <= y2:
-                        vp.remove_student(track.track_id)
+                        vp.remove_student(state.track_id)
                         _deselect_mode[0] = False
                         return
 
@@ -158,6 +167,20 @@ def main():
                     if visualizer.show_timestamp:
                         display = annotated.copy()
                         draw_timestamp_overlay(display)
+
+                    if _deselect_mode[0]:
+                        if display is annotated:
+                            display = annotated.copy()
+                        cv2.putText(
+                            display,
+                            "DESELECT MODE: Click a student to stop monitoring",
+                            (20, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            1.0,
+                            (0, 0, 255),
+                            2,
+                            cv2.LINE_AA
+                        )
 
                     cv2.imshow(window_name, display)
                     key = cv2.waitKey(1) & 0xFF
