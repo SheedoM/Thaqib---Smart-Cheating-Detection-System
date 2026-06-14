@@ -105,14 +105,13 @@ class AVAlertComposer:
         timestamp_end: float,
     ):
         # Fallback helper to save video only (with mic-pin overlay, no source)
-        def save_video_only(target_duration: float = None):
+        def save_video_only():
             timestamp = time.time()
             output_path = os.path.join(self.output_dir, f"{alert_type}_{camera_id}_{timestamp:.1f}.mp4")
             # Still draw all pins green so the viewer knows mic layout even without audio
-            if getattr(self, '_draw_mic_pins', None):
-                for ev_f in frames:
-                    self._draw_mic_pins(ev_f, camera_id, source_mic_id=None)
-            self._save_video_only(frames, output_path, target_duration=target_duration)
+            for ev_f in frames:
+                self._draw_mic_pins(ev_f, camera_id, source_mic_id=None)
+            self._save_video_only(frames, output_path)
 
         mic_pin = None
         if frames:
@@ -201,24 +200,17 @@ class AVAlertComposer:
                 
         if not audio_segments:
             logger.info(f"No audio found in timestamp range {window_start}-{window_end} for mic {mic_id}. Saving video-only alert.")
-            actual_duration = window_end - window_start
-            save_video_only(target_duration=actual_duration if actual_duration > 0 else None)
+            save_video_only()
             return
             
         audio_clip = np.concatenate(audio_segments)
         timestamp = time.time()
         output_path = os.path.join(self.output_dir, f"{alert_type}_{camera_id}_{timestamp:.1f}.mp4")
         
-        actual_duration = window_end - window_start
-        
         # Mux in background
         self._mux_executor.submit(
             self._mux_and_save,
-            frames,
-            audio_clip,
-            output_path,
-            None, # sample_rate
-            actual_duration if actual_duration > 0 else None
+            frames, audio_clip, output_path
         )
 
     def on_audio_alert(
@@ -370,35 +362,16 @@ class AVAlertComposer:
         timestamp = time.time()
         output_path = os.path.join(self.output_dir, f"audio_alert_{mic_id}_{camera_id}_{timestamp:.1f}.mp4")
         
-        actual_duration = clamped_window_end - clamped_window_start
-
         # 5. Mux in background
         self._mux_executor.submit(
             self._mux_and_save,
-            annotated_frames, final_audio_clip, output_path, sample_rate, actual_duration if actual_duration > 0 else None
+            annotated_frames, final_audio_clip, output_path, sample_rate
         )
 
-    def _temporal_resample(self, frames: list[np.ndarray], target_duration: float) -> list[np.ndarray]:
-        """Resample frames via Nearest-Neighbor to strictly match target_duration at self.video_fps."""
-        if not frames or target_duration <= 0:
-            return frames
-            
-        target_frame_count = int(round(target_duration * self.video_fps))
-        if target_frame_count <= 0:
-            return frames
-            
-        resampled = []
-        for i in range(target_frame_count):
-            idx = int(i * len(frames) / target_frame_count)
-            resampled.append(frames[min(idx, len(frames)-1)])
-        return resampled
-
-    def _save_video_only(self, frames: list[np.ndarray], output_path: str, target_duration: float = None):
+    def _save_video_only(self, frames: list[np.ndarray], output_path: str):
         if not frames:
             return
         
-        if target_duration is not None:
-            frames = self._temporal_resample(frames, target_duration)
         h, w = frames[0].shape[:2]
         frames = [cv2.resize(f, (w, h)) if f.shape[:2] != (h, w) else f for f in frames]
         
@@ -409,12 +382,9 @@ class AVAlertComposer:
         out.release()
         logger.info(f"Saved video-only alert: {output_path}")
 
-    def _mux_and_save(self, frames: list[np.ndarray], audio: np.ndarray, output_path: str, sample_rate: int = None, target_duration: float = None):
+    def _mux_and_save(self, frames: list[np.ndarray], audio: np.ndarray, output_path: str, sample_rate: int = None):
         if not frames:
             return
-
-        if target_duration is not None:
-            frames = self._temporal_resample(frames, target_duration)
 
         try:
             # 1. Write frames to temp MP4

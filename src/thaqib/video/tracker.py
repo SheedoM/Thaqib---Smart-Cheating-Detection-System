@@ -176,13 +176,13 @@ class ObjectTracker:
                     if track_id in self._smoothed_bboxes:
                         raw_bbox = self._smoothed_bboxes[track_id]
 
-                # EMA bbox smoothing (0.5 × prev + 0.5 × current) - favors stability
+                # EMA bbox smoothing (0.8 × prev + 0.2 × current) - favors stability
                 if track_id in self._smoothed_bboxes:
                     pb = self._smoothed_bboxes[track_id]
-                    sx1 = int(0.5 * pb[0] + 0.5 * raw_bbox[0])
-                    sy1 = int(0.5 * pb[1] + 0.5 * raw_bbox[1])
-                    sx2 = int(0.5 * pb[2] + 0.5 * raw_bbox[2])
-                    sy2 = int(0.5 * pb[3] + 0.5 * raw_bbox[3])
+                    sx1 = int(0.8 * pb[0] + 0.2 * raw_bbox[0])
+                    sy1 = int(0.8 * pb[1] + 0.2 * raw_bbox[1])
+                    sx2 = int(0.8 * pb[2] + 0.2 * raw_bbox[2])
+                    sy2 = int(0.8 * pb[3] + 0.2 * raw_bbox[3])
                     smoothed = (sx1, sy1, sx2, sy2)
                 else:
                     smoothed = raw_bbox
@@ -285,6 +285,7 @@ class ObjectTracker:
             match_thresh=0.8,      # Tighter matching reduces ID switches
             proximity_thresh=0.7,
             appearance_thresh=0.25,
+            cmc_method=None,     # Disable Camera Motion Compensation for static cameras to prevent jitter
         )
 
     def reset(self) -> None:
