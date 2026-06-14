@@ -105,13 +105,14 @@ class AVAlertComposer:
         timestamp_end: float,
     ):
         # Fallback helper to save video only (with mic-pin overlay, no source)
-        def save_video_only(fps=self.video_fps):
+        def save_video_only(target_duration: float = None):
             timestamp = time.time()
             output_path = os.path.join(self.output_dir, f"{alert_type}_{camera_id}_{timestamp:.1f}.mp4")
             # Still draw all pins green so the viewer knows mic layout even without audio
-            for ev_f in frames:
-                self._draw_mic_pins(ev_f, camera_id, source_mic_id=None)
-            self._save_video_only(frames, output_path, fps=fps)
+            if getattr(self, '_draw_mic_pins', None):
+                for ev_f in frames:
+                    self._draw_mic_pins(ev_f, camera_id, source_mic_id=None)
+            self._save_video_only(frames, output_path, target_duration=target_duration)
 
         mic_pin = None
         if frames:
@@ -201,9 +202,7 @@ class AVAlertComposer:
         if not audio_segments:
             logger.info(f"No audio found in timestamp range {window_start}-{window_end} for mic {mic_id}. Saving video-only alert.")
             actual_duration = window_end - window_start
-            effective_fps = len(frames) / actual_duration if actual_duration > 0 else self.video_fps
-            effective_fps = max(1.0, min(effective_fps, 60.0))
-            save_video_only(fps=effective_fps)
+            save_video_only(target_duration=actual_duration if actual_duration > 0 else None)
             return
             
         audio_clip = np.concatenate(audio_segments)
@@ -211,8 +210,6 @@ class AVAlertComposer:
         output_path = os.path.join(self.output_dir, f"{alert_type}_{camera_id}_{timestamp:.1f}.mp4")
         
         actual_duration = window_end - window_start
-        effective_fps = len(frames) / actual_duration if actual_duration > 0 else self.video_fps
-        effective_fps = max(1.0, min(effective_fps, 60.0))
         
         # Mux in background
         self._mux_executor.submit(
@@ -221,7 +218,7 @@ class AVAlertComposer:
             audio_clip,
             output_path,
             None, # sample_rate
-            effective_fps
+            actual_duration if actual_duration > 0 else None
         )
 
     def on_audio_alert(
@@ -374,35 +371,50 @@ class AVAlertComposer:
         output_path = os.path.join(self.output_dir, f"audio_alert_{mic_id}_{camera_id}_{timestamp:.1f}.mp4")
         
         actual_duration = clamped_window_end - clamped_window_start
-        effective_fps = len(annotated_frames) / actual_duration if actual_duration > 0 else self.video_fps
-        effective_fps = max(1.0, min(effective_fps, 60.0))
 
         # 5. Mux in background
         self._mux_executor.submit(
             self._mux_and_save,
-            annotated_frames, final_audio_clip, output_path, sample_rate, effective_fps
+            annotated_frames, final_audio_clip, output_path, sample_rate, actual_duration if actual_duration > 0 else None
         )
 
-    def _save_video_only(self, frames: list[np.ndarray], output_path: str, fps: float = None):
+    def _temporal_resample(self, frames: list[np.ndarray], target_duration: float) -> list[np.ndarray]:
+        """Resample frames via Nearest-Neighbor to strictly match target_duration at self.video_fps."""
+        if not frames or target_duration <= 0:
+            return frames
+            
+        target_frame_count = int(round(target_duration * self.video_fps))
+        if target_frame_count <= 0:
+            return frames
+            
+        resampled = []
+        for i in range(target_frame_count):
+            idx = int(i * len(frames) / target_frame_count)
+            resampled.append(frames[min(idx, len(frames)-1)])
+        return resampled
+
+    def _save_video_only(self, frames: list[np.ndarray], output_path: str, target_duration: float = None):
         if not frames:
             return
         
-        fps = fps if fps is not None else self.video_fps
+        if target_duration is not None:
+            frames = self._temporal_resample(frames, target_duration)
         h, w = frames[0].shape[:2]
         frames = [cv2.resize(f, (w, h)) if f.shape[:2] != (h, w) else f for f in frames]
         
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
+        out = cv2.VideoWriter(output_path, fourcc, self.video_fps, (w, h))
         for frame in frames:
             out.write(frame)
         out.release()
         logger.info(f"Saved video-only alert: {output_path}")
 
-    def _mux_and_save(self, frames: list[np.ndarray], audio: np.ndarray, output_path: str, sample_rate: int = None, fps: float = None):
+    def _mux_and_save(self, frames: list[np.ndarray], audio: np.ndarray, output_path: str, sample_rate: int = None, target_duration: float = None):
         if not frames:
             return
 
-        fps = fps if fps is not None else self.video_fps
+        if target_duration is not None:
+            frames = self._temporal_resample(frames, target_duration)
 
         try:
             # 1. Write frames to temp MP4
@@ -417,7 +429,7 @@ class AVAlertComposer:
                 temp_audio = os.path.join(tmpdir, "audio.wav")
 
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                out = cv2.VideoWriter(temp_video, fourcc, fps, (w, h))
+                out = cv2.VideoWriter(temp_video, fourcc, self.video_fps, (w, h))
                 for frame in frames:
                     out.write(frame)
                 out.release()
