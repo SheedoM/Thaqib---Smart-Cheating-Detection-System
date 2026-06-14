@@ -384,9 +384,8 @@ class KeywordDetector:
                 # avoiding Python-level per-window overhead via torch.stack
                 try:
                     # Try batch path (works with most Silero versions)
-                    confidences = torch.stack(
-                        [vad_model(windows[i], 16000) for i in range(n_complete)]
-                    )
+                    # Native batching (requires 2D tensor)
+                    confidences = vad_model(windows, 16000)
                     max_confidence = confidences.max().item()
                 except Exception:
                     # Fallback: sequential (rare, some Silero builds vary)
