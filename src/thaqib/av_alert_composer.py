@@ -1,11 +1,12 @@
+import contextlib
 import logging
 import os
 import subprocess
 import tempfile
 import threading
 import time
-import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
 
 import cv2
@@ -34,6 +35,8 @@ class AVAlertComposer:
         output_dir: str,
         video_fps: float = 30.0,
         audio_sample_rate: int = 16000,
+        video_buffer_locks: Dict[str, object] | None = None,  # C-2: per-camera lock for snapshot
+        audio_buffer_locks: Dict[str, object] | None = None,  # C-3: per-mic lock for snapshot
     ):
         self.layout = layout
         self.audio_buffers = audio_buffers
@@ -42,8 +45,22 @@ class AVAlertComposer:
         self.output_dir = output_dir
         self.video_fps = video_fps
         self.audio_sample_rate = audio_sample_rate
+        self._mux_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ComposerMux")
+        self._wait_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="ComposerWait")
+        self._video_buffer_locks: Dict[str, object] = video_buffer_locks or {}
+        self._audio_buffer_locks: Dict[str, object] = audio_buffer_locks or {}
         
         os.makedirs(self.output_dir, exist_ok=True)
+
+    def stop(self):
+        """Stop the composer and wait for pending mux operations to complete."""
+        self._wait_executor.shutdown(wait=True)
+        self._mux_executor.shutdown(wait=True)
+
+    def shutdown(self, wait: bool = True):
+        """Gracefully shut down the mux executor. Alias for stop() with cancel option."""
+        self._wait_executor.shutdown(wait=wait, cancel_futures=not wait)
+        self._mux_executor.shutdown(wait=wait, cancel_futures=not wait)
 
     # ------------------------------------------------------------------
     # Shared mic-pin overlay helper
@@ -124,7 +141,9 @@ class AVAlertComposer:
 
         video_buffer = self.video_buffers.get(camera_id)
         if video_buffer and len(video_buffer) > 0:
-            buffer_snapshot = list(video_buffer)
+            lock = self._video_buffer_locks.get(camera_id)
+            with lock if lock else contextlib.nullcontext():
+                buffer_snapshot = list(video_buffer)
             oldest_ts = buffer_snapshot[0][0]
             newest_ts = buffer_snapshot[-1][0]
             
@@ -171,7 +190,10 @@ class AVAlertComposer:
         audio_segments = []
         # Need to ensure threading safety if audio buffer is updated concurrently
         # Assuming audio buffer contains (timestamp, chunk_data)
-        buffer_snapshot = list(audio_buffer)
+        # C-3: acquire per-mic lock if available for atomic snapshot
+        audio_lock = self._audio_buffer_locks.get(mic_id)
+        with audio_lock if audio_lock else contextlib.nullcontext():
+            buffer_snapshot = list(audio_buffer)
         for ts, data in buffer_snapshot:
             if window_start <= ts <= window_end:
                 audio_segments.append(data)
@@ -186,12 +208,10 @@ class AVAlertComposer:
         output_path = os.path.join(self.output_dir, f"{alert_type}_{camera_id}_{timestamp:.1f}.mp4")
         
         # Mux in background
-        threading.Thread(
-            target=self._mux_and_save,
-            args=(frames, audio_clip, output_path),
-            daemon=True,
-            name=f"ComposerMux_{timestamp}"
-        ).start()
+        self._mux_executor.submit(
+            self._mux_and_save,
+            frames, audio_clip, output_path
+        )
 
     def on_audio_alert(
         self,
@@ -202,73 +222,123 @@ class AVAlertComposer:
         keywords: list[str],
         sample_rate: int = None
     ):
-        def save_audio_only():
-            timestamp = time.time()
-            output_path = os.path.join(self.output_dir, f"audio_alert_{mic_id}_{timestamp:.1f}.wav")
-            audio_int16 = (np.clip(audio_clip, -1.0, 1.0) * 32767).astype(np.int16)
-            rate = sample_rate if sample_rate else self.audio_sample_rate
-            wavfile.write(output_path, rate, audio_int16)
-            logger.info(f"Saved audio-only alert: {output_path}")
+        camera_ids = self.layout.cameras_for_mic(mic_id)
 
+        if not camera_ids:
+            logger.info(
+                f"Mic {mic_id} triggered alert but is not mapped to any camera — suppressed."
+            )
+            return
+
+        for camera_id in camera_ids:
+            self._produce_audio_alert_video(
+                audio_clip=audio_clip,
+                mic_id=mic_id,
+                camera_id=camera_id,
+                timestamp_start=timestamp_start,
+                timestamp_end=timestamp_end,
+                sample_rate=sample_rate,
+            )
+
+    def _produce_audio_alert_video(
+        self,
+        audio_clip: np.ndarray,
+        mic_id: str,
+        camera_id: str,
+        timestamp_start: float,
+        timestamp_end: float,
+        sample_rate: int = None
+    ):
         # Buffer identity debug logging requested by user
         audio_buffer = self.audio_buffers.get(mic_id)
         if audio_buffer is not None:
-            logger.info(f"[DEBUG] on_audio_alert - audio_buffer id: {id(audio_buffer)}, len: {len(audio_buffer)}")
+            logger.info(f"[DEBUG] _produce_audio_alert_video - audio_buffer id: {id(audio_buffer)}, len: {len(audio_buffer)}")
 
-        camera_id = self.layout.camera_for_mic(mic_id)
-        if not camera_id:
-            logger.info(f"No camera mapped for mic {mic_id}. Saving audio-only alert.")
-            save_audio_only()
-            return
-            
         video_buffer = self.video_buffers.get(camera_id)
         if not video_buffer:
-            logger.info(f"No video buffer found for camera {camera_id}. Saving audio-only alert.")
-            save_audio_only()
+            logger.info(f"No video buffer found for camera {camera_id}. Skipping this camera for mic {mic_id}.")
             return
             
         # Expand window for audio alerts
         window_start = timestamp_start - AUDIO_ALERT_PAD_BEFORE_S
         window_end = timestamp_end + AUDIO_ALERT_PAD_AFTER_S
         
-        if len(video_buffer) > 0:
+        # Submit the waiting and extraction process to a background thread
+        # This prevents blocking the fast audio pipeline while waiting for the slow video pipeline
+        self._wait_executor.submit(
+            self._wait_and_extract_audio_alert,
+            audio_clip, mic_id, camera_id, window_start, window_end, sample_rate
+        )
+        
+    def _wait_and_extract_audio_alert(
+        self,
+        audio_clip: np.ndarray,
+        mic_id: str,
+        camera_id: str,
+        window_start: float,
+        window_end: float,
+        sample_rate: int = None
+    ):
+        video_buffer = self.video_buffers.get(camera_id)
+        if not video_buffer:
+            return
+            
+        # 1. Wait for video buffer to catch up indefinitely
+        while True:
+            if len(video_buffer) > 0:
+                lock = self._video_buffer_locks.get(camera_id)
+                with lock if lock else contextlib.nullcontext():
+                    newest_ts = video_buffer[-1][0]
+                if newest_ts >= window_end:
+                    break  # Video has caught up!
+            time.sleep(0.5)
+            
+        # 2. Extract video frames
+        lock = self._video_buffer_locks.get(camera_id)
+        with lock if lock else contextlib.nullcontext():
             buffer_snapshot = list(video_buffer)
-            oldest_ts = buffer_snapshot[0][0]
-            newest_ts = buffer_snapshot[-1][0]
             
-            # Clamp to buffer bounds
-            window_start = max(window_start, oldest_ts)
-            window_end = min(window_end, newest_ts)
+        if not buffer_snapshot:
+            return
             
-            frames = []
-            for ts, frame in buffer_snapshot:
-                if window_start <= ts <= window_end:
-                    # Decode JPEG bytes if stored in compressed form.
-                    raw = jpeg_decode(frame) if isinstance(frame, (bytes, bytearray)) else frame
-                    frames.append(raw.copy())
-        else:
-            frames = []
+        oldest_ts = buffer_snapshot[0][0]
+        newest_ts = buffer_snapshot[-1][0]
+        
+        # Clamp to buffer bounds in case of timeout or buffer rotation
+        clamped_window_start = max(window_start, oldest_ts)
+        clamped_window_end = min(window_end, newest_ts)
+        
+        frames = []
+        for ts, frame in buffer_snapshot:
+            if clamped_window_start <= ts <= clamped_window_end:
+                # Decode JPEG bytes if stored in compressed form.
+                raw = jpeg_decode(frame) if isinstance(frame, (bytes, bytearray)) else frame
+                frames.append(raw.copy())
                 
         if not frames:
-            logger.info(f"No frames found in extended range {window_start}-{window_end} for camera {camera_id}. Saving audio-only alert.")
-            save_audio_only()
+            logger.warning(
+                f"No video frames found for audio alert window "
+                f"[{clamped_window_start:.1f}, {clamped_window_end:.1f}] in camera {camera_id}. "
+                f"Buffer oldest={oldest_ts:.1f}, newest={newest_ts:.1f}. "
+                f"Possible cause: Whisper latency exceeded video buffer depth."
+            )
             return
 
-        # Extract extended audio segment
+        # 3. Extract extended audio segment
         audio_segments = []
         audio_buffer = self.audio_buffers.get(mic_id)
         if audio_buffer:
-            for ts, data in list(audio_buffer):
-                if window_start <= ts <= window_end:
-                    audio_segments.append(data)
+            audio_lock = self._audio_buffer_locks.get(mic_id)
+            with audio_lock if audio_lock else contextlib.nullcontext():
+                for ts, data in list(audio_buffer):
+                    if clamped_window_start <= ts <= clamped_window_end:
+                        audio_segments.append(data)
                     
         final_audio_clip = np.concatenate(audio_segments) if audio_segments else audio_clip
 
+        # 4. Annotate frames
         registry = self.video_registries.get(camera_id)
         nearby_students = []
-        
-        # Identify mic pin to draw on frame
-        mic_pin = next((p for p in self.layout.get_pins_for_camera(camera_id) if p.mic_id == mic_id), None)
         
         if registry and frames:
             h, w = frames[0].shape[:2]
@@ -277,7 +347,6 @@ class AVAlertComposer:
                 if nearest_pin and nearest_pin.mic_id == mic_id:
                     nearby_students.append(state)
 
-        # Annotate frames — draw order: resize (done above) → student boxes → timestamp → mic pins
         annotated_frames = []
         for frame in frames:
             ann_frame = frame.copy()
@@ -287,20 +356,17 @@ class AVAlertComposer:
                 cv2.rectangle(ann_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
             draw_timestamp_overlay(ann_frame)
             # mic-pin overlay: source mic = red, all others = green
-            # Frame is already at its final dimensions here (no resize after this).
             self._draw_mic_pins(ann_frame, camera_id, source_mic_id=mic_id)
             annotated_frames.append(ann_frame)
             
         timestamp = time.time()
-        output_path = os.path.join(self.output_dir, f"audio_alert_{mic_id}_{timestamp:.1f}.mp4")
+        output_path = os.path.join(self.output_dir, f"audio_alert_{mic_id}_{camera_id}_{timestamp:.1f}.mp4")
         
-        # Mux in background
-        threading.Thread(
-            target=self._mux_and_save,
-            args=(annotated_frames, final_audio_clip, output_path, sample_rate),
-            daemon=True,
-            name=f"ComposerMux_{timestamp}"
-        ).start()
+        # 5. Mux in background
+        self._mux_executor.submit(
+            self._mux_and_save,
+            annotated_frames, final_audio_clip, output_path, sample_rate
+        )
 
     def _save_video_only(self, frames: list[np.ndarray], output_path: str):
         if not frames:
@@ -319,54 +385,48 @@ class AVAlertComposer:
     def _mux_and_save(self, frames: list[np.ndarray], audio: np.ndarray, output_path: str, sample_rate: int = None):
         if not frames:
             return
-            
-        _id = uuid.uuid4().hex
-        # Declare here for reference in finally block; actual paths assigned inside try.
-        temp_video = ""
-        temp_audio = ""
-        
+
         try:
             # 1. Write frames to temp MP4
             h, w = frames[0].shape[:2]
             frames = [cv2.resize(f, (w, h)) if f.shape[:2] != (h, w) else f for f in frames]
-            
-            # Use OS temp dir so macOS sandbox restrictions don't block writes in cwd.
-            tmp_dir = tempfile.gettempdir()
-            temp_video = os.path.join(tmp_dir, f"temp_video_{_id}.mp4")
-            temp_audio = os.path.join(tmp_dir, f"temp_audio_{_id}.wav")
-            
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(temp_video, fourcc, self.video_fps, (w, h))
-            for frame in frames:
-                out.write(frame)
-            out.release()
-            
-            # 2. Write audio to temp WAV
-            audio_int16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
-            rate = sample_rate if sample_rate else self.audio_sample_rate
-            wavfile.write(temp_audio, rate, audio_int16)
-            
-            # 3. Run ffmpeg
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", temp_video,
-                "-i", temp_audio,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-af", "apad",
-                "-shortest",
-                output_path
-            ]
-            
-            # Run silently
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            logger.info(f"Successfully created AV alert: {output_path}")
-            
+
+            # EC-6: Use TemporaryDirectory so the OS cleans up even if SIGKILL hits.
+            # tempfile.TemporaryDirectory() guarantees deletion on __exit__, including
+            # on exception — no separate finally block needed.
+            with tempfile.TemporaryDirectory(prefix="thaqib_mux_") as tmpdir:
+                temp_video = os.path.join(tmpdir, "video.mp4")
+                temp_audio = os.path.join(tmpdir, "audio.wav")
+
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(temp_video, fourcc, self.video_fps, (w, h))
+                for frame in frames:
+                    out.write(frame)
+                out.release()
+
+                # 2. Write audio to temp WAV
+                audio_int16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+                rate = sample_rate if sample_rate else self.audio_sample_rate
+                wavfile.write(temp_audio, rate, audio_int16)
+
+                # 3. Run ffmpeg
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", temp_video,
+                    "-i", temp_audio,
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-af", "apad",
+                    "-shortest",
+                    output_path
+                ]
+
+                # Run and capture stderr for debugging
+                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                if result.returncode != 0:
+                    stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
+                    raise RuntimeError(f"ffmpeg exited {result.returncode}:\n{stderr_text}")
+                logger.info(f"Successfully created AV alert: {output_path}")
+
         except Exception as e:
             logger.error(f"Error creating AV alert {output_path}: {e}")
-        finally:
-            # 4. Delete temp files
-            if os.path.exists(temp_video):
-                os.remove(temp_video)
-            if os.path.exists(temp_audio):
-                os.remove(temp_audio)

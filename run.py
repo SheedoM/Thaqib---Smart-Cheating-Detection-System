@@ -1,6 +1,10 @@
 import argparse
 import logging
+import os
+import shutil
 import threading
+from pathlib import Path
+from threading import Lock
 import time
 import sys
 import subprocess
@@ -51,33 +55,75 @@ def main():
     parser.add_argument("--audio", nargs='+', help="Audio sources in format mic0=front.wav", required=True)
     args = parser.parse_args()
 
+    def _parse_kv(arg: str, flag: str) -> tuple[str, str]:
+        """Parse a key=value argument, exiting with a clear message on bad format."""
+        if "=" not in arg:
+            logger.error(
+                f"Bad {flag} argument: '{arg}'\n"
+                f"  Expected format: id=path  e.g.  cam0=hall.mp4  or  mic0=front.wav\n"
+                f"  Got: '{arg}' (no '=' found — check your shell quoting)"
+            )
+            sys.exit(1)
+        return arg.split("=", 1)
+
     # 1. Parse arguments
     video_sources = {}
     for arg in args.video:
-        k, v = arg.split("=", 1)
+        k, v = _parse_kv(arg, "--video")
         video_sources[k] = v
 
     audio_sources = {}
     mic_sources = []
     audio_paths = []
     for arg in args.audio:
-        k, v = arg.split("=", 1)
+        k, v = _parse_kv(arg, "--audio")
         audio_sources[k] = v
         mic_sources.append(k)
         audio_paths.append(v)
 
+    # E-8: Validate all file-based sources exist BEFORE creating any threads or buffers.
+    # Failing here gives a clear error message instead of a cryptic barrier timeout.
+    for cam_id, path in video_sources.items():
+        if isinstance(path, str) and not path.isdigit() and not path.startswith("rtsp"):
+            if not os.path.exists(path):
+                logger.error(f"Video file not found for {cam_id}: {path}")
+                sys.exit(1)
+        # NOTE: webcam index sources (e.g. cam0=0) cannot be pre-validated without
+        # opening the device. If the camera fails to open, the barrier.wait(timeout=30)
+        # will fire BrokenBarrierError after 30 s and abort cleanly. (EC-10)
+
+    for mic_id, path in audio_sources.items():
+        if not os.path.exists(path):
+            logger.error(f"Audio file not found for {mic_id}: {path}")
+            sys.exit(1)
+
+    # EC-7: Check available disk space in the alerts output directory.
+    alerts_path = Path("alerts")
+    alerts_path.mkdir(exist_ok=True)
+    free_bytes = shutil.disk_usage(alerts_path).free
+    if free_bytes < 1 * 1024 ** 3:  # less than 1 GB
+        logger.warning(
+            f"Low disk space: {free_bytes / 1024**3:.1f} GB free in alerts/. "
+            "Alert clips may fail to save."
+        )
+
     # 2. Load MicLayout
-    layout = MicLayout("mic_layout.json")
+    layout = MicLayout()
 
     # 3. Create SimClock
     clock = SimClock()
 
     # 4. Create shared rolling buffers
-    audio_buffers = {mic_id: deque(maxlen=200) for mic_id in mic_sources}
+    # 500 chunks = 250 seconds of audio history
+    audio_buffers = {mic_id: deque(maxlen=500) for mic_id in mic_sources}
     # 1800 frames = 60 seconds at 30fps — must be long enough to cover
     # the full VAD+Whisper latency so on_audio_alert still finds frames.
     video_buffers = {cam_id: deque(maxlen=1800) for cam_id in video_sources.keys()}
     video_registries = {}
+
+    # C-2/C-3: per-buffer locks so AVAlertComposer snapshots are race-free
+    video_buffer_locks = {cam_id: Lock() for cam_id in video_sources}
+    audio_buffer_locks = {mic_id: Lock() for mic_id in mic_sources}
 
     # 5. Create Composer
     from thaqib.config import get_settings as _gs
@@ -90,6 +136,8 @@ def main():
         output_dir="alerts",
         video_fps=float(_s.camera_fps),
         audio_sample_rate=int(_s.audio_sample_rate),
+        video_buffer_locks=video_buffer_locks,
+        audio_buffer_locks=audio_buffer_locks,
     )
 
     # 6. Create Pipelines
@@ -105,7 +153,7 @@ def main():
         video_pipelines.append(vp)
         video_registries[cam_id] = vp._registry
 
-    source = FileAudioSource(audio_paths, clock=clock)
+    source = FileAudioSource(audio_paths, clock=clock, real_time=True)
     ap = AudioPipeline(
         source=source,
         composer=composer,
@@ -134,11 +182,14 @@ def main():
         _latest_frame = [None]
 
         def mouse_callback(event, x, y, flags, param):
-            if event != cv2.EVENT_LBUTTONDOWN:
-                return
             # Mic placement takes priority when active
             if visualizer._mic_placement_mode:
                 visualizer.handle_mouse(event, x, y, flags, param)
+                if event in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_RBUTTONDOWN):
+                    return
+            
+            # Normal modes only care about left click
+            if event != cv2.EVENT_LBUTTONDOWN:
                 return
             # Deselect mode
             if _deselect_mode[0] and _latest_frame[0] is not None:
@@ -151,7 +202,15 @@ def main():
 
         cv2.setMouseCallback(window_name, mouse_callback)
 
-        barrier.wait()
+        logger.info(f"[{vp._camera_id}] Pre-loading YOLO detector...")
+        vp.preload_models()
+        logger.info(f"[{vp._camera_id}] Models ready.")
+
+        try:
+            barrier.wait(timeout=60)
+        except threading.BrokenBarrierError:
+            logger.error(f"Barrier broken or timed out in run_video ({vp._camera_id}). Aborting.")
+            return
         
         try:
             with vp:
@@ -226,7 +285,12 @@ def main():
         logger.info("Loading audio models...")
         ap.load_models()
         logger.info("Audio models ready.")
-        barrier.wait()
+        try:
+            barrier.wait(timeout=30)
+        except threading.BrokenBarrierError:
+            logger.error("Barrier broken or timed out in run_audio. Aborting.")
+            return
+            
         try:
             ap.run_sync()
         except Exception as e:
@@ -234,26 +298,35 @@ def main():
         finally:
             ap.stop()
 
-    threads = []
+    video_threads = []
     for vp in video_pipelines:
         t = threading.Thread(target=run_video, args=(vp, barrier, layout, mic_sources))
         t.start()
-        threads.append(t)
+        video_threads.append(t)
 
-    t = threading.Thread(target=run_audio, args=(ap,))
-    t.start()
-    threads.append(t)
+    audio_thread = threading.Thread(target=run_audio, args=(ap,))
+    audio_thread.start()
 
     try:
-        for t in threads:
+        # Wait for all video streams to finish (e.g. reach EOF)
+        for t in video_threads:
             t.join()
+            
+        logger.info("All video streams ended. Stopping audio pipeline and composer...")
+        ap.stop()
+        composer.stop()
+        audio_thread.join()
+        
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received, stopping pipelines...")
         for vp in video_pipelines:
             vp.stop()
         ap.stop()
-        for t in threads:
+        composer.stop()
+        
+        for t in video_threads:
             t.join()
+        audio_thread.join()
 
 if __name__ == "__main__":
     main()

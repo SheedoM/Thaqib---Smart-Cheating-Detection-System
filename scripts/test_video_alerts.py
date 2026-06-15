@@ -150,8 +150,8 @@ def _install_fake_settings(output_dir: str):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def build_composer(output_dir: str, ts_base: float):
-    layout = MicLayout(layout_file=os.path.join(output_dir, "_mic_layout.json"))
-    layout.pins[MIC_ID] = MicPin(mic_id=MIC_ID, camera_id=CAM_ID, norm_pos=(0.5, 0.5))
+    layout = MicLayout()
+    layout.pins[MIC_ID] = [MicPin(mic_id=MIC_ID, camera_id=CAM_ID, norm_pos=(0.5, 0.5))]
 
     # ~6 s of synthetic float32 audio centred on ts_base
     audio_buf: deque = deque(maxlen=500)

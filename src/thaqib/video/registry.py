@@ -54,6 +54,9 @@ class StudentSpatialState:
     is_alert_recording: bool = False
     recording_buffer: deque = field(default_factory=lambda: deque(maxlen=_MAX_RECORDING_FRAMES))
     frames_to_record: int = 0
+    
+    # Face Mesh overload protection
+    fm_last_frame: int = 0   # frame index of last submitted face mesh job
 
 class GlobalStudentRegistry:
     """Registry system that stores the spatial state of all tracked students."""

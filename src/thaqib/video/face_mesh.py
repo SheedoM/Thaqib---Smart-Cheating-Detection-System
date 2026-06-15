@@ -111,9 +111,9 @@ class FaceMeshExtractor:
                 ),
                 running_mode=vision.RunningMode.VIDEO,
                 num_faces=1,
-                min_face_detection_confidence=0.80,
-                min_face_presence_confidence=0.80,
-                min_tracking_confidence=0.80,
+                min_face_detection_confidence=0.55,
+                min_face_presence_confidence=0.55,
+                min_tracking_confidence=0.55,
                 output_face_blendshapes=False,
                 output_facial_transformation_matrixes=True,
             )
@@ -164,11 +164,11 @@ class FaceMeshExtractor:
         """
         x1, y1, x2, y2 = bbox
 
-        # Crop only the HEAD region (upper 40% of person bbox).
+        # Crop only the HEAD region (upper 60% of person bbox).
         # MediaPipe needs the face, not the full body — this reduces crop
-        # area by ~60%, improving both speed and accuracy.
+        # area by ~40%, improving both speed and accuracy.
         body_height = y2 - y1
-        y2 = y1 + int(body_height * 0.40)
+        y2 = y1 + int(body_height * 0.60)
 
         # Calculate dynamic 15% padding around the head crop
         width = x2 - x1
@@ -196,7 +196,7 @@ class FaceMeshExtractor:
 
         crop_h, crop_w = crop.shape[:2]
 
-        if crop_w < 40 or crop_h < 40:
+        if crop_w < 20 or crop_h < 20:
             # Face too small to extrapolate accurate gaze, use cache
             return self._get_cached(track_id, reason="small_crop")
 

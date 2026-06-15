@@ -26,7 +26,7 @@ from thaqib.config import get_settings
 from thaqib.video.camera import CameraStream, FrameData
 from thaqib.video.detector import HumanDetector, DetectionResult
 from thaqib.video.tracker import ObjectTracker, TrackingResult, TrackedObject
-from thaqib.video.registry import GlobalStudentRegistry, StudentSpatialState
+from thaqib.video.registry import GlobalStudentRegistry, StudentSpatialState, _MAX_RECORDING_FRAMES
 from thaqib.video.timestamps import draw_timestamp_overlay
 from thaqib.video.neighbors import NeighborComputer
 from thaqib.video.face_mesh import FaceMeshResult
@@ -34,6 +34,10 @@ from thaqib.video.tools_detector import ToolsDetector, ToolsDetectionResult
 from thaqib.video.cheating_evaluator import CheatingEvaluator
 from thaqib.video.video_logger import get_video_logger
 from thaqib.video.jpeg_buffer import JPEGFrame, encode_frame, decode_frame
+
+# Run face mesh every N frames per student to prevent executor backlog.
+# At 30 FPS with N=3: ~10 updates/sec per student — sufficient for gaze accuracy.
+FACE_MESH_INTERVAL: int = 3
 
 
 class ConstantVelocityExtrapolator:
@@ -242,7 +246,7 @@ class VideoPipeline:
         self._registry = GlobalStudentRegistry()
         self._neighbor_computer = NeighborComputer()
         self._reid = FaceReIdentifier()
-        self._cheating_evaluator = CheatingEvaluator(self._registry)
+        self._cheating_evaluator = CheatingEvaluator(self._registry, clock=clock)
         self._cheating_evaluator.on_alert = on_alert
 
 
@@ -267,12 +271,15 @@ class VideoPipeline:
         # None by default so headless/test usage is unaffected.
         self._visualizer = None
 
-        self._frame_lock = threading.Lock()
+        # Stores alias mappings for tracks (from tracker ID to ReID main ID)
         self._track_aliases: dict[int, int] = {}
+        self._alias_lock = threading.Lock()
         self._global_frame_buffer: deque[tuple[np.ndarray, None]] = deque(maxlen=90)
         
         # Initialize buffer lock and bounded executors to manage thread safety and memory.
         self._buffer_lock = threading.Lock()
+        # _frame_lock: guards _current_frame_data written by run() and read by _detection_worker.
+        self._frame_lock = threading.Lock()
         self._phone_alert_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="PhoneAlertWriter"
         )
@@ -413,21 +420,24 @@ class VideoPipeline:
                             # use live registry instead of stale closure — fixes V-L-1
                             visible_ids = {s.track_id for s in self._registry.get_all()
                                            if s.is_active}
-                            active_aliases = set(self._track_aliases.values())
+                            with self._alias_lock:
+                                active_aliases = set(self._track_aliases.values())
                             if best_id not in visible_ids and best_id not in active_aliases:
                                 logger.info(
                                     f"ReID match found! Aliasing tracker ID {track_id} -> {best_id}"
                                 )
-                                self._track_aliases[track_id] = best_id
+                                with self._alias_lock:
+                                    self._track_aliases[track_id] = best_id
 
-                        actual_id = self._track_aliases.get(track_id, track_id)
+                        with self._alias_lock:
+                            actual_id = self._track_aliases.get(track_id, track_id)
                         is_match = self._reid.register_embedding(actual_id, result)
                         self._tracker.verify_embedding_match(actual_id, is_match)
 
                     # Avoid evaluating cheating on worker threads to prevent race conditions on student state fields.
 
             except Exception as exc:
-                logger.debug(f"FM callback error (track {track_id}): {exc}")
+                logger.warning(f"FM callback error (track {track_id}): {exc}")
 
         return callback
 
@@ -585,6 +595,12 @@ class VideoPipeline:
             
             time.sleep(0.01)  # Yield CPU
 
+    def preload_models(self) -> None:
+        """Pre-load YOLO and tools detector weights before pipeline starts."""
+        self._detector.load()
+        if self._tools_detector:
+            self._tools_detector.load()
+
     def start(self) -> bool:
         """
         Start the pipeline.
@@ -695,6 +711,7 @@ class VideoPipeline:
                     'is_heuristic_paper': state.is_heuristic_paper,
                     'is_using_phone': getattr(state, 'is_using_phone', False),
                     'phone_bbox': getattr(state, 'phone_bbox', None),
+                    'suspicious_start_time': getattr(state, 'suspicious_start_time', 0.0),
                 }
                 self._save_alert_video_async(
                     frames_snapshot, state.track_id, time.time(),
@@ -912,10 +929,11 @@ class VideoPipeline:
                 tracks=[],
             )
 
-        # Apply ID Alias Translation Layer
-        for track in tracking_result.tracks:
-            if track.track_id in self._track_aliases:
-                track.track_id = self._track_aliases[track.track_id]
+        # Apply track aliasing
+        with self._alias_lock:
+            for track in tracking_result.tracks:
+                if track.track_id in self._track_aliases:
+                    track.track_id = self._track_aliases[track.track_id]
 
         t2 = time.perf_counter()
 
@@ -1040,6 +1058,7 @@ class VideoPipeline:
                         'is_heuristic_paper': state.is_heuristic_paper,
                         'is_using_phone': state.is_using_phone,
                         'phone_bbox': state.phone_bbox,
+                        'suspicious_start_time': state.suspicious_start_time,
                     }
                     self._save_alert_video_async(
                         frames_snapshot, state.track_id, frame_data.timestamp,
@@ -1051,12 +1070,18 @@ class VideoPipeline:
             # Use the public API to prune tracker state — avoids reaching
             # into private dicts/sets from outside the tracker class.
             self._tracker.remove_tracks(expired_ids)
-            keys_to_delete = [
-                bot_id for bot_id, thaqib_id in self._track_aliases.items()
-                if bot_id in expired_ids or thaqib_id in expired_ids
-            ]
-            for k in keys_to_delete:
-                del self._track_aliases[k]
+            
+            with self._fm_cache_lock:
+                for track_id in expired_ids:
+                    self._fm_cache.pop(track_id, None)
+                    
+            with self._alias_lock:
+                keys_to_delete = [
+                    bot_id for bot_id, thaqib_id in self._track_aliases.items()
+                    if bot_id in expired_ids or thaqib_id in expired_ids
+                ]
+                for k in keys_to_delete:
+                    del self._track_aliases[k]
 
         t3 = time.perf_counter()
 
@@ -1195,55 +1220,68 @@ class VideoPipeline:
         #   2. Respect available worker slots (pending < num_workers).
         #   3. Cap total pending at 3 × workers as a safety net.
         if selected_tracks and student_states and self._face_executor is not None:
-            # Safety cap: discard oldest futures if queue grew too large
-            max_pending = 100
-            if len(self._pending_fm_futures) > max_pending:
-                excess = self._pending_fm_futures[:-max_pending]
-                for f, _ in excess:
-                    f.cancel()  # No-op if already running, but prevents result retrieval
-                self._pending_fm_futures = self._pending_fm_futures[-max_pending:]
+            # Cleanup completed futures to keep list small
+            self._pending_fm_futures = [(f, tid) for f, tid in self._pending_fm_futures if not f.done()]
 
-            # Only submit for students WITHOUT a pending job (key fix vs old round-robin)
-            pending_track_ids = {tid for _, tid in self._pending_fm_futures}
-            new_students = []
-            for state in student_states:
-                if state.track_id not in pending_track_ids:
-                    new_students.append(state)
+            # Safety net: if too many pending futures, skip all new submissions this frame
+            MAX_PENDING_FM = self._fm_num_workers * 4   # e.g. 4 workers × 4 = 16 max queued
+            if len(self._pending_fm_futures) >= MAX_PENDING_FM:
+                logger.warning(
+                    f"Face mesh executor backlogged ({len(self._pending_fm_futures)} pending) "
+                    f"— skipping face mesh this frame."
+                )
+            else:
+                # Only submit for students WITHOUT a pending job (key fix vs old round-robin)
+                pending_track_ids = {tid for _, tid in self._pending_fm_futures}
+                new_students = []
+                for state in student_states:
+                    if state.track_id in pending_track_ids:
+                        continue
+                    
+                    reg_state = self._registry.get(state.track_id)
+                    if reg_state is None:
+                        continue
+                        
+                    if (frame_data.frame_index - reg_state.fm_last_frame) < FACE_MESH_INTERVAL:
+                        continue
+                        
+                    new_students.append((state, reg_state))
 
-            if new_students:
-                # Compute face mesh scale factor for current frame dimensions.
-                # Recalculated whenever _fm_scale_computed is False (e.g. after
-                # a processing-resolution change via the G key).
-                if not self._fm_scale_computed:
-                    h = frame_data.frame.shape[0]
-                    if h > self._recording_max_h:
-                        self._fm_scale = self._recording_max_h / h
+                if new_students:
+                    # Compute face mesh scale factor for current frame dimensions.
+                    # Recalculated whenever _fm_scale_computed is False (e.g. after
+                    # a processing-resolution change via the G key).
+                    if not self._fm_scale_computed:
+                        h = frame_data.frame.shape[0]
+                        if h > self._recording_max_h:
+                            self._fm_scale = self._recording_max_h / h
+                        else:
+                            self._fm_scale = 1.0
+                        self._fm_scale_computed = True
+
+                    # Downscale frame for face mesh (saves ~4× MediaPipe inference time)
+                    fm_scale = self._fm_scale
+                    if fm_scale < 1.0:
+                        h, w = frame_data.frame.shape[:2]
+                        new_w = int(w * fm_scale)
+                        new_h = int(h * fm_scale)
+                        fm_frame = cv2.resize(frame_data.frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
                     else:
-                        self._fm_scale = 1.0
-                    self._fm_scale_computed = True
+                        fm_frame = frame_data.frame.copy()
 
-                # Downscale frame for face mesh (saves ~4× MediaPipe inference time)
-                fm_scale = self._fm_scale
-                if fm_scale < 1.0:
-                    h, w = frame_data.frame.shape[:2]
-                    new_w = int(w * fm_scale)
-                    new_h = int(h * fm_scale)
-                    fm_frame = cv2.resize(frame_data.frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-                else:
-                    fm_frame = frame_data.frame.copy()
-
-                # Submit to thread pool.
-                # Old pattern: add_done_callback so cheating is evaluated
-                # IMMEDIATELY when face mesh is ready, not deferred to next frame.
-                for state in new_students:
-                    future = self._face_executor.submit(
-                        self._fm_thread_infer, fm_frame, state.bbox, fm_scale, state.track_id
-                    )
-                    # Remove tracking_result argument to match the updated callback signature.
-                    future.add_done_callback(
-                        self._make_fm_callback(state.track_id)
-                    )
-                    self._pending_fm_futures.append((future, state.track_id))
+                    # Submit to thread pool.
+                    # Old pattern: add_done_callback so cheating is evaluated
+                    # IMMEDIATELY when face mesh is ready, not deferred to next frame.
+                    for state, reg_state in new_students:
+                        future = self._face_executor.submit(
+                            self._fm_thread_infer, fm_frame, state.bbox, fm_scale, state.track_id
+                        )
+                        # Remove tracking_result argument to match the updated callback signature.
+                        future.add_done_callback(
+                            self._make_fm_callback(state.track_id)
+                        )
+                        self._pending_fm_futures.append((future, state.track_id))
+                        reg_state.fm_last_frame = frame_data.frame_index
 
         # 3. Cheating evaluation — runs every frame for every selected student.
         # The evaluator snapshots reg_state.face_mesh internally and routes to
@@ -1327,7 +1365,7 @@ class VideoPipeline:
                     # then reset recording state immediately.
                     frames_snapshot = list(state.recording_buffer)
                     state.is_alert_recording = False
-                    state.recording_buffer = deque(maxlen=1800)
+                    state.recording_buffer = deque(maxlen=_MAX_RECORDING_FRAMES)
                     
                     # Determine cheat type BEFORE resetting state
                     cheat_type = "phone" if state.is_using_phone else "gaze"
@@ -1345,6 +1383,7 @@ class VideoPipeline:
                         'is_heuristic_paper': state.is_heuristic_paper,
                         'is_using_phone': state.is_using_phone,
                         'phone_bbox': state.phone_bbox,
+                        'suspicious_start_time': state.suspicious_start_time,
                     }
                     
                     # Fully reset cheating state — the event is captured.
@@ -1385,7 +1424,7 @@ class VideoPipeline:
                     )
                     for item in pre
                 ],
-                maxlen=1800,
+                maxlen=_MAX_RECORDING_FRAMES,
             )
             self._phone_frames_to_record = self._post_buffer_frames
             logger.info("Phone alert recording STARTED")
@@ -1410,7 +1449,7 @@ class VideoPipeline:
                 if self._phone_frames_to_record <= 0:
                     frames_snapshot = list(self._phone_recording_buffer)
                     self._phone_is_recording = False
-                    self._phone_recording_buffer = deque(maxlen=1800)
+                    self._phone_recording_buffer = deque(maxlen=_MAX_RECORDING_FRAMES)
                     self._save_phone_alert_video_async(frames_snapshot, frame_data.timestamp)
 
         t5 = time.perf_counter()
@@ -1877,7 +1916,12 @@ class VideoPipeline:
                     writer = None
 
                 if writer is None or not writer.isOpened():
-                    logger.error("Phone alert: all codecs failed — video not saved")
+                    logger.error("Phone alert: all codecs failed — video not saved. Attempting JPEG fallback.")
+                    jpg_dir = alerts_dir / f"phone_alert_frames_{time_str}"
+                    jpg_dir.mkdir(exist_ok=True)
+                    for i, out_frame in enumerate(annotated_frames):
+                        cv2.imwrite(str(jpg_dir / f"frame_{i:04d}.jpg"), out_frame)
+                    logger.warning(f"Saved JPEG sequence fallback to {jpg_dir}")
                     return
 
                 for out_frame in annotated_frames:
@@ -2097,7 +2141,10 @@ class VideoPipeline:
                             return itm[0]
                         return timestamp
 
-                    timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
+                    if cheat_ctx and cheat_ctx.get('suspicious_start_time', 0.0) > 0.0:
+                        timestamp_start = cheat_ctx['suspicious_start_time'] - 2.0
+                    else:
+                        timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
                     timestamp_end = _get_ts(frames[-1]) if frames else timestamp
                     
                     self._composer.on_video_alert(
@@ -2131,7 +2178,12 @@ class VideoPipeline:
                     writer = None
                 
                 if writer is None or not writer.isOpened():
-                    logger.error(f"Failed to create video writer — all codecs failed for track {track_id}")
+                    logger.error(f"Failed to create video writer — all codecs failed for track {track_id}. Attempting JPEG fallback.")
+                    jpg_dir = alerts_dir / f"{prefix}_frames_track{track_id}_{time_str}"
+                    jpg_dir.mkdir(exist_ok=True)
+                    for i, frame in enumerate(annotated_frames):
+                        cv2.imwrite(str(jpg_dir / f"frame_{i:04d}.jpg"), frame)
+                    logger.warning(f"Saved JPEG sequence fallback to {jpg_dir}")
                     return
 
                 for out in annotated_frames:

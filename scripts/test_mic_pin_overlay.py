@@ -88,9 +88,9 @@ def _install_fake_settings(output_dir: str):
 
 # ── Build composer ─────────────────────────────────────────────────────────────
 def build_composer(output_dir: str, ts_base: float) -> AVAlertComposer:
-    layout = MicLayout(layout_file=os.path.join(output_dir, "_mic_layout.json"))
+    layout = MicLayout()
     for mic_id, norm_pos in PINS.items():
-        layout.pins[mic_id] = MicPin(mic_id=mic_id, camera_id=CAM_ID, norm_pos=norm_pos)
+        layout.pins[mic_id] = [MicPin(mic_id=mic_id, camera_id=CAM_ID, norm_pos=norm_pos)]
 
     # ~6 s of synthetic audio centred on ts_base, for every mic
     audio_bufs: dict[str, deque] = {}

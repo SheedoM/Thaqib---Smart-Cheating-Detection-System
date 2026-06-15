@@ -384,9 +384,8 @@ class KeywordDetector:
                 # avoiding Python-level per-window overhead via torch.stack
                 try:
                     # Try batch path (works with most Silero versions)
-                    confidences = torch.stack(
-                        [vad_model(windows[i], 16000) for i in range(n_complete)]
-                    )
+                    # Native batching (requires 2D tensor)
+                    confidences = vad_model(windows, 16000)
                     max_confidence = confidences.max().item()
                 except Exception:
                     # Fallback: sequential (rare, some Silero builds vary)
@@ -423,14 +422,17 @@ class KeywordDetector:
             logger.warning(f"VAD error: {e}. Assuming speech.")
             return True, 1.0
 
-    def transcribe(self, audio: np.ndarray, sample_rate: int) -> dict:
+    def transcribe(self, audio: np.ndarray, sample_rate: int, beam_size: int | None = None) -> dict:
         """
         Transcribe audio using Whisper.
 
         Returns dict with keys: 'text', 'segments', 'language', 'avg_confidence'.
-        Uses self._beam_size (configurable via AUDIO_WHISPER_BEAM_SIZE).
+        Uses self._beam_size (configurable via AUDIO_WHISPER_BEAM_SIZE), unless
+        beam_size is passed explicitly (used by the pipeline worker to avoid a
+        race between the monitor thread writing _beam_size and this reader).
         """
         self._ensure_whisper_loaded()
+        _beam = beam_size if beam_size is not None else self._beam_size
 
         if sample_rate != 16000:
             ratio = 16000 / sample_rate
@@ -443,7 +445,7 @@ class KeywordDetector:
 
         if self._use_faster_whisper:
             seg_gen, info = self._whisper_model.transcribe(
-                audio, language=self._language, beam_size=self._beam_size
+                audio, language=self._language, beam_size=_beam
             )
             segments = list(seg_gen)
             text = " ".join(s.text for s in segments).strip()
@@ -462,7 +464,7 @@ class KeywordDetector:
                 audio,
                 language=self._language,
                 fp16=False,
-                beam_size=self._beam_size if self._beam_size > 1 else None,
+                beam_size=_beam if _beam > 1 else None,
             )
             segs = result.get("segments", [])
             avg_conf = (
@@ -567,7 +569,7 @@ class KeywordDetector:
         return full_audio
 
     def transcribe_and_match(
-        self, audio: np.ndarray, sample_rate: int
+        self, audio: np.ndarray, sample_rate: int, beam_size: int | None = None
     ) -> "KeywordResult":
         """
         Stage 2+3: Whisper transcription + keyword matching.
@@ -575,11 +577,14 @@ class KeywordDetector:
         This is the SLOW half of analyze(), designed to run in
         a dedicated Whisper worker thread without blocking VAD.
 
+        beam_size: optional override to avoid reading self._beam_size without
+        the monitor lock (C-4 fix). Pass the value read under _monitor_lock.
+
         Returns:
             KeywordResult (is_cheating may be False if no keywords matched).
         """
         try:
-            result = self.transcribe(audio, sample_rate)
+            result = self.transcribe(audio, sample_rate, beam_size=beam_size)
         except Exception as e:
             logger.error(f"Whisper transcription failed: {e}")
             return KeywordResult()
