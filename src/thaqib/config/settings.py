@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     ]
     internal_event_token: str | None = None
     stream_manager_enabled: bool = True
+    av_fusion_enabled: bool = True
 
     # Video Output
     # video_quality: 0-100. Lower = smaller files.

@@ -37,6 +37,7 @@ class AVAlertComposer:
         audio_sample_rate: int = 16000,
         video_buffer_locks: Dict[str, object] | None = None,  # C-2: per-camera lock for snapshot
         audio_buffer_locks: Dict[str, object] | None = None,  # C-3: per-mic lock for snapshot
+        on_output=None,
     ):
         self.layout = layout
         self.audio_buffers = audio_buffers
@@ -49,6 +50,7 @@ class AVAlertComposer:
         self._wait_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="ComposerWait")
         self._video_buffer_locks: Dict[str, object] = video_buffer_locks or {}
         self._audio_buffer_locks: Dict[str, object] = audio_buffer_locks or {}
+        self._on_output = on_output
         
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -112,6 +114,7 @@ class AVAlertComposer:
             for ev_f in frames:
                 self._draw_mic_pins(ev_f, camera_id, source_mic_id=None)
             self._save_video_only(frames, output_path)
+            self._emit_output(output_path, {"camera_id": camera_id, "alert_type": alert_type, "has_audio": False})
 
         mic_pin = None
         if frames:
@@ -210,7 +213,8 @@ class AVAlertComposer:
         # Mux in background
         self._mux_executor.submit(
             self._mux_and_save,
-            frames, audio_clip, output_path
+            frames, audio_clip, output_path, None,
+            {"camera_id": camera_id, "mic_id": mic_id, "alert_type": alert_type, "has_audio": True}
         )
 
     def on_audio_alert(
@@ -365,7 +369,8 @@ class AVAlertComposer:
         # 5. Mux in background
         self._mux_executor.submit(
             self._mux_and_save,
-            annotated_frames, final_audio_clip, output_path, sample_rate
+            annotated_frames, final_audio_clip, output_path, sample_rate,
+            {"camera_id": camera_id, "mic_id": mic_id, "alert_type": "audio", "has_audio": True}
         )
 
     def _save_video_only(self, frames: list[np.ndarray], output_path: str):
@@ -382,7 +387,15 @@ class AVAlertComposer:
         out.release()
         logger.info(f"Saved video-only alert: {output_path}")
 
-    def _mux_and_save(self, frames: list[np.ndarray], audio: np.ndarray, output_path: str, sample_rate: int = None):
+    def _emit_output(self, output_path: str, metadata: dict | None = None) -> None:
+        if self._on_output is None:
+            return
+        try:
+            self._on_output(output_path, metadata or {})
+        except Exception as exc:
+            logger.error("Composer output callback failed for %s: %s", output_path, exc)
+
+    def _mux_and_save(self, frames: list[np.ndarray], audio: np.ndarray, output_path: str, sample_rate: int = None, metadata: dict | None = None):
         if not frames:
             return
 
@@ -427,6 +440,7 @@ class AVAlertComposer:
                     stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
                     raise RuntimeError(f"ffmpeg exited {result.returncode}:\n{stderr_text}")
                 logger.info(f"Successfully created AV alert: {output_path}")
+                self._emit_output(output_path, metadata)
 
         except Exception as e:
             logger.error(f"Error creating AV alert {output_path}: {e}")

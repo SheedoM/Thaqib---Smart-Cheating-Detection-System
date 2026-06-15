@@ -66,6 +66,37 @@ cameras:
     fps: 30
     resolution: [1280, 720]
 
+mics:
+  hall101_mic_front:
+    audio_path: /app/videos/cam1.mp4
+    sample_rate: 16000
+    chunk_ms: 500
+
+  hall101_mic_back:
+    audio_path: /app/videos/cam2.mp4
+    sample_rate: 16000
+    chunk_ms: 500
+
+  hall101_mic_side:
+    audio_path: /app/videos/cam1.mp4
+    sample_rate: 16000
+    chunk_ms: 500
+
+  hall102_mic_front:
+    audio_path: /app/videos/cam4.mp4
+    sample_rate: 16000
+    chunk_ms: 500
+
+  hall102_mic_back:
+    audio_path: /app/videos/cam5.mp4
+    sample_rate: 16000
+    chunk_ms: 500
+
+  hall102_mic_side:
+    audio_path: /app/videos/cam6.mp4
+    sample_rate: 16000
+    chunk_ms: 500
+
 # Server settings
 server:
   host: 0.0.0.0

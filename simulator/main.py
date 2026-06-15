@@ -9,6 +9,7 @@ import asyncio
 import io
 import logging
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -59,8 +60,14 @@ def resolve_video_path(video_path: str) -> str:
     return video_path
 
 
+def resolve_audio_path(audio_path: str) -> str:
+    """Resolve Docker `/app/videos` and relative audio paths for local runs."""
+    return resolve_video_path(audio_path)
+
+
 CONFIG = load_config()
 CAMERA_CONFIGS = CONFIG.get("cameras", {})
+MIC_CONFIGS = CONFIG.get("mics", {})
 SERVER_CONFIG = CONFIG.get("server", {"jpeg_quality": 85, "frame_skip": 1})
 
 app = FastAPI(title="Camera Streaming Simulator", version="1.0.0")
@@ -233,6 +240,25 @@ def camera_readiness() -> list[dict]:
     return cameras
 
 
+def mic_readiness() -> list[dict]:
+    """Return lightweight audio availability details for configured microphones."""
+    mics = []
+    for mic_id, config in MIC_CONFIGS.items():
+        audio_path = config.get("audio_path", "")
+        resolved_path = resolve_audio_path(audio_path)
+        mics.append(
+            {
+                "id": mic_id,
+                "audio_path": audio_path,
+                "resolved_audio_path": resolved_path,
+                "audio_exists": Path(resolved_path).exists(),
+                "sample_rate": config.get("sample_rate", 16000),
+                "chunk_ms": config.get("chunk_ms", 500),
+            }
+        )
+    return mics
+
+
 async def generate_mjpeg_stream(camera_id: str):
     """Generate MJPEG stream for a camera."""
     streamer = get_or_create_streamer(camera_id)
@@ -269,6 +295,65 @@ async def generate_mjpeg_stream(camera_id: str):
         raise
 
 
+async def generate_pcm_stream(mic_id: str):
+    """Generate looped little-endian PCM16 mono chunks for a microphone."""
+    config = MIC_CONFIGS.get(mic_id, {})
+    audio_path = resolve_audio_path(config.get("audio_path", ""))
+    sample_rate = int(config.get("sample_rate", 16000))
+    chunk_ms = int(config.get("chunk_ms", 500))
+    chunk_bytes = int(sample_rate * chunk_ms / 1000) * 2
+    sleep_s = chunk_ms / 1000.0
+    process: subprocess.Popen | None = None
+
+    try:
+        if Path(audio_path).exists():
+            process = subprocess.Popen(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-stream_loop",
+                    "-1",
+                    "-i",
+                    audio_path,
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    str(sample_rate),
+                    "-f",
+                    "s16le",
+                    "pipe:1",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            logger.info("Started PCM audio stream for %s from %s", mic_id, audio_path)
+        else:
+            logger.warning("Audio file for mic %s not found: %s; serving silence", mic_id, audio_path)
+
+        silence = b"\x00" * chunk_bytes
+        while True:
+            chunk = silence
+            if process is not None and process.stdout is not None:
+                data = process.stdout.read(chunk_bytes)
+                if len(data) == chunk_bytes:
+                    chunk = data
+                else:
+                    logger.warning("PCM source ended for mic %s; serving silence", mic_id)
+                    process.kill()
+                    process = None
+            yield chunk
+            await asyncio.sleep(sleep_s)
+    except asyncio.CancelledError:
+        logger.info("Audio stream cancelled for mic %s", mic_id)
+        raise
+    finally:
+        if process is not None:
+            process.kill()
+
+
 @app.get("/")
 async def root():
     """Root endpoint with API info."""
@@ -276,12 +361,16 @@ async def root():
         "service": "Camera Streaming Simulator",
         "version": "1.0.0",
         "cameras": list(CAMERA_CONFIGS.keys()),
+        "mics": list(MIC_CONFIGS.keys()),
         "endpoints": {
             "health": "/health",
             "camera_list": "/cameras",
+            "mic_list": "/mics",
             "mjpeg_stream": "/camera/{camera_id}/feed",
+            "pcm_stream": "/mic/{mic_id}/feed",
             "snapshot": "/camera/{camera_id}/snapshot",
             "camera_info": "/camera/{camera_id}/info",
+            "mic_info": "/mic/{mic_id}/info",
         },
     }
 
@@ -290,13 +379,17 @@ async def root():
 async def health_check():
     """Health check endpoint."""
     cameras = camera_readiness()
+    mics = mic_readiness()
     missing_videos = [camera["id"] for camera in cameras if not camera["video_exists"]]
+    missing_audio = [mic["id"] for mic in mics if not mic["audio_exists"]]
     return {
         "status": "healthy",
-        "ready": len(missing_videos) == 0,
+        "ready": len(missing_videos) == 0 and len(missing_audio) == 0,
         "active_streams": len(active_streams),
         "cameras_configured": len(CAMERA_CONFIGS),
+        "mics_configured": len(MIC_CONFIGS),
         "missing_videos": missing_videos,
+        "missing_audio": missing_audio,
     }
 
 
@@ -304,12 +397,17 @@ async def health_check():
 async def readiness_check():
     """Readiness endpoint that makes missing video mounts obvious."""
     cameras = camera_readiness()
+    mics = mic_readiness()
     missing_videos = [camera["id"] for camera in cameras if not camera["video_exists"]]
+    missing_audio = [mic["id"] for mic in mics if not mic["audio_exists"]]
     return {
-        "ready": len(missing_videos) == 0,
+        "ready": len(missing_videos) == 0 and len(missing_audio) == 0,
         "cameras_configured": len(CAMERA_CONFIGS),
+        "mics_configured": len(MIC_CONFIGS),
         "missing_videos": missing_videos,
+        "missing_audio": missing_audio,
         "cameras": cameras,
+        "mics": mics,
     }
 
 
@@ -331,6 +429,25 @@ async def list_cameras():
             "stream_url": f"/camera/{cam_id}/feed",
         })
     return {"cameras": cameras, "count": len(cameras)}
+
+
+@app.get("/mics")
+async def list_mics():
+    """List all configured microphones."""
+    mics = []
+    for mic_id, config in MIC_CONFIGS.items():
+        audio_path = config.get("audio_path", "")
+        resolved_path = resolve_audio_path(audio_path)
+        mics.append({
+            "id": mic_id,
+            "audio_path": audio_path,
+            "resolved_audio_path": resolved_path,
+            "audio_exists": Path(resolved_path).exists(),
+            "sample_rate": config.get("sample_rate", 16000),
+            "chunk_ms": config.get("chunk_ms", 500),
+            "stream_url": f"/mic/{mic_id}/feed",
+        })
+    return {"mics": mics, "count": len(mics)}
 
 
 @app.get("/camera/{camera_id}/feed")
@@ -355,6 +472,24 @@ async def camera_feed(
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
             "Expires": "0",
+        },
+    )
+
+
+@app.get("/mic/{mic_id}/feed")
+async def mic_feed(mic_id: str):
+    """Get PCM16 mono stream for a specific microphone."""
+    if mic_id not in MIC_CONFIGS:
+        raise HTTPException(status_code=404, detail=f"Microphone '{mic_id}' not found")
+
+    sample_rate = int(MIC_CONFIGS[mic_id].get("sample_rate", 16000))
+    return StreamingResponse(
+        generate_pcm_stream(mic_id),
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "X-Audio-Sample-Rate": str(sample_rate),
+            "X-Audio-Format": "pcm_s16le_mono",
         },
     )
 
@@ -403,6 +538,27 @@ async def camera_info(camera_id: str):
     }
 
     return info
+
+
+@app.get("/mic/{mic_id}/info")
+async def mic_info(mic_id: str):
+    """Get information about a specific microphone."""
+    if mic_id not in MIC_CONFIGS:
+        raise HTTPException(status_code=404, detail=f"Microphone '{mic_id}' not found")
+
+    config = MIC_CONFIGS[mic_id]
+    audio_path = config.get("audio_path", "")
+    resolved_path = resolve_audio_path(audio_path)
+    return {
+        "id": mic_id,
+        "audio_path": audio_path,
+        "resolved_audio_path": resolved_path,
+        "audio_exists": Path(resolved_path).exists(),
+        "sample_rate": config.get("sample_rate", 16000),
+        "chunk_ms": config.get("chunk_ms", 500),
+        "stream_url": f"/mic/{mic_id}/feed",
+        "http_stream": f"http://{{host}}:8000/mic/{mic_id}/feed",
+    }
 
 
 @app.delete("/camera/{camera_id}/stream")

@@ -51,6 +51,7 @@ class ToolsDetector:
         """Initialize the detector."""
         self._settings = get_settings()
         self._model: YOLO | None = None
+        self._load_attempted = False
         # Target classes from settings (configurable via .env)
         self.target_labels = list(self._settings.tools_target_labels)
         # Confidence threshold — separate from person detection confidence
@@ -58,9 +59,9 @@ class ToolsDetector:
 
     def load(self) -> None:
         """Load the YOLO model for tools."""
-        if self._model is not None:
+        if self._model is not None or self._load_attempted:
             return
-            
+        self._load_attempted = True
         model_path = self._settings.tools_model
         logger.info(f"Loading tools model: {model_path}")
         try:
@@ -94,6 +95,8 @@ class ToolsDetector:
         Returns:
             Detection results.
         """
+        if self._model is None:
+            self.load()
         if self._model is None:
             return ToolsDetectionResult(
                 frame_index=frame_index,

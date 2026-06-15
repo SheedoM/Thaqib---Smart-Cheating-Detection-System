@@ -8,11 +8,13 @@ hall's footage.
 """
 
 import uuid
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from src.thaqib.api.routes import stream
+from fastapi.responses import StreamingResponse
 from src.thaqib.api.routes.stream import _invigilator_can_access_device
 from src.thaqib.core.security import get_password_hash
 from src.thaqib.db.models.events import Alert, DetectionEvent
@@ -173,3 +175,59 @@ def test_snapshot_served_for_owner(client, db_session, two_hall_setup, tmp_path)
             snap_path.parent.rmdir()
         except OSError:
             pass
+
+
+@pytest.mark.anyio
+async def test_feed_endpoint_recovers_missing_runtime_from_active_assignment(monkeypatch, two_hall_setup):
+    s = two_hall_setup
+    device_id = str(s["cam_a"].id)
+    stream._camera_states.clear()
+    monkeypatch.setattr(stream, "_invigilator_can_access_device", lambda db, user, candidate: candidate == device_id)
+
+    def fake_refresh() -> None:
+        runtime = stream.CameraRuntime(
+            device_id=device_id,
+            identifier=s["cam_a"].identifier,
+            camera_name="Front A",
+            hall_id=str(s["hall_a"].id),
+            hall_name=s["hall_a"].name,
+            source="0",
+            session_id=str(s["session"].id),
+        )
+        runtime.stop_event.set()
+        stream._camera_states[device_id] = runtime
+
+    monkeypatch.setattr(stream, "_refresh_camera_states", fake_refresh)
+
+    response = await stream.video_feed(device_id, s["invig_a"])
+
+    assert isinstance(response, StreamingResponse)
+    assert response.media_type == "multipart/x-mixed-replace; boundary=frame"
+
+
+@pytest.mark.anyio
+async def test_feed_endpoint_emits_placeholder_before_first_camera_frame(two_hall_setup):
+    s = two_hall_setup
+    device_id = str(s["cam_a"].id)
+    original_guard = stream._invigilator_can_access_device
+    stream._invigilator_can_access_device = lambda db, user, candidate: candidate == device_id
+    runtime = stream.CameraRuntime(
+        device_id=device_id,
+        identifier=s["cam_a"].identifier,
+        camera_name="Front A",
+        hall_id=str(s["hall_a"].id),
+        hall_name=s["hall_a"].name,
+        source="0",
+        session_id=str(s["session"].id),
+    )
+    stream._camera_states[device_id] = runtime
+
+    try:
+        response = await stream.video_feed(device_id, s["invig_a"])
+        chunk = await asyncio.wait_for(response.body_iterator.__anext__(), timeout=0.2)
+    finally:
+        stream._invigilator_can_access_device = original_guard
+        runtime.stop_event.set()
+        stream._camera_states.pop(device_id, None)
+
+    assert b"Content-Type: image/jpeg" in chunk

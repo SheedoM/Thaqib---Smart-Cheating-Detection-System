@@ -1,4 +1,4 @@
-from src.thaqib.api.routes.stream import _serialize_camera
+from src.thaqib.api.routes.stream import _hall_to_payload, _serialize_camera
 from src.thaqib.db.models.infrastructure import Device, Hall
 
 
@@ -114,3 +114,71 @@ def test_camera_without_stream_url_serializes_as_offline(db_session, test_instit
     assert payload["status"] == "offline"
     assert payload["feed_path"] is None
     assert payload["source_configured"] is False
+
+
+def test_update_microphone_placements_replaces_position_list(client, admin_token_headers, test_institution):
+    hall_response = client.post(
+        "/api/halls/",
+        json={"name": "Mic Placement Hall", "capacity": 40, "institution_id": str(test_institution.id)},
+        headers=admin_token_headers,
+    )
+    assert hall_response.status_code == 201
+    hall_id = hall_response.json()["id"]
+
+    mic_response = client.post(
+        "/api/devices/",
+        json={
+            "hall_id": hall_id,
+            "type": "microphone",
+            "identifier": "mic-front",
+            "stream_url": "http://localhost:8000/mic/mic-front/feed",
+            "position": {"label": "Front mic"},
+        },
+        headers=admin_token_headers,
+    )
+    assert mic_response.status_code == 201
+    mic_id = mic_response.json()["id"]
+
+    response = client.put(
+        f"/api/devices/{mic_id}/placements",
+        json={"placements": [{"camera_id": "camera-1", "norm_pos": [0.25, 0.75]}]},
+        headers=admin_token_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["position"]["label"] == "Front mic"
+    assert body["position"]["placements"] == [{"camera_id": "camera-1", "norm_pos": [0.25, 0.75]}]
+
+
+def test_hall_payload_serializes_microphone_placements_and_source_flag(db_session, test_institution):
+    hall = Hall(
+        institution_id=test_institution.id,
+        name="Serialized Mic Hall",
+        capacity=30,
+        status="ready",
+    )
+    mic = Device(
+        hall=hall,
+        type="microphone",
+        identifier="mic-1",
+        stream_url="http://localhost:8000/mic/mic-1/feed",
+        position={"label": "Desk mic", "placements": [{"camera_id": "camera-1", "norm_pos": [0.1, 0.2]}]},
+        status="online",
+    )
+    db_session.add_all([hall, mic])
+    db_session.commit()
+
+    payload = _hall_to_payload(hall, db=db_session)
+
+    assert payload["mics"] == [
+        {
+            "id": str(mic.id),
+            "identifier": "mic-1",
+            "name": "Desk mic",
+            "status": "online",
+            "source_configured": True,
+            "placements": [{"camera_id": "camera-1", "norm_pos": [0.1, 0.2]}],
+            "position": {"label": "Desk mic", "placements": [{"camera_id": "camera-1", "norm_pos": [0.1, 0.2]}]},
+        }
+    ]

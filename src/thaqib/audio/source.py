@@ -12,6 +12,7 @@ the pipeline doesn't care where the audio comes from.
 import logging
 import time
 import threading
+import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -269,6 +270,120 @@ class FileAudioSource(AudioSource):
         if not self._audio_data:
             return 0.0
         return min(1.0, self._position / len(self._audio_data[0]))
+
+
+class StreamAudioSource(AudioSource):
+    """
+    Reads synchronized PCM16 mono chunks from one HTTP stream per microphone.
+
+    The simulator serves raw little-endian PCM at the configured sample rate.
+    If a mic URL cannot be opened or stops producing full chunks, that mic is
+    masked with silence so one bad microphone does not block the hall pipeline.
+    """
+
+    def __init__(
+        self,
+        stream_urls: list[str],
+        sample_rate: int = 16000,
+        chunk_ms: int = 500,
+        timeout_s: float = 5.0,
+        clock=None,
+    ):
+        if not stream_urls:
+            raise ValueError("StreamAudioSource requires at least one microphone URL")
+        self._stream_urls = stream_urls
+        self._sample_rate = sample_rate
+        self._chunk_ms = chunk_ms
+        self._timeout_s = timeout_s
+        self._clock = clock
+        self._chunk_samples = int(sample_rate * chunk_ms / 1000)
+        self._chunk_bytes = self._chunk_samples * 2
+        self._chunk_index = 0
+        self._is_running = False
+        self._streams: list[object | None] = []
+        self._active_mics_mask: list[bool] = []
+
+    def start(self) -> None:
+        self._streams = []
+        self._active_mics_mask = []
+        for idx, url in enumerate(self._stream_urls):
+            try:
+                request = urllib.request.Request(url, headers={"Accept": "audio/L16, application/octet-stream"})
+                stream = urllib.request.urlopen(request, timeout=self._timeout_s)
+                self._streams.append(stream)
+                self._active_mics_mask.append(True)
+                logger.info("Mic stream %s connected: %s", idx, url)
+            except Exception as exc:
+                logger.warning("Mic stream %s unavailable (%s); masking with silence", idx, exc)
+                self._streams.append(None)
+                self._active_mics_mask.append(False)
+        self._chunk_index = 0
+        self._is_running = True
+
+    def _read_exact(self, stream: object) -> bytes:
+        chunks: list[bytes] = []
+        remaining = self._chunk_bytes
+        while remaining > 0 and self._is_running:
+            part = stream.read(remaining)
+            if not part:
+                break
+            chunks.append(part)
+            remaining -= len(part)
+        return b"".join(chunks)
+
+    def get_chunk(self) -> AudioChunk | None:
+        if not self._is_running:
+            return None
+
+        mic_chunks: list[np.ndarray] = []
+        for idx, stream in enumerate(self._streams):
+            if stream is None or not self._active_mics_mask[idx]:
+                mic_chunks.append(np.zeros(self._chunk_samples, dtype=np.float32))
+                continue
+
+            try:
+                raw = self._read_exact(stream)
+                if len(raw) < self._chunk_bytes:
+                    logger.warning("Mic stream %s returned a short chunk; masking with silence", idx)
+                    self._active_mics_mask[idx] = False
+                    mic_chunks.append(np.zeros(self._chunk_samples, dtype=np.float32))
+                    continue
+                samples = np.frombuffer(raw[:self._chunk_bytes], dtype="<i2").astype(np.float32) / 32768.0
+                mic_chunks.append(samples)
+            except Exception as exc:
+                logger.warning("Mic stream %s read failed (%s); masking with silence", idx, exc)
+                self._active_mics_mask[idx] = False
+                mic_chunks.append(np.zeros(self._chunk_samples, dtype=np.float32))
+
+        audio_chunk = AudioChunk(
+            timestamp=self._clock.now() if self._clock else time.time(),
+            mic_data=np.stack(mic_chunks, axis=0),
+            sample_rate=self._sample_rate,
+            duration_ms=self._chunk_ms,
+            chunk_index=self._chunk_index,
+        )
+        self._chunk_index += 1
+        return audio_chunk
+
+    def stop(self) -> None:
+        self._is_running = False
+        for stream in self._streams:
+            if stream is None:
+                continue
+            try:
+                stream.close()
+            except Exception as exc:
+                logger.debug("Error closing mic stream: %s", exc)
+        self._streams = []
+        self._active_mics_mask = []
+
+    @property
+    def num_mics(self) -> int:
+        return len(self._stream_urls)
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
 
 
 class LiveAudioSource(AudioSource):

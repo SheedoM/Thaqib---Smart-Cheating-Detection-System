@@ -4,12 +4,16 @@ Maintains persistent identity with EMA smoothing and ID locking.
 """
 
 import logging
+import inspect
 from pathlib import Path
 from dataclasses import dataclass, field
 
 import numpy as np
 import cv2
-from boxmot.trackers.bbox.botsort.botsort import BotSort
+try:
+    from boxmot.trackers.bbox.botsort.botsort import BotSort
+except ModuleNotFoundError:
+    from boxmot.trackers.botsort.botsort import BotSort
 
 from thaqib.config import get_settings
 from thaqib.video.detector import Detection, DetectionResult
@@ -270,23 +274,30 @@ class ObjectTracker:
         import torch
         device = "cuda" if torch.cuda.is_available() else "cpu"
         use_half = device == "cuda"  # FP16 only works on CUDA
-        return BotSort(
-            reid_weights=Path(self.reid_weights_path),
-            device=device,
-            half=use_half,
-            with_reid=False,
-            fuse_first_associate=True,
-            track_high_thresh=0.25,
-            track_low_thresh=0.10,
-            new_track_thresh=0.20,
-            track_buffer=self.max_age,
-            max_age=self.max_age,
-            max_obs=self.max_age + 5,
-            match_thresh=0.8,      # Tighter matching reduces ID switches
-            proximity_thresh=0.7,
-            appearance_thresh=0.25,
-            cmc_method=None,     # Disable Camera Motion Compensation for static cameras to prevent jitter
-        )
+        kwargs = {
+            "reid_weights": Path(self.reid_weights_path),
+            "device": device,
+            "half": use_half,
+            "with_reid": False,
+            "fuse_first_associate": True,
+            "track_high_thresh": 0.25,
+            "track_low_thresh": 0.10,
+            "new_track_thresh": 0.20,
+            "track_buffer": self.max_age,
+            "max_age": self.max_age,
+            "max_obs": self.max_age + 5,
+            "match_thresh": 0.8,      # Tighter matching reduces ID switches
+            "proximity_thresh": 0.7,
+            "appearance_thresh": 0.25,
+            "cmc_method": None,       # Disable Camera Motion Compensation for static cameras to prevent jitter
+        }
+        supported = inspect.signature(BotSort.__init__).parameters
+        filtered_kwargs = {
+            name: value
+            for name, value in kwargs.items()
+            if name in supported and value is not None
+        }
+        return BotSort(**filtered_kwargs)
 
     def reset(self) -> None:
         self._tracker = self._make_tracker()

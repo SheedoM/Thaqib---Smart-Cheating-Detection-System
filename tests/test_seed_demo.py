@@ -1,34 +1,39 @@
-from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from seed_demo import seed_college, seed_university
-from scripts.seed_demo import upsert_assignment
 from src.thaqib.db.models.exams import ExamAdminAssignment, ExamSession
-from src.thaqib.db.models.infrastructure import Hall
+from src.thaqib.db.models.infrastructure import Device, Hall
 from src.thaqib.db.models.users import User
 
 
-def test_seed_assignment_links_hall_to_exam_session(db_session, test_institution, invigilator_user):
-    hall = Hall(
-        institution_id=test_institution.id,
-        name="Seed Hall",
-        capacity=40,
-        status="ready",
-    )
-    session = ExamSession(
-        exam_name="Midterm Exam 2024",
-        exam_type="Final",
-        scheduled_start=datetime.now(timezone.utc) - timedelta(minutes=30),
-        scheduled_end=datetime.now(timezone.utc) + timedelta(hours=2),
-        status="scheduled",
-        student_count=100,
-    )
-    db_session.add_all([hall, session])
-    db_session.commit()
+def test_legacy_scripts_seed_demo_is_removed():
+    assert not Path("scripts/seed_demo.py").exists()
 
-    upsert_assignment(db_session, session, invigilator_user, hall)
-    db_session.refresh(session)
 
-    assert [linked_hall.id for linked_hall in session.halls] == [hall.id]
+def test_college_seed_uses_simulator_ids_urls_and_mic_placements(db_session):
+    seed_college(db_session)
+
+    hall = db_session.query(Hall).filter(Hall.name == "قاعة 101").one()
+    devices = db_session.query(Device).filter(Device.hall_id == hall.id).all()
+    by_identifier = {device.identifier: device for device in devices}
+
+    assert by_identifier["hall101_cam_front"].stream_url == (
+        "http://localhost:8000/camera/hall101_cam_front/feed"
+    )
+    assert by_identifier["hall101_cam_back"].stream_url == (
+        "http://localhost:8000/camera/hall101_cam_back/feed"
+    )
+    assert by_identifier["hall101_cam_side"].stream_url == (
+        "http://localhost:8000/camera/hall101_cam_side/feed"
+    )
+    assert by_identifier["hall101_mic_front"].stream_url == (
+        "http://localhost:8000/mic/hall101_mic_front/feed"
+    )
+    assert by_identifier["hall101_mic_front"].position["placements"] == [
+        {"camera_id": "hall101_cam_front", "norm_pos": [0.5, 0.5]},
+        {"camera_id": "hall101_cam_back", "norm_pos": [0.5, 0.5]},
+        {"camera_id": "hall101_cam_side", "norm_pos": [0.5, 0.5]},
+    ]
 
 
 def test_university_seed_has_one_super_admin_and_college_admins_are_admins(db_session):

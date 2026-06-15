@@ -73,6 +73,19 @@ class DeviceUpdate(BaseModel):
     coverage_area: Optional[dict] = None
     status: Optional[str] = None
 
+class MicPlacement(BaseModel):
+    camera_id: str = Field(..., min_length=1)
+    norm_pos: List[float] = Field(..., min_length=2, max_length=2)
+
+    @model_validator(mode="after")
+    def require_normalized_position(self) -> "MicPlacement":
+        if any(value < 0 or value > 1 for value in self.norm_pos):
+            raise ValueError("norm_pos values must be between 0 and 1")
+        return self
+
+class DevicePlacementsUpdate(BaseModel):
+    placements: List[MicPlacement] = Field(default_factory=list)
+
 class DeviceResponse(DeviceBase):
     id: uuid.UUID
     hall_id: uuid.UUID

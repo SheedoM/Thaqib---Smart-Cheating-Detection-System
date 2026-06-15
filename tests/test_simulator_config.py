@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import yaml
+from fastapi.testclient import TestClient
 
 
 def test_hall101_simulator_uses_docker_video_mount_paths():
@@ -19,3 +20,26 @@ def test_simulator_resolves_docker_video_paths_for_local_runs(tmp_path, monkeypa
     monkeypatch.setattr(simulator_main, "DEFAULT_VIDEOS_DIR", tmp_path)
 
     assert simulator_main.resolve_video_path("/app/videos/cam1.mp4") == str(video_file)
+
+
+def test_simulator_config_defines_demo_mics():
+    config = yaml.safe_load(Path("simulator/config.yaml").read_text())
+
+    assert config["mics"]["hall101_mic_front"]["audio_path"] == "/app/videos/cam1.mp4"
+    assert config["mics"]["hall101_mic_back"]["audio_path"] == "/app/videos/cam2.mp4"
+
+
+def test_simulator_lists_configured_mics(monkeypatch):
+    from simulator import main as simulator_main
+
+    monkeypatch.setattr(
+        simulator_main,
+        "MIC_CONFIGS",
+        {"mic-test": {"audio_path": "/app/videos/cam1.mp4", "sample_rate": 16000}},
+    )
+
+    response = TestClient(simulator_main.app).get("/mics")
+
+    assert response.status_code == 200
+    assert response.json()["mics"][0]["id"] == "mic-test"
+    assert response.json()["mics"][0]["stream_url"] == "/mic/mic-test/feed"

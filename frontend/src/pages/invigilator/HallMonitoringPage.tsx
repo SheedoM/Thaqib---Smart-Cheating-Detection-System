@@ -20,6 +20,8 @@ import type { HallMonitoringStatus, HallReadiness, HallAlert } from '../../types
 import { useHallVoice } from '../../hooks/useHallVoice';
 import { isInsecureLanContext } from '../../lib/secureContext';
 import CameraFeedGrid, { type CameraFeedGridItem } from '../../components/CameraFeedGrid';
+import VideoSpeedControl from '../../components/VideoSpeedControl';
+import CameraModal, { type CameraModalMic } from '../../components/CameraModal';
 
 interface FeedItem {
   device_id: string;
@@ -37,6 +39,8 @@ export default function HallMonitoringPage() {
   const [isChecking, setIsChecking] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [feeds, setFeeds] = useState<FeedItem[]>([]);
+  const [mics, setMics] = useState<CameraModalMic[]>([]);
+  const [statsByCamera, setStatsByCamera] = useState<Record<string, any>>({});
   const [showAllAlerts, setShowAllAlerts] = useState(false);
   const [activeTab, setActiveTab] = useState<'cameras' | 'cases'>('cameras');
   const [enlargedFeed, setEnlargedFeed] = useState<CameraFeedGridItem | null>(null);
@@ -69,8 +73,14 @@ export default function HallMonitoringPage() {
         const data = await response.json();
         setStatus(data);
       }
+      
+      const statsRes = await authFetch('/api/stream/status');
+      if (statsRes.ok) {
+        const statsData = await statsRes.json();
+        setStatsByCamera(statsData.cameras || {});
+      }
     } catch (err) {
-      console.error('Error fetching hall status:', err);
+      console.error('Error fetching hall status or stats:', err);
     } finally {
       setIsLoading(false);
     }
@@ -82,6 +92,7 @@ export default function HallMonitoringPage() {
       if (response.ok) {
         const data = await response.json();
         setFeeds(data.feeds || []);
+        setMics(data.mics || []);
       }
     } catch (err) {
       console.error('Error fetching hall feeds:', err);
@@ -551,32 +562,19 @@ export default function HallMonitoringPage() {
 
       {/* Enlarged single-camera overlay */}
       {enlargedFeed && (
-        <div
-          className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-4"
-          onClick={() => setEnlargedFeed(null)}
-        >
-          <button
-            onClick={() => setEnlargedFeed(null)}
-            className="absolute top-4 left-4 z-10 h-10 w-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center"
-          >
-            <X size={22} />
-          </button>
-          <div className="w-full max-w-5xl" onClick={(e) => e.stopPropagation()}>
-            {enlargedFeed.feedPath ? (
-              <img
-                src={apiUrl(enlargedFeed.feedPath)}
-                alt={enlargedFeed.name}
-                className="w-full rounded-xl object-contain bg-black"
-              />
-            ) : (
-              <div className="aspect-video w-full rounded-xl bg-black flex flex-col items-center justify-center text-white/60">
-                <Camera size={36} />
-                <p className="mt-3 text-sm font-bold">الكاميرا غير متصلة</p>
-              </div>
-            )}
-            <p className="text-center text-white/80 text-sm font-bold mt-3">{enlargedFeed.name}</p>
-          </div>
-        </div>
+        <CameraModal
+          mode="camera"
+          alert={null}
+          camera={{
+            id: enlargedFeed.id,
+            name: enlargedFeed.name,
+            hallName: status?.hall_name || '',
+            feedPath: enlargedFeed.feedPath,
+          }}
+          stats={statsByCamera[enlargedFeed.id] || null}
+          hallMics={mics}
+          onClose={() => setEnlargedFeed(null)}
+        />
       )}
 
       {/* Alert review modal */}

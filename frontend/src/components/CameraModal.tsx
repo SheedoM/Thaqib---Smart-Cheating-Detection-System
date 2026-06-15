@@ -1,5 +1,6 @@
 import { apiUrl, authFetch } from '../config/api';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, type MouseEvent } from 'react';
+import VideoSpeedControl from './VideoSpeedControl';
 
 function formatUptime(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -47,6 +48,19 @@ interface CameraStats {
   uptime_seconds: number;
 }
 
+interface MicPlacement {
+  camera_id: string;
+  norm_pos: [number, number];
+}
+
+export interface CameraModalMic {
+  id: string;
+  identifier: string;
+  name: string;
+  status: string;
+  placements?: MicPlacement[];
+}
+
 interface CameraModalProps {
   mode: 'camera' | 'alert';
   alert: Alert | null;
@@ -57,12 +71,13 @@ interface CameraModalProps {
     feedPath: string | null;
   } | null;
   stats: CameraStats | null;
+  hallMics?: CameraModalMic[];
   onConfirmAlert?: (alert: Alert) => void | Promise<void>;
   onCancelAlert?: (alert: Alert) => void | Promise<void>;
   onClose: () => void;
 }
 
-export default function CameraModal({ mode, alert, camera, stats, onConfirmAlert, onCancelAlert, onClose }: CameraModalProps) {
+export default function CameraModal({ mode, alert, camera, stats, hallMics = [], onConfirmAlert, onCancelAlert, onClose }: CameraModalProps) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-container" onClick={(e) => e.stopPropagation()}>
@@ -75,7 +90,7 @@ export default function CameraModal({ mode, alert, camera, stats, onConfirmAlert
         </button>
 
         {mode === 'camera' ? (
-          <CameraView camera={camera} stats={stats} />
+          <CameraView camera={camera} stats={stats} hallMics={hallMics} />
         ) : (
           <AlertView alert={alert} onConfirmAlert={onConfirmAlert} onCancelAlert={onCancelAlert} />
         )}
@@ -90,13 +105,23 @@ export default function CameraModal({ mode, alert, camera, stats, onConfirmAlert
 function CameraView({
   camera,
   stats,
+  hallMics,
 }: {
   camera: CameraModalProps['camera'];
   stats: CameraStats | null;
+  hallMics: CameraModalMic[];
 }) {
   const deviceId = camera?.id ?? null;
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [micPlacementMode, setMicPlacementMode] = useState(false);
+  const [selectedMicId, setSelectedMicId] = useState(hallMics[0]?.id ?? '');
+  const [localMics, setLocalMics] = useState<CameraModalMic[]>(hallMics);
   const inFlightPathsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    setLocalMics(hallMics);
+    setSelectedMicId((current) => current || hallMics[0]?.id || '');
+  }, [hallMics]);
 
   // Load current controls state on open
   useEffect(() => {
@@ -114,6 +139,37 @@ function CameraView({
       inFlightPathsRef.current.delete(path);
     }
   }, [deviceId]);
+
+  const placeSelectedMic = useCallback(async (event: MouseEvent<HTMLImageElement>) => {
+    if (!deviceId || !selectedMicId) return;
+    const mic = localMics.find((item) => item.id === selectedMicId);
+    if (!mic) return;
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    const norm_pos: [number, number] = [Number(x.toFixed(4)), Number(y.toFixed(4))];
+    const placements = [
+      ...(mic.placements || []).filter((placement) => placement.camera_id !== deviceId),
+      { camera_id: deviceId, norm_pos },
+    ];
+
+    await authFetch(`/api/devices/${selectedMicId}/placements`, {
+      method: 'PUT',
+      body: JSON.stringify({ placements }),
+    });
+
+    setLocalMics((items) => items.map((item) => (
+      item.id === selectedMicId ? { ...item, placements } : item
+    )));
+  }, [deviceId, localMics, selectedMicId]);
+
+  const visiblePins = localMics.flatMap((mic) => (
+    (mic.placements || [])
+      .filter((placement) => placement.camera_id === deviceId)
+      .map((placement) => ({ ...placement, mic }))
+  ));
 
   // Keyboard shortcuts — all pipeline controls from visualizer bottom bar
   useEffect(() => {
@@ -166,7 +222,37 @@ function CameraView({
         </div>
 
         {camera?.feedPath ? (
-          <img src={apiUrl(camera.feedPath)} alt="بث مباشر" className="modal-video-img" />
+          <>
+            <img
+              src={apiUrl(camera.feedPath)}
+              alt="بث مباشر"
+              className="modal-video-img"
+              onClick={micPlacementMode ? placeSelectedMic : undefined}
+              style={micPlacementMode ? { cursor: 'crosshair' } : undefined}
+            />
+            {visiblePins.map(({ mic, norm_pos }) => (
+              <span
+                key={`${mic.id}-${norm_pos[0]}-${norm_pos[1]}`}
+                title={mic.name}
+                style={{
+                  position: 'absolute',
+                  left: `${norm_pos[0] * 100}%`,
+                  top: `${norm_pos[1] * 100}%`,
+                  transform: 'translate(-50%, -50%)',
+                  borderRadius: 999,
+                  background: mic.id === selectedMicId ? '#8e52cb' : '#111827',
+                  color: '#fff',
+                  padding: '4px 8px',
+                  fontSize: 11,
+                  fontWeight: 800,
+                  boxShadow: '0 6px 18px rgba(0,0,0,0.25)',
+                  pointerEvents: 'none',
+                }}
+              >
+                {mic.name}
+              </span>
+            ))}
+          </>
         ) : (
           <div className="camera-feed-placeholder" style={{ minHeight: '360px' }}>
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#9f9fa9" strokeWidth="1.5">
@@ -187,7 +273,34 @@ function CameraView({
               style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '4px 10px', cursor: 'pointer', fontSize: '12px', color: '#6b7280', fontWeight: 700 }}>
               ⌨ اختصارات {showShortcuts ? '▲' : '▼'}
             </button>
+            {hallMics.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setMicPlacementMode((value) => !value)}
+                aria-pressed={micPlacementMode}
+                style={{ marginRight: 8, background: micPlacementMode ? '#8e52cb' : 'none', color: micPlacementMode ? '#fff' : '#6b7280', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '4px 10px', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
+              >
+                تحديد المايك
+              </button>
+            )}
           </div>
+          {micPlacementMode && hallMics.length > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, direction: 'rtl' }}>
+              <label style={{ fontSize: 12, color: '#4b5563', fontWeight: 800 }}>
+                الميكروفون
+                <select
+                  aria-label="الميكروفون"
+                  value={selectedMicId}
+                  onChange={(event) => setSelectedMicId(event.target.value)}
+                  style={{ marginRight: 8, border: '1px solid #e5e7eb', borderRadius: 8, padding: '4px 8px' }}
+                >
+                  {hallMics.map((mic) => (
+                    <option key={mic.id} value={mic.id}>{mic.name}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
         </div>
       )}
 
@@ -267,6 +380,8 @@ function AlertView({
   onConfirmAlert?: (alert: Alert) => void | Promise<void>;
   onCancelAlert?: (alert: Alert) => void | Promise<void>;
 }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
   if (!alert) return null;
 
   const isLikelyUnplayable = Boolean(alert.video_file && alert.video_file.toLowerCase().endsWith('.avi'));
@@ -338,12 +453,18 @@ function AlertView({
           <span>{alert.location}</span>
         </div>
         {alert.video_file && !isLikelyUnplayable ? (
-          <video
-            src={apiUrl(`/api/stream/alerts/video/${alert.video_file}`)}
-            controls
-            autoPlay
-            className="modal-video-img"
-          />
+          <>
+            <video
+              ref={videoRef}
+              src={apiUrl(`/api/stream/alerts/video/${alert.video_file}`)}
+              controls
+              autoPlay
+              className="modal-video-img"
+            />
+            <div className="absolute bottom-3 left-3">
+              <VideoSpeedControl videoRef={videoRef} />
+            </div>
+          </>
         ) : (
           <>
             <img

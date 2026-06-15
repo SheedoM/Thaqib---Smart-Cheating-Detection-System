@@ -152,12 +152,20 @@ python -m alembic upgrade head
 #### 4. Seed the Database with Demo Data
 
 ```bash
-# For simulator (HTTP MJPEG streams)
-python scripts/seed_demo.py --protocol=http --stream-host=localhost --stream-port=8000
+# Single-tenant college demo
+python seed_demo.py college
 
-# For real cameras (RTSP streams)
-python scripts/seed_demo.py --protocol=rtsp --stream-host=192.168.1.100 --stream-port=554
+# Multi-tenant university demo with three colleges
+python seed_demo.py university
+
+# If the simulator runs on another machine
+python seed_demo.py college --simulator-base-url http://192.168.1.10:8000
 ```
+
+`seed_demo.py` is the only demo seed entrypoint. It wipes existing demo data and
+rebuilds users, halls, cameras, microphones, exams, and assignments. For real
+camera deployments, create or edit devices in the dashboard with their RTSP URLs
+after seeding the tenant structure.
 
 #### 5. Start the Backend
 

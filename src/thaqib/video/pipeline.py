@@ -637,9 +637,6 @@ class VideoPipeline:
             logger.error("Failed to open camera")
             return False
 
-        self._detector.load()
-        self._tools_detector.load()
-
         self._is_running = True
         
         # Capture measured FPS from the device — used to derive post-event buffer

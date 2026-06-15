@@ -5,6 +5,9 @@ Two modes (choose via command-line argument):
   python seed_demo.py college     — single-college institution  (default)
   python seed_demo.py university  — university with three colleges
 
+Optional simulator URL:
+  python seed_demo.py college --simulator-base-url http://192.168.1.10:8000
+
 Each mode is fully self-contained: wipes ALL existing data (institutions,
 users, halls, devices, exams, alerts) and rebuilds from scratch.
 No setup wizard required.
@@ -18,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -47,12 +51,12 @@ CAM_LABEL = {
     "back":  "الكاميرا الخلفية",
     "side":  "الكاميرا الجانبية",
 }
-OFFLINE_CAMERA_KEYS = {"side"}
+SIMULATOR_BASE_URL = os.environ.get("SIMULATOR_BASE_URL", "http://localhost:8000").rstrip("/")
 
 # ─── College blueprints ────────────────────────────────────────────────────────
 #
 # Each blueprint fully describes one college's halls, staff, and exam schedule.
-# hall["demo_video"] = True  →  cameras get local video stream URLs (Hall 101 only).
+# hall["demo_video"] = True  →  cameras and microphones get simulator stream URLs.
 #
 # Schedule row: (exam_name, exam_type, day_offset, start_hour, duration_h,
 #                hall_name, student_count, invigilator_username)
@@ -141,6 +145,26 @@ BUS_BLUEPRINT = {
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+def _simulator_hall_prefix(hall_name: str) -> str:
+    digits = "".join(ch for ch in hall_name if ch.isdigit())
+    return f"hall{digits}" if digits else hall_name.replace(" ", "").lower()
+
+
+def _default_mic_placements(camera_ids: list[str]) -> list[dict]:
+    return [
+        {"camera_id": camera_id, "norm_pos": [0.5, 0.5]}
+        for camera_id in camera_ids
+    ]
+
+
+def _simulator_camera_url(camera_id: str) -> str:
+    return f"{SIMULATOR_BASE_URL}/camera/{camera_id}/feed"
+
+
+def _simulator_mic_url(mic_id: str) -> str:
+    return f"{SIMULATOR_BASE_URL}/mic/{mic_id}/feed"
+
+
 def _wipe_all(db) -> None:
     """Delete everything in FK-safe order."""
     db.query(Alert).delete(synchronize_session=False)
@@ -170,31 +194,48 @@ def _create_hall(db, institution_id, spec: dict) -> Hall:
     db.add(hall)
     db.flush()
 
-    use_video = spec.get("demo_video", False)
+    use_simulator_streams = spec.get("demo_video", False)
+    hall_prefix = _simulator_hall_prefix(spec["name"])
+    camera_ids: list[str] = []
     for key in ("front", "back", "side"):
-        video = CAM_VIDEO[key]
-        has_source = use_video and video.exists() and key not in OFFLINE_CAMERA_KEYS
+        camera_id = f"{hall_prefix}_cam_{key}"
+        camera_ids.append(camera_id)
         cam = Device(
             hall_id=hall.id,
             type="camera",
-            identifier=f"{spec['name']}-cam-{key}",
-            stream_url=str(video) if has_source else None,
+            identifier=camera_id,
+            stream_url=_simulator_camera_url(camera_id) if use_simulator_streams else None,
             position={"label": CAM_LABEL[key]},
-            status="online" if has_source else "offline",
+            status="online" if use_simulator_streams else "offline",
         )
         db.add(cam)
 
+    mic_id = f"{hall_prefix}_mic_front"
     db.add(Device(
         hall_id=hall.id,
         type="microphone",
-        identifier=f"{spec['name']}-mic-1",
-        position={"label": "الميكروفون الرئيسي"},
-        status="online",
+        identifier=mic_id,
+        stream_url=_simulator_mic_url(mic_id) if use_simulator_streams else None,
+        position={"label": "الميكروفون الرئيسي", "placements": _default_mic_placements(camera_ids)},
+        status="online" if use_simulator_streams else "offline",
     ))
+    
+    if hall_prefix == "hall101":
+        for idx, label in enumerate(["الميكروفون الثاني", "الميكروفون الثالث"], start=2):
+            extra_mic_id = f"{hall_prefix}_mic_{idx}"
+            db.add(Device(
+                hall_id=hall.id,
+                type="microphone",
+                identifier=extra_mic_id,
+                stream_url=_simulator_mic_url(extra_mic_id) if use_simulator_streams else None,
+                position={"label": label, "placements": _default_mic_placements(camera_ids)},
+                status="online" if use_simulator_streams else "offline",
+            ))
+            
     db.flush()
 
-    if use_video and not (VIDEO_DIR / "cam1.mp4").exists():
-        logger.warning("Demo videos not found in %s — camera feeds will fall back to webcam index 0", VIDEO_DIR)
+    if use_simulator_streams and not (VIDEO_DIR / "cam1.mp4").exists():
+        logger.warning("Demo videos not found in %s — simulator feeds will use fallbacks", VIDEO_DIR)
 
     return hall
 
@@ -387,6 +428,8 @@ def seed_university(db) -> None:
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    global SIMULATOR_BASE_URL
+
     parser = argparse.ArgumentParser(description="Seed demo data for Thaqib.")
     parser.add_argument(
         "mode",
@@ -395,7 +438,14 @@ def main() -> None:
         default="college",
         help="Seed a standalone college (default) or a university with 3 colleges.",
     )
+    parser.add_argument(
+        "--simulator-base-url",
+        default=os.environ.get("SIMULATOR_BASE_URL", SIMULATOR_BASE_URL),
+        help="Base URL for simulator camera/mic feeds (default: http://localhost:8000).",
+    )
     args = parser.parse_args()
+
+    SIMULATOR_BASE_URL = args.simulator_base_url.rstrip("/")
 
     db = SessionLocal()
     try:

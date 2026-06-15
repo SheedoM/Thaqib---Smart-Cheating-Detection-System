@@ -91,9 +91,9 @@ The frontend sends `X-CSRF-Token` header via [api.ts L23-25](file:///f:/Universi
 
 [setup.py L46](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/setup.py#L46): `if inst_count > 0 or user_count > 0` — this means if an institution exists but no user (e.g., partial failure), setup is blocked forever. Should use a transaction + idempotency check.
 
-### S4. Seed script creates users with weak passwords
+### S4. Demo seed credentials should stay documented
 
-[scripts/seed_demo.py L242](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/scripts/seed_demo.py#L242): `password_hash=get_password_hash("password123")`. Acceptable for dev, but should be documented or guarded behind an env flag.
+[seed_demo.py](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/seed_demo.py) creates development-only demo users with documented passwords. Keep this script out of production deployments and continue documenting the credentials in the seed output.
 
 ---
 
@@ -133,12 +133,9 @@ In [HallMonitoringPage.tsx L343](file:///f:/University/Graduation%20project_Smar
 
 The backend has a [session report endpoint](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/src/thaqib/api/routes/exams.py#L530) (`GET /sessions/{id}/report`) but there's **no Reports page** in the frontend. `NAV_ITEMS` includes only `home`, `halls`, `exams`, `supervisors`, `settings`.
 
-### F8. Two competing seed scripts
+### F8. Seed entrypoint drift resolved
 
-- [seed_demo.py (root)](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/seed_demo.py) — simpler, no streaming URLs
-- [scripts/seed_demo.py](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/scripts/seed_demo.py) — full version with CLI args
-
-The root one doesn't set `stream_url` on devices, so cameras are created without stream sources. Confusing for new developers.
+[seed_demo.py (root)](file:///f:/University/Graduation%20project_Smart%20Cheating%20System/Thaqib---Smart-Cheating-Detection-System/seed_demo.py) is now the only demo seed entrypoint. It supports `college` and `university` modes and seeds simulator-compatible camera and microphone stream URLs for the demo hall.
 
 ---
 

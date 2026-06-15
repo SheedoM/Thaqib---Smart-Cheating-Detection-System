@@ -221,6 +221,10 @@ def start_monitoring(
     elif assignment.invigilator_id != current_user.id:
         raise HTTPException(status_code=403, detail="You are not assigned to monitor this hall")
         
+    # Prevent invigilators from starting a stopped/cancelled exam
+    if assignment.exam_session.status in ["completed", "cancelled"] and current_user.role not in ["admin", "super_admin"]:
+        raise HTTPException(status_code=400, detail=f"Cannot start monitoring for a {assignment.exam_session.status} exam session")
+
     stream.start_hall_monitoring(hall_id, session_id, db)
     return {"status": "monitoring started"}
 
@@ -302,7 +306,19 @@ def get_hall_feeds(
         }
         for d in active_devices
     ]
-    return {"hall_id": str(hall_id), "hall_name": hall.name, "feeds": feeds}
+    
+    active_mics = [d for d in hall.devices if d.deleted_at is None and d.type == "microphone"]
+    mics = [
+        {
+            "id": str(d.id),
+            "name": (d.position or {}).get("label") or d.identifier,
+            "status": "online" if (d.status in {"online", "active", "ready", "running"}) else "offline",
+            "placements": (d.position or {}).get("placements", []),
+        }
+        for d in active_mics
+    ]
+    
+    return {"hall_id": str(hall_id), "hall_name": hall.name, "feeds": feeds, "mics": mics}
 
 
 @router.post("/{session_id}/halls/{hall_id}/monitoring/stop")

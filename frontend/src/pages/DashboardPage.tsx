@@ -63,6 +63,9 @@ interface MicItem {
   identifier: string;
   name: string;
   status: string;
+  source_configured?: boolean;
+  placements?: { camera_id: string; norm_pos: [number, number] }[];
+  position?: Record<string, unknown>;
 }
 
 interface HallItem {
@@ -219,6 +222,7 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
     hallName: string;
     feedPath: string | null;
   } | null>(null);
+  const [selectedCameraMics, setSelectedCameraMics] = useState<MicItem[]>([]);
   const hallsPollRef = useRef<number | null>(null);
   const alertPollRef = useRef<number | null>(null);
   const statsPollRef = useRef<number | null>(null);
@@ -345,7 +349,7 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
     };
   }, []);
 
-  const openCameraModal = (camera: CameraItem, hallName: string) => {
+  const openCameraModal = (camera: CameraItem, hallName: string, hallMics: MicItem[] = []) => {
     setModalMode('camera');
     setSelectedAlert(null);
     setSelectedCamera({
@@ -354,18 +358,21 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
       hallName,
       feedPath: camera.feed_path,
     });
+    setSelectedCameraMics(hallMics);
   };
 
   const openAlertModal = (alert: Alert) => {
     setModalMode('alert');
     setSelectedAlert(alert);
     setSelectedCamera(null);
+    setSelectedCameraMics([]);
   };
 
   const closeModal = () => {
     setModalMode(null);
     setSelectedAlert(null);
     setSelectedCamera(null);
+    setSelectedCameraMics([]);
   };
 
   const refreshStreams = async () => {
@@ -617,6 +624,7 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
           alert={selectedAlert}
           camera={selectedCamera}
           stats={selectedCamera ? statsByCamera[selectedCamera.id] ?? null : null}
+          hallMics={selectedCameraMics}
           onConfirmAlert={confirmAlert}
           onCancelAlert={cancelAlert}
           onClose={closeModal}
@@ -762,7 +770,7 @@ function CamerasTab({
   hallsLoaded: boolean;
   statsByCamera: Record<string, CameraStats>;
   canOperate: boolean;
-  onClickCamera: (camera: CameraItem, hallName: string) => void;
+  onClickCamera: (camera: CameraItem, hallName: string, hallMics: MicItem[]) => void;
   recentAlertByCameraId: Record<string, Alert | null>;
   onViewAlert: (alert: Alert) => void;
 }) {
@@ -840,7 +848,7 @@ function CamerasTab({
               })}
               onCameraClick={(item) => {
                 const camera = hall.cameras.find((candidate) => candidate.id === item.id);
-                if (camera) onClickCamera(camera, hall.name);
+                if (camera) onClickCamera(camera, hall.name, hall.mics);
               }}
               onAlertClick={onViewAlert}
             />

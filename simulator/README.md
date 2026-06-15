@@ -5,6 +5,7 @@ A Docker-based HTTP MJPEG streaming server for simulating IP cameras over WiFi/L
 ## Features
 
 - **HTTP MJPEG Streaming** - Stream video files as MJPEG over HTTP
+- **PCM Mic Streaming** - Stream looped mono PCM16 audio from configured mic sources
 - **Video Looping** - Automatically loops videos to simulate continuous live feed
 - **Multi-Camera Support** - Configure multiple cameras with different video sources
 - **Test Pattern Fallback** - Shows a test pattern when video file is missing
@@ -43,25 +44,17 @@ The simulator will be available at `http://localhost:8000`.
 
 ```bash
 cd ..  # Back to project root
-.\venv\Scripts\python scripts\seed_demo.py --use-simulator
+.\venv\Scripts\python seed_demo.py college
 ```
 
-This updates the database to use simulator URLs like `http://localhost:8000/camera/hall101_cam_front/feed`.
+This updates the database to use simulator URLs like `http://localhost:8000/camera/hall101_cam_front/feed` and `http://localhost:8000/mic/hall101_mic_front/feed`.
 
 #### Option B: Manual Configuration
 
-Set environment variables before running seed_demo.py:
+Pass the simulator base URL when the simulator runs on another machine:
 
 ```bash
-set SIMULATOR_HOST=192.168.1.10  # For multi-machine testing
-set SIMULATOR_HTTP_PORT=8000
-.\venv\Scripts\python scripts\seed_demo.py --use-simulator
-```
-
-Or use CLI arguments:
-
-```bash
-.\venv\Scripts\python scripts\seed_demo.py --use-simulator --simulator-host=192.168.1.10 --simulator-port=8000
+.\venv\Scripts\python seed_demo.py college --simulator-base-url http://192.168.1.10:8000
 ```
 
 ### 4. Start Thaqib Backend
@@ -79,9 +72,12 @@ The backend will now read from the simulator streams instead of local files:
 | `GET /` | API info and available cameras |
 | `GET /health` | Health check |
 | `GET /cameras` | List all configured cameras |
+| `GET /mics` | List all configured microphones |
 | `GET /camera/{id}/feed` | MJPEG stream endpoint |
+| `GET /mic/{id}/feed` | PCM16 mono audio stream endpoint |
 | `GET /camera/{id}/snapshot` | Single JPEG snapshot |
 | `GET /camera/{id}/info` | Camera configuration info |
+| `GET /mic/{id}/info` | Microphone configuration info |
 | `DELETE /camera/{id}/stream` | Stop and cleanup stream |
 
 ## Configuration
@@ -99,6 +95,12 @@ cameras:
     video_path: /app/videos/cam2.mp4
     fps: 30
     resolution: [1280, 720]
+
+mics:
+  hall101_mic_front:
+    audio_path: /app/videos/cam1.mp4
+    sample_rate: 16000
+    chunk_ms: 500
 
 server:
   host: 0.0.0.0
@@ -122,8 +124,7 @@ docker-compose -f docker-compose.simulator.yml up
 ### Machine 2 (Thaqib Backend) - IP: 192.168.1.20
 
 ```bash
-set SIMULATOR_HOST=192.168.1.10
-.\venv\Scripts\python scripts\seed_demo.py --use-simulator
+.\venv\Scripts\python seed_demo.py college --simulator-base-url http://192.168.1.10:8000
 .\venv\Scripts\python -m src.thaqib.main
 ```
 
@@ -159,7 +160,7 @@ Or use a browser/VLC to view the stream directly.
 
 ### Port already in use
 - Change the host port in `docker-compose.simulator.yml`: `"8001:8000"`
-- Update `SIMULATOR_HTTP_PORT` environment variable accordingly
+- Re-run the seed with the matching simulator URL, for example `python seed_demo.py college --simulator-base-url http://localhost:8001`
 
 ### Cannot access from another machine
 - Ensure the simulator container binds to `0.0.0.0` (default in config)
@@ -188,4 +189,5 @@ The simulator works with the existing `stream_url` field in the database:
 |-------------|------------------|
 | Production | `rtsp://192.168.1.100:554/stream` |
 | Local Testing | `C:\Users\...\video.mp4` |
-| Simulator | `http://localhost:8000/camera/hall101_cam_front/feed` |
+| Simulator camera | `http://localhost:8000/camera/hall101_cam_front/feed` |
+| Simulator mic | `http://localhost:8000/mic/hall101_mic_front/feed` |

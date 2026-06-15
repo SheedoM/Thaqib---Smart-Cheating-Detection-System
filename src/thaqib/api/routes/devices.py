@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.infrastructure import Device, Hall
 from src.thaqib.db.models.users import User
-from src.thaqib.schemas.infrastructure import DeviceCreate, DeviceResponse, DeviceUpdate
+from src.thaqib.schemas.infrastructure import DeviceCreate, DevicePlacementsUpdate, DeviceResponse, DeviceUpdate
 from src.thaqib.api.dependencies import RequireRole, get_scope
 from src.thaqib.core.limiter import limiter
 
@@ -110,6 +110,35 @@ def read_devices(
         
     devices = query.offset(skip).limit(limit).all()
     return devices
+
+@router.put("/{device_id}/placements", response_model=DeviceResponse)
+@limiter.limit("20/minute")
+def update_microphone_placements(
+    request: Request,
+    device_id: uuid.UUID,
+    placement_in: DevicePlacementsUpdate,
+    db: Session = Depends(get_db),
+    scope = Depends(get_scope),
+    _: User = Depends(require_admin_or_super_admin),
+) -> Any:
+    """
+    Replace camera-relative placement pins for a microphone device.
+    """
+    device = _get_scoped_device(db, device_id, scope)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    if device.type != "microphone":
+        raise HTTPException(status_code=422, detail="Placements are only supported for microphone devices")
+
+    position = dict(device.position or {}) if isinstance(device.position, dict) else {}
+    position["placements"] = [placement.model_dump() for placement in placement_in.placements]
+    device.position = position
+    device.last_health_check = datetime.now(timezone.utc)
+
+    db.add(device)
+    db.commit()
+    db.refresh(device)
+    return device
 
 @router.get("/{device_id}", response_model=DeviceResponse)
 def read_device(
