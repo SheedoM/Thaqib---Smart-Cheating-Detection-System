@@ -5,7 +5,7 @@ Ref: SRS §5.1 Data Model, FR-08 (Alert Processing & Shared Queue)
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import Boolean, DateTime, DECIMAL, ForeignKey, JSON, String
@@ -17,6 +17,10 @@ if TYPE_CHECKING:
     from .exams import ExamSession
     from .infrastructure import Device
     from .users import User
+
+
+def _default_evidence_retention_until() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(days=180)
 
 
 class GroupEvent(Base, UUIDMixin, TimestampMixin):
@@ -133,6 +137,14 @@ class Alert(Base, UUIDMixin, TimestampMixin):
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     cancelled_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
     cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    evidence_retention_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), default=_default_evidence_retention_until
+    )
+    evidence_purged_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    legal_hold: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    legal_hold_reason: Mapped[Optional[str]] = mapped_column(String(1000))
+    legal_hold_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    legal_hold_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Relationships
     exam_session: Mapped["ExamSession"] = relationship(
@@ -152,4 +164,7 @@ class Alert(Base, UUIDMixin, TimestampMixin):
     )
     cancelled_user: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[cancelled_by]
+    )
+    legal_hold_user: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[legal_hold_by]
     )

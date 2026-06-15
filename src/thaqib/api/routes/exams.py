@@ -21,6 +21,7 @@ from src.thaqib.schemas.exams import (
 from src.thaqib.api.dependencies import RequireRole, get_current_user, get_scope
 from src.thaqib.core.limiter import limiter
 from src.thaqib.api.routes import stream, voice
+from src.thaqib.services.evidence_retention import apply_alert_retention
 
 router = APIRouter()
 require_admin = RequireRole(["admin"])
@@ -423,6 +424,10 @@ def _hall_alert_review_response(alert: Alert) -> dict[str, Any]:
         "claimed_by": str(alert.claimed_by) if alert.claimed_by else None,
         "confirmed_by": str(alert.confirmed_by) if alert.confirmed_by else None,
         "cancelled_by": str(alert.cancelled_by) if alert.cancelled_by else None,
+        "evidence_retention_until": alert.evidence_retention_until.isoformat()
+        if alert.evidence_retention_until
+        else None,
+        "legal_hold": alert.legal_hold,
     }
 
 
@@ -533,6 +538,7 @@ async def confirm_hall_alert(
     alert.confirmed_at = now
     alert.cancelled_by = None
     alert.cancelled_at = None
+    apply_alert_retention(alert, now)
     if payload and payload.notes:
         alert.resolution_notes = payload.notes
     db.add(alert)
@@ -580,6 +586,7 @@ def cancel_hall_alert(
     alert.cancelled_by = current_user.id
     alert.cancelled_at = now
     alert.resolved_at = now
+    apply_alert_retention(alert, now)
     if payload and payload.notes:
         alert.resolution_notes = payload.notes
     db.add(alert)

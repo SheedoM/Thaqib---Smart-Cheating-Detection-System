@@ -125,6 +125,8 @@ Default production policy: balanced retention.
 - Legal hold/dispute hold: suspend deletion for the affected exam/session/alert until an admin removes the hold.
 - Encryption/access: store evidence on encrypted server storage, restrict download/view to authorized admins and assigned invigilators, and log every evidence view/export/delete action.
 
+Implementation status: alert evidence now stores `evidence_retention_until`, `evidence_purged_at`, and legal-hold metadata. Confirmed incidents are retained for 3 years from confirmation, cancelled/false-positive alerts for 30 days, and normal pending/review evidence defaults to 180 days. Legal holds can be placed or released by an assigned exam admin or an in-scope super admin, and hold/purge actions write audit-log records. Remaining production wiring: schedule the purge service as a controlled worker/cron job and expose operational metrics for purged, skipped-held, and failed-delete counts.
+
 ## 4. Testing And Observability Protocol
 
 ### Critical Unit/Contract Tests Before Production
@@ -198,7 +200,7 @@ Do not launch until each item is explicitly answered:
 - AI runtime has a tested operating envelope for the on-prem server: CPU/GPU, max concurrent exams, max halls, max cameras, expected FPS, and disk retention.
 - Migrations run as one release job and are rollback-tested on a production-like clone.
 - RTSP credentials are encrypted at rest, redacted from logs/API responses, and rotated through an admin-only workflow.
-- Balanced evidence retention policy is approved by the institution and implemented with automated cleanup plus legal-hold exceptions.
+- Balanced evidence retention policy is approved by the institution; core DB/API/service behavior is implemented, with scheduled worker/cron wiring still required for automated cleanup.
 - E2E suite runs against staging with seeded disposable data.
 - Observability dashboards and alerts exist before the first pilot exam.
 
