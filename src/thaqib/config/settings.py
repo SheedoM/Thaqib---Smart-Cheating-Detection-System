@@ -4,10 +4,10 @@ Configuration management for Thaqib.
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -97,12 +97,14 @@ class Settings(BaseSettings):
     csrf_cookie_name: str = "thaqib_csrf_token"
     cookie_secure: bool = False
     cookie_samesite: Literal["lax", "strict", "none"] = "lax"
-    cors_origins: list[str] = [
+    cors_origins: Annotated[list[str], NoDecode] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
     ]
     internal_event_token: str | None = None
+    setup_bootstrap_token: str | None = None
+    setup_private_network_only: bool = True
     stream_manager_enabled: bool = True
     av_fusion_enabled: bool = True
 
@@ -428,7 +430,16 @@ class Settings(BaseSettings):
     def parse_cors_origins(cls, value: str | list[str]) -> list[str]:
         """Accept JSON arrays or comma-separated env values for CORS origins."""
         if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
+            raw = value.strip()
+            if raw.startswith("["):
+                try:
+                    import json
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return [str(item).strip() for item in parsed if str(item).strip()]
+                except json.JSONDecodeError:
+                    pass
+            return [item.strip() for item in raw.split(",") if item.strip()]
         return value
 
     @model_validator(mode="after")
@@ -447,8 +458,14 @@ class Settings(BaseSettings):
             raise ValueError("SECRET_KEY must be a strong non-default value in production")
         if not self.internal_event_token or len(self.internal_event_token) < 24:
             raise ValueError("INTERNAL_EVENT_TOKEN must be configured in production")
+        if not self.cookie_secure:
+            raise ValueError("COOKIE_SECURE must be true in production")
         if "*" in self.cors_origins:
             raise ValueError("Wildcard CORS origins are not allowed in production")
+        if self.database_url.strip().lower().startswith("sqlite"):
+            raise ValueError("SQLite is not allowed in production")
+        if not self.setup_bootstrap_token or len(self.setup_bootstrap_token) < 24:
+            raise ValueError("SETUP_BOOTSTRAP_TOKEN must be configured in production")
         if self.cookie_samesite == "none" and not self.cookie_secure:
             raise ValueError("SameSite=None cookies must also be Secure")
         return self

@@ -1,3 +1,5 @@
+import hmac
+import ipaddress
 import uuid
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,11 +12,13 @@ from src.thaqib.db.models.infrastructure import Institution
 from src.thaqib.db.models.users import User
 from src.thaqib.core.security import get_password_hash
 from src.thaqib.core.limiter import limiter
+from src.thaqib.config.settings import get_settings
 from fastapi import Request
 
 router = APIRouter()
 
 VALID_INSTITUTION_TYPES = {"university", "college", "school", "standalone"}
+SETUP_TOKEN_HEADER = "X-Thaqib-Setup-Token"
 
 class CollegePayload(BaseModel):
     name: str = Field(..., min_length=2, max_length=150)
@@ -31,6 +35,59 @@ class SetupSystemPayload(BaseModel):
         None,
         description="Optional initial colleges (only used when institution_type='university')",
     )
+
+
+def _normalize_host(host: str) -> str:
+    host = host.strip()
+    if host.startswith("[") and "]" in host:
+        return host[1:host.index("]")]
+    if host.count(":") == 1:
+        return host.split(":", 1)[0]
+    return host
+
+
+def _request_hosts(request: Request) -> list[str]:
+    hosts: list[str] = []
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        hosts.extend(host.strip() for host in forwarded_for.split(",") if host.strip())
+    if request.client and request.client.host:
+        hosts.append(request.client.host)
+    return hosts
+
+
+def _is_private_or_local_host(host: str) -> bool:
+    normalized = _normalize_host(host).lower()
+    if normalized in {"localhost", "testclient"}:
+        return True
+
+    try:
+        ip = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+
+def _enforce_setup_bootstrap(request: Request) -> None:
+    settings = get_settings()
+    token = (settings.setup_bootstrap_token or "").strip()
+    if token:
+        provided = request.headers.get(SETUP_TOKEN_HEADER, "")
+        if not hmac.compare_digest(provided, token):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid or missing setup bootstrap token",
+            )
+
+    if settings.app_env == "production" and settings.setup_private_network_only:
+        hosts = _request_hosts(request)
+        if not hosts or not all(_is_private_or_local_host(host) for host in hosts):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Setup is only allowed from localhost or a private network",
+            )
+
 
 @router.get("/status")
 def get_setup_status(db: Session = Depends(get_db)) -> Any:
@@ -52,6 +109,8 @@ def install_system(
     One-time installation endpoint. Creates the root institution and the primary super admin user.
     Fails if the system has already been initialized.
     """
+    _enforce_setup_bootstrap(request)
+
     # Check if system is already initialized
     inst_count = db.query(Institution).count()
     user_count = db.query(User).count()
