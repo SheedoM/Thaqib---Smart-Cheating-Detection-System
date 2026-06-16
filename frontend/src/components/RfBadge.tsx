@@ -21,10 +21,7 @@ export default function RfBadge({ hallId, active }: { hallId: string; active: bo
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!active) {
-      setDevices([]);
-      return;
-    }
+    if (!active) return;
     let cancelled = false;
     const poll = async () => {
       try {
@@ -41,6 +38,7 @@ export default function RfBadge({ hallId, active }: { hallId: string; active: bo
     return () => {
       cancelled = true;
       if (timer.current) window.clearInterval(timer.current);
+      setDevices([]);
     };
   }, [hallId, active]);
 

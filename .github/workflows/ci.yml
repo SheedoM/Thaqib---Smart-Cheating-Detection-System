@@ -45,6 +45,10 @@ jobs:
           node-version: "22"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
+      # package.json pins npm@11.6.2 (packageManager/engines); node 22 ships npm 10.x,
+      # which resolves the lockfile differently and breaks `npm ci`. Match the pin
+      # (mirrors frontend/Dockerfile).
+      - run: npm install -g npm@11.6.2
       - run: npm ci
       - run: npm run lint
       - run: npm run test:run

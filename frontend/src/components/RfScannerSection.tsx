@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { authFetch } from '../config/api';
 
 interface Scanner {
@@ -21,14 +21,14 @@ export default function RfScannerSection({ hallId }: { hallId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState<{ id: string; api_key: string } | null>(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const res = await authFetch(`/api/v1/rf/scanners?hall_id=${hallId}`);
       if (res.ok) setScanners(await res.json());
     } catch { /* ignore */ }
-  };
+  }, [hallId]);
 
-  useEffect(() => { void load(); /* eslint-disable-next-line */ }, [hallId]);
+  useEffect(() => { void load(); }, [load]);
 
   const addNode = async () => {
     if (!identifier.trim()) { setError('أدخل رقم تعريف للجهاز'); return; }
