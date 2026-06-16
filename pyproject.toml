@@ -24,34 +24,50 @@ classifiers = [
 ]
 
 dependencies = [
+    "fastapi>=0.137.1,<0.138",
+    "uvicorn[standard]>=0.49.0,<0.50",
+    "SQLAlchemy>=2.0.51,<2.1",
+    "alembic>=1.18.4,<1.19",
     "ultralytics>=8.0.0",        # YOLO detection (person + tools)
-    "opencv-python>=4.8.0",      # Video capture and rendering
-    "numpy>=1.24.0",             # Vectorized spatial math
+    "opencv-python>=4.10.0,<4.11", # Video capture and rendering; keep NumPy 1.26 compatible
+    "numpy==1.26.4",             # Vectorized spatial math; keep aligned with BoxMOT
     "mediapipe>=0.10.30",        # Face landmark extraction (Tasks API)
-    "boxmot>=10.0.0",            # BoT-SORT multi-object tracker
-    "pydantic>=2.5.0",           # Data validation
-    "pydantic-settings>=2.1.0",  # Settings management (.env loading)
+    "boxmot>=12.0.2,<13",        # BoT-SORT multi-object tracker
+    "yacs>=0.1.8,<0.2",          # BoxMOT runtime config dependency
+    "pydantic>=2.13.4,<2.14",    # Data validation
+    "pydantic-settings>=2.14.1,<2.15",  # Settings management (.env loading)
+    "email-validator>=2.3.0,<3", # Pydantic EmailStr support
     "python-dotenv>=1.0.0",      # Environment variables
-    "pyjwt>=2.8.0",              # JWT Tokens
+    "pyjwt>=2.13.0,<2.14",       # JWT Tokens
     "passlib[bcrypt]>=1.7.4",    # Password Hashing
-    "python-multipart>=0.0.9",   # OAuth2 Forms
-    "psycopg2-binary>=2.9.0",    # PostgreSQL driver
-    "slowapi>=0.1.9",            # Rate limiting
+    "bcrypt==4.0.1",             # Keep compatible with passlib 1.7.4
+    "python-multipart>=0.0.32,<0.1", # OAuth2 Forms
+    "psycopg2-binary>=2.9.12,<2.10", # PostgreSQL driver
+    "slowapi>=0.1.10,<0.2",      # Rate limiting
     "reportlab>=4.0.0",          # PDF report generation
+    "PyYAML>=6.0.3,<7",
+    "requests>=2.34.2,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.1.0",
-    "ruff>=0.1.0",
-    "mypy>=1.7.0",
-    "pre-commit>=3.6.0",
+    "pytest>=9.1.0,<10",
+    "pytest-asyncio>=1.3.0,<2",
+    "pytest-cov>=7.0.0,<8",
+    "httpx>=0.28.1,<0.29",
+    "ruff>=0.14.9,<0.15",
+    "mypy>=1.19.1,<2",
+    "pre-commit>=4.6.0,<5",
 ]
 gpu = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
+]
+audio = [
+    "faster-whisper>=1.2.1,<1.3",
+    "sounddevice>=0.5.5,<0.6",
+    "scipy>=1.17.1,<2",
+    "noisereduce>=3.0.3,<4",
 ]
 # macOS (Apple Silicon M1/M2) extra dependencies
 # Install with: pip install -e '.[macos]'

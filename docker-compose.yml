@@ -4,9 +4,10 @@ services:
     container_name: thaqib-db
     restart: always
     environment:
-      POSTGRES_USER: thaqib_admin
-      POSTGRES_PASSWORD: development_password
-      POSTGRES_DB: thaqib_production
+      # Development-only defaults. Use docker-compose.prod.yml for production.
+      POSTGRES_USER: ${POSTGRES_USER:-thaqib_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-development_password}
+      POSTGRES_DB: ${POSTGRES_DB:-thaqib_development}
     ports:
       - "5433:5432"
     volumes:
@@ -15,10 +16,11 @@ services:
   pgadmin:
     image: dpage/pgadmin4
     container_name: thaqib-pgadmin
+    profiles: ["dev-tools"]
     restart: always
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@thaqib.ai
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@thaqib.ai}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
     ports:
       - "5050:80"
     depends_on:

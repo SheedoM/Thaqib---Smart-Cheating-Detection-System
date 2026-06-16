@@ -1,0 +1,99 @@
+x-backend-common: &backend-common
+  image: thaqib-backend:${THAQIB_IMAGE_TAG:-local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      INSTALL_AI: ${INSTALL_AI:-false}
+  env_file:
+    - ${THAQIB_ENV_FILE:-.env.production}
+  environment:
+    APP_ENV: production
+    DEBUG: "false"
+    DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-thaqib}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-thaqib}
+    COOKIE_SECURE: "true"
+    COOKIE_SAMESITE: lax
+  volumes:
+    - app_data:/app/data
+    - app_alerts:/app/alerts
+    - app_archive:/app/archive
+    - app_uploads:/app/uploads
+    - app_logs:/app/logs
+    - ./models:/app/models:ro
+  networks:
+    - thaqib_internal
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-thaqib}
+      POSTGRES_USER: ${POSTGRES_USER:-thaqib}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - thaqib_internal
+
+  migrate:
+    <<: *backend-common
+    restart: "no"
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backend:
+    <<: *backend-common
+    restart: unless-stopped
+    command: ["uvicorn", "src.thaqib.main:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers"]
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ""
+        VITE_WS_ORIGIN: ""
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      - backend
+    networks:
+      - thaqib_internal
+
+  simulator:
+    profiles: ["simulator"]
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ./simulator/test_videos:/app/videos:ro
+      - ./simulator/config.yaml:/app/config.yaml:ro
+    networks:
+      - thaqib_internal
+
+networks:
+  thaqib_internal:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  app_data:
+  app_alerts:
+  app_archive:
+  app_uploads:
+  app_logs:
