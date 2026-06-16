@@ -5,19 +5,22 @@ from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.events import DetectionEvent
-from src.thaqib.db.models.exams import ExamSession
+from src.thaqib.db.models.exams import ExamAdminAssignment, ExamSession
+from src.thaqib.db.models.users import User
 from src.thaqib.schemas.events import DetectionEventCreate, DetectionEventResponse
-from src.thaqib.api.ws_manager import manager
+from src.thaqib.api.dependencies import RequireRole, require_internal_event_token
 from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
+require_monitor_user = RequireRole(["admin", "super_admin"])
 
 @router.post("/", response_model=DetectionEventResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("60/minute")
 async def ingest_event(
     request: Request,
     event_in: DetectionEventCreate, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _ = Depends(require_internal_event_token),
 ) -> Any:
     """
     Ingest a new detection event from the AI pipeline and broadcast it via WebSocket.
@@ -44,23 +47,7 @@ async def ingest_event(
     db.add(new_event)
     db.commit()
     db.refresh(new_event)
-    
-    # Broadcast event via WebSocket
-    event_msg = {
-        "action": "new_detection_event",
-        "data": {
-            "id": str(new_event.id),
-            "exam_session_id": str(new_event.exam_session_id),
-            "device_id": str(new_event.device_id) if new_event.device_id else None,
-            "event_type": new_event.event_type,
-            "severity": new_event.severity,
-            "student_position": new_event.student_position,
-            "timestamp": new_event.timestamp.isoformat(),
-            "confidence_score": float(new_event.confidence_score) if new_event.confidence_score else None
-        }
-    }
-    await manager.broadcast(event_msg)
-    
+
     return new_event
 
 @router.get("/", response_model=List[DetectionEventResponse])
@@ -70,10 +57,18 @@ def read_events(
     exam_session_id: uuid.UUID,
     skip: int = 0, 
     limit: int = 100, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_monitor_user),
 ) -> Any:
     """
     Retrieve detection events for a specific exam session.
     """
+    if current_user.role == "admin":
+        assigned = db.query(ExamAdminAssignment).filter(
+            ExamAdminAssignment.exam_session_id == exam_session_id,
+            ExamAdminAssignment.admin_id == current_user.id,
+        ).first()
+        if not assigned:
+            raise HTTPException(status_code=403, detail="Admin is not assigned to this exam")
     events = db.query(DetectionEvent).filter(DetectionEvent.exam_session_id == exam_session_id).offset(skip).limit(limit).all()
     return events

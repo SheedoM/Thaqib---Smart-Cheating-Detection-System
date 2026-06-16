@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import SetupWizard from '../components/SetupWizard';
 
 // Mock fetch
-global.fetch = vi.fn();
+globalThis.fetch = vi.fn();
+const mockedFetch = () => globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
 
 describe('SetupWizard Component', () => {
   beforeEach(() => {
@@ -12,28 +13,32 @@ describe('SetupWizard Component', () => {
 
   it('renders installation form', () => {
     render(<SetupWizard onSuccess={() => {}} />);
-    expect(screen.getByPlaceholderText(/اسم الكلية/i)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/الادمن/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/اسم المنشأة/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/^مسؤول النظام$/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/كلمة مرور مسؤول النظام/i)).toBeInTheDocument();
     expect(screen.getByText(/الشعار/i)).toBeInTheDocument();
   });
 
   it('handles form submission successfully', async () => {
     const onSuccessMock = vi.fn();
-    (fetch as any).mockResolvedValueOnce({
+    mockedFetch().mockResolvedValueOnce({
       ok: true,
       json: async () => ({ 
         status: 'success', 
-        generated_credentials: { username: 'admin', password: 'password123' } 
+        generated_credentials: { username: 'admin' } 
       }),
-    });
+    } as Response);
 
     render(<SetupWizard onSuccess={onSuccessMock} />);
     
-    fireEvent.change(screen.getByPlaceholderText(/اسم الكلية/i), {
+    fireEvent.change(screen.getByPlaceholderText(/اسم المنشأة/i), {
       target: { value: 'Test University' },
     });
-    fireEvent.change(screen.getByPlaceholderText(/الادمن/i), {
+    fireEvent.change(screen.getByPlaceholderText(/^مسؤول النظام$/i), {
       target: { value: 'superadmin' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/كلمة مرور مسؤول النظام/i), {
+      target: { value: 'VerySecure123!' },
     });
     
     fireEvent.click(screen.getByRole('button', { name: /حفظ/i }));

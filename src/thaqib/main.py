@@ -1,15 +1,39 @@
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from src.thaqib.core.limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from src.thaqib.api.routes import alerts, voice, auth, institutions, halls, setup, devices, users, exams, events, stream, settings as settings_router, overview, rf
+from src.thaqib.config.settings import get_settings
+
+settings = get_settings()
+UPLOADS_DIR = Path("uploads")
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    if settings.stream_manager_enabled:
+        await stream.resume_active_sessions()
+    try:
+        yield
+    finally:
+        if settings.stream_manager_enabled:
+            stream.shutdown_stream_manager()
+
+
 # Initialize FastAPI App
 app = FastAPI(
     title="Thaqib Smart Cheating Detection System API",
     description="Backend API and WebSocket services for real-time exam monitoring.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Attach Limiter to app and set exception handler
@@ -27,25 +51,41 @@ async def add_security_headers(request, call_next):
     response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'; object-src 'none';"
     return response
 
-# Apply CORS Middleware for Frontend Access
-# In production, this list should be strictly controlled via environment variables
-allowed_origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-]
+
+@app.middleware("http")
+async def enforce_csrf_for_cookie_sessions(request, call_next):
+    unsafe_method = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+    csrf_exempt = (
+        request.url.path in {"/api/auth/login", "/api/setup/install"}
+        or request.url.path.startswith("/api/events")
+    )
+
+    if unsafe_method and not csrf_exempt:
+        has_session_cookie = (
+            settings.access_cookie_name in request.cookies
+            or settings.refresh_cookie_name in request.cookies
+        )
+        if has_session_cookie:
+            csrf_cookie = request.cookies.get(settings.csrf_cookie_name)
+            csrf_header = request.headers.get("X-CSRF-Token")
+            if not csrf_cookie or csrf_header != csrf_cookie:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "CSRF token missing or invalid"},
+                )
+
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
-from src.thaqib.api.routes import ptt, auth, institutions, halls, setup, devices, users, exams, events
-
-app.include_router(ptt.router, prefix="/api/v1/ptt")
+app.include_router(voice.router, prefix="/api/v1/voice")
 app.include_router(setup.router, prefix="/api/setup", tags=["Setup"])
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(institutions.router, prefix="/api/institutions", tags=["Institutions"])
@@ -54,7 +94,22 @@ app.include_router(devices.router, prefix="/api/devices", tags=["Devices"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(exams.router, prefix="/api/sessions", tags=["Exam Sessions"])
 app.include_router(events.router, prefix="/api/events", tags=["Detection Events"])
+app.include_router(alerts.router, prefix="/api/alerts", tags=["Alerts"])
+app.include_router(stream.router, prefix="/api/stream", tags=["Video Stream"])
+app.include_router(settings_router.router, prefix="/api/settings", tags=["System Settings"])
+app.include_router(overview.router, prefix="/api/overview", tags=["University Overview"])
+app.include_router(rf.router, prefix="/api/v1", tags=["RF Device Detection"])
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 @app.get("/")
 async def root():
     return {"message": "Welcome to Thaqib API. Systems online."}
+
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    return {
+        "status": "ok",
+        "app": settings.app_name,
+        "environment": settings.app_env,
+    }

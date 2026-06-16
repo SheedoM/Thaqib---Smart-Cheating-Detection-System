@@ -27,7 +27,20 @@ class Institution(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     logo_url: Mapped[Optional[str]] = mapped_column(String(500))
     address: Mapped[Optional[str]] = mapped_column(String(500))
 
+    # Multi-tenant hierarchy (depth ≤ 2: university → college)
+    # type: 'university' | 'college' | 'school' | 'standalone'
+    type: Mapped[str] = mapped_column(String(20), nullable=False, default="standalone")
+    parent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("institutions.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+
     # Relationships
+    parent: Mapped[Optional["Institution"]] = relationship(
+        "Institution", back_populates="children", remote_side="Institution.id"
+    )
+    children: Mapped[List["Institution"]] = relationship(
+        "Institution", back_populates="parent"
+    )
     halls: Mapped[List["Hall"]] = relationship(
         "Hall", back_populates="institution", cascade="all, delete-orphan"
     )
@@ -47,6 +60,7 @@ class Hall(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     floor: Mapped[Optional[str]] = mapped_column(String(20))
     capacity: Mapped[int] = mapped_column(Integer, nullable=False)
     layout_map: Mapped[Optional[dict]] = mapped_column(JSON)
+    image: Mapped[Optional[str]] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(20), default="not_ready")
     # SRS FR-03.7: 'ready' when all devices online, 'not_ready' otherwise
 
@@ -71,7 +85,7 @@ class Device(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     # 'camera' or 'microphone' — SRS FR-03.2
     identifier: Mapped[str] = mapped_column(String(100), nullable=False)
     ip_address: Mapped[Optional[str]] = mapped_column(String(45))
-    stream_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    stream_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     position: Mapped[dict] = mapped_column(JSON, nullable=False)
     # Position label + coordinates for spatial mapping
     coverage_area: Mapped[Optional[dict]] = mapped_column(JSON)

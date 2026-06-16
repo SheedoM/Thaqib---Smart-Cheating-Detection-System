@@ -1,71 +1,70 @@
-
-import pytest
-from src.thaqib.core.security import create_access_token
-
-def test_login_returns_refresh_token(client, admin_user):
+def test_login_sets_session_cookies(client, admin_user):
     response = client.post(
         "/api/auth/login",
         data={"username": admin_user.username, "password": "securepassword"}
     )
     assert response.status_code == 200
     data = response.json()
-    assert "access_token" in data
-    assert "refresh_token" in data
-    assert data["token_type"] == "bearer"
+    assert data["token_type"] == "cookie"
+    assert "csrf_token" in data
+    assert "thaqib_access_token" in response.cookies
+    assert "thaqib_refresh_token" in response.cookies
 
 def test_refresh_token_flow(client, admin_user):
-    # 1. Login to get refresh token
     login_response = client.post(
         "/api/auth/login",
         data={"username": admin_user.username, "password": "securepassword"}
     )
     assert login_response.status_code == 200
-    refresh_token = login_response.json()["refresh_token"]
+    csrf_token = login_response.json()["csrf_token"]
     
-    # 2. Use refresh token to get new access token
     refresh_response = client.post(
         "/api/auth/refresh",
-        params={"refresh_token": refresh_token}
+        headers={"X-CSRF-Token": csrf_token},
     )
     assert refresh_response.status_code == 200
     data = refresh_response.json()
-    assert "access_token" in data
-    assert "refresh_token" in data
+    assert data["token_type"] == "cookie"
+    assert data["csrf_token"] != csrf_token
     
-    # 3. Verify new access token works
-    new_access_token = data["access_token"]
-    me_response = client.get(
-        "/api/auth/me",
-        headers={"Authorization": f"Bearer {new_access_token}"}
-    )
+    me_response = client.get("/api/auth/me")
     assert me_response.status_code == 200
     assert me_response.json()["username"] == admin_user.username
 
 def test_refresh_with_invalid_token(client):
     response = client.post(
         "/api/auth/refresh",
-        params={"refresh_token": "invalid_token_here"}
     )
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid refresh token"
 
-def test_access_token_cannot_be_used_to_refresh(client, admin_user):
-    # Get an access token
+def test_csrf_required_for_cookie_refresh(client, admin_user):
     login_response = client.post(
         "/api/auth/login",
         data={"username": admin_user.username, "password": "securepassword"}
     )
-    access_token = login_response.json()["access_token"]
-    
-    # Try to use access token as refresh token
+    assert login_response.status_code == 200
+
     response = client.post(
         "/api/auth/refresh",
-        params={"refresh_token": access_token}
     )
-    assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid refresh token"
+    assert response.status_code == 403
+    assert response.json()["detail"] == "CSRF token missing or invalid"
 
-def test_rbac_admin_access(client, admin_token_headers):
-    # Institutions index is admin-only
-    response = client.get("/api/institutions/", headers=admin_token_headers)
+def test_logout_revokes_cookie_session(client, admin_user):
+    login_response = client.post(
+        "/api/auth/login",
+        data={"username": admin_user.username, "password": "securepassword"}
+    )
+    assert login_response.status_code == 200
+    response = client.post(
+        "/api/auth/logout",
+        headers={"X-CSRF-Token": login_response.json()["csrf_token"]},
+    )
+    assert response.status_code == 200
+    assert client.get("/api/auth/me").status_code == 401
+
+def test_rbac_super_admin_access(client, super_admin_token_headers):
+    # Institutions index is super-admin only
+    response = client.get("/api/institutions/", headers=super_admin_token_headers)
     assert response.status_code == 200

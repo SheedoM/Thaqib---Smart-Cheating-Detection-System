@@ -1,30 +1,47 @@
-import jwt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+import hmac
+import uuid
+from typing import Set
+
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from src.thaqib.config.settings import get_settings
+from src.thaqib.core.security import decode_token
+from src.thaqib.core.scoping import accessible_institution_ids
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.users import User
 
 settings = get_settings()
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+bearer_scheme = HTTPBearer(auto_error=False)
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-        username: str = payload.get("sub")
-        token_type: str = payload.get("type")
-        if username is None or token_type != "access":
-            raise credentials_exception
-    except jwt.InvalidTokenError:
+
+    token = None
+    if credentials and credentials.scheme.lower() == "bearer":
+        token = credentials.credentials
+    if not token:
+        token = request.cookies.get(settings.access_cookie_name)
+    if not token:
         raise credentials_exception
-        
+
+    payload = decode_token(token)
+    if not payload:
+        raise credentials_exception
+    username: str | None = payload.get("sub")
+    token_type: str | None = payload.get("type")
+    if username is None or token_type != "access":
+        raise credentials_exception
+
     user = db.query(User).filter(User.username == username).first()
     if user is None:
         raise credentials_exception
@@ -47,3 +64,27 @@ class RequireRole:
                 detail=f"Operation requires roles: {self.allowed_roles}",
             )
         return current_user
+
+def get_scope(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+) -> Set[uuid.UUID]:
+    """Return the set of institution IDs the current user may access (self + children)."""
+    return accessible_institution_ids(db, current_user.institution_id)
+
+
+def require_internal_event_token(request: Request) -> None:
+    """Authenticate machine-to-machine event ingestion."""
+    expected = settings.internal_event_token
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Internal event token is not configured",
+        )
+
+    provided = request.headers.get("X-Thaqib-Internal-Token")
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid internal event token",
+        )

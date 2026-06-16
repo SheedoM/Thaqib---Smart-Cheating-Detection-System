@@ -1,11 +1,12 @@
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 # Assignment Schemas (Invigilators)
 class AssignmentBase(BaseModel):
     invigilator_id: uuid.UUID
+    hall_id: uuid.UUID
     role: Optional[str] = "primary" # 'primary' or 'secondary'
 
 class AssignmentCreate(AssignmentBase):
@@ -14,6 +15,34 @@ class AssignmentCreate(AssignmentBase):
 class AssignmentResponse(AssignmentBase):
     id: uuid.UUID
     exam_session_id: uuid.UUID
+    monitoring_started_at: Optional[datetime] = None
+    monitoring_ended_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+    
+class AssignmentDetailedResponse(AssignmentResponse):
+    exam_name: str
+    hall_name: str
+    scheduled_start: datetime
+    scheduled_end: datetime
+
+
+class ExamAdminAssignmentCreate(BaseModel):
+    admin_id: uuid.UUID
+    assignment_role: Optional[str] = "reviewer"
+
+
+class ExamAdminAssignmentResponse(ExamAdminAssignmentCreate):
+    id: uuid.UUID
+    exam_session_id: uuid.UUID
+    assigned_by: Optional[uuid.UUID] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExamHallResponse(BaseModel):
+    id: uuid.UUID
+    name: str
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -40,13 +69,15 @@ class ExamSessionUpdate(BaseModel):
     status: Optional[str] = None
     student_count: Optional[int] = None
     configuration: Optional[Dict] = None
+    hall_ids: Optional[List[uuid.UUID]] = None
 
 class ExamSessionResponse(ExamSessionBase):
     id: uuid.UUID
     actual_start: Optional[datetime] = None
     actual_end: Optional[datetime] = None
     created_by: Optional[uuid.UUID] = None
+    halls: List[ExamHallResponse] = Field(default_factory=list)
+    assignments: List[AssignmentResponse] = Field(default_factory=list)
+    admin_assignments: List[ExamAdminAssignmentResponse] = Field(default_factory=list)
 
-    # This could include basic info about halls and assignments, 
-    # but initially returning just the basic fields to avoid circular dependencies
     model_config = ConfigDict(from_attributes=True)

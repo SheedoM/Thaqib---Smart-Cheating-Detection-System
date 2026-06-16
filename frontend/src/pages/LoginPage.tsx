@@ -1,13 +1,19 @@
 import React, { useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Loader2 } from 'lucide-react';
+import { authFetch } from '../config/api';
 
-export default function LoginPage() {
+interface LoginPageProps {
+  onLoginSuccess?: () => void;
+}
+
+export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const [formData, setFormData] = useState({
     identifier: '',
     password: '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -24,7 +30,7 @@ export default function LoginPage() {
       params.append('username', formData.identifier);
       params.append('password', formData.password);
 
-      const response = await fetch('http://localhost:8000/api/auth/login', {
+      const response = await authFetch('/api/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -33,20 +39,15 @@ export default function LoginPage() {
       });
 
       if (response.ok) {
-        const data = await response.json();
-        // Save tokens to localStorage
-        localStorage.setItem('thaqib_access_token', data.access_token);
-        localStorage.setItem('thaqib_refresh_token', data.refresh_token);
-        
-        console.log('Login successful', data);
-        alert('تم تسجيل الدخول بنجاح!');
-        // In a real app, we would use a router to redirect here
-        window.location.reload(); 
+        await response.json().catch(() => null);
+        if (onLoginSuccess) {
+          onLoginSuccess();
+        }
       } else {
         const errData = await response.json();
         setErrorMsg(errData.detail || 'خطأ في اسم المستخدم أو كلمة المرور');
       }
-    } catch (err) {
+    } catch {
       setErrorMsg('تعذر الاتصال بالخادم. تأكد من تشغيل الباك إند.');
     } finally {
       setIsSubmitting(false);
@@ -77,15 +78,26 @@ export default function LoginPage() {
         />
 
         {/* Password */}
-        <input
-          type="password"
-          name="password"
-          placeholder="كلمة المرور"
-          value={formData.password}
-          onChange={handleInputChange}
-          className="thaqib-input"
-          required
-        />
+        <div className="relative w-full">
+          <input
+            type={showPassword ? 'text' : 'password'}
+            name="password"
+            placeholder="كلمة المرور"
+            value={formData.password}
+            onChange={handleInputChange}
+            className="thaqib-input pl-11"
+            required
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword((value) => !value)}
+            className="absolute inset-y-0 left-3 flex items-center text-gray-400 hover:text-gray-600"
+            aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+            tabIndex={-1}
+          >
+            {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+          </button>
+        </div>
 
         <div className="flex justify-between items-center mt-1 mb-2">
           <label className="flex items-center gap-2 cursor-pointer">

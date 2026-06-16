@@ -4,8 +4,10 @@ def test_login_success(client, admin_user):
         data={"username": admin_user.username, "password": "securepassword"}
     )
     assert response.status_code == 200
-    assert "access_token" in response.json()
-    assert response.json()["token_type"] == "bearer"
+    assert response.json()["token_type"] == "cookie"
+    assert "csrf_token" in response.json()
+    assert "thaqib_access_token" in response.cookies
+    assert "thaqib_refresh_token" in response.cookies
 
 def test_login_failure(client, admin_user):
     response = client.post(

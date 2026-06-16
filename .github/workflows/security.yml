@@ -1,0 +1,78 @@
+name: Security
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Python dependency audit
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit
+          pip-audit -r requirements.txt
+          pip-audit -r requirements-ai.txt
+          pip-audit -r requirements-dev.txt
+      - name: Frontend dependency audit
+        working-directory: frontend
+        run: |
+          npm ci
+          npm audit --audit-level=moderate
+
+  container-and-compose-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate production compose file
+        env:
+          POSTGRES_PASSWORD: ci-postgres-password
+          THAQIB_ENV_FILE: .env.production.example
+        run: |
+          docker compose -f docker-compose.prod.yml config
+      - name: Build lean backend image
+        run: docker build --build-arg INSTALL_AI=false -t thaqib-backend:security .
+      - name: Build frontend image
+        run: docker build -t thaqib-frontend:security ./frontend
+      - name: Scan backend image
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: thaqib-backend:security
+          format: sarif
+          output: trivy-backend.sarif
+          severity: HIGH,CRITICAL
+      - name: Scan frontend image
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: thaqib-frontend:security
+          format: sarif
+          output: trivy-frontend.sarif
+          severity: HIGH,CRITICAL
+      - name: Upload backend scan
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-backend.sarif
+      - name: Upload frontend scan
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-frontend.sarif

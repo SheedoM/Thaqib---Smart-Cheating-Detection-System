@@ -1,18 +1,41 @@
 import uuid
+from datetime import datetime, timezone
 from typing import List, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.infrastructure import Device, Hall
-from src.thaqib.schemas.infrastructure import DeviceCreate, DeviceResponse, DeviceUpdate
-from src.thaqib.api.dependencies import RequireRole
+from src.thaqib.db.models.users import User
+from src.thaqib.schemas.infrastructure import DeviceCreate, DevicePlacementsUpdate, DeviceResponse, DeviceUpdate
+from src.thaqib.api.dependencies import RequireRole, get_scope
 from src.thaqib.core.limiter import limiter
 
 router = APIRouter()
 
-# Admin only restriction
-require_admin = RequireRole(["admin"])
+require_admin_or_super_admin = RequireRole(["admin", "super_admin"])
+
+
+def _get_scoped_hall(db: Session, hall_id: uuid.UUID, scope: set[uuid.UUID]) -> Hall | None:
+    return db.query(Hall).filter(
+        Hall.id == hall_id,
+        Hall.deleted_at.is_(None),
+        Hall.institution_id.in_(scope),
+    ).first()
+
+
+def _get_scoped_device(db: Session, device_id: uuid.UUID, scope: set[uuid.UUID]) -> Device | None:
+    return (
+        db.query(Device)
+        .join(Hall, Device.hall_id == Hall.id)
+        .filter(
+            Device.id == device_id,
+            Device.deleted_at.is_(None),
+            Hall.deleted_at.is_(None),
+            Hall.institution_id.in_(scope),
+        )
+        .first()
+    )
 
 @router.post("/", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("10/minute")
@@ -20,18 +43,20 @@ def create_device(
     request: Request,
     device: DeviceCreate, 
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    scope = Depends(get_scope),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Create a new device. Admin only.
+    Create a new device within accessible halls.
     """
-    hall = db.query(Hall).filter(Hall.id == device.hall_id).first()
+    hall = _get_scoped_hall(db, device.hall_id, scope)
     if not hall:
         raise HTTPException(status_code=404, detail="Hall not found")
         
     db_obj = db.query(Device).filter(
         Device.identifier == device.identifier, 
-        Device.hall_id == device.hall_id
+        Device.hall_id == device.hall_id,
+        Device.deleted_at.is_(None)
     ).first()
     
     if db_obj:
@@ -45,19 +70,16 @@ def create_device(
         type=device.type,
         identifier=device.identifier,
         ip_address=device.ip_address,
-        stream_url=device.stream_url,
+        stream_url=device.stream_url or "",
         position=device.position,
         coverage_area=device.coverage_area,
-        status=device.status
+        status=device.status or "offline",
+        last_health_check=datetime.now(timezone.utc),
     )
     db.add(new_device)
     db.commit()
     db.refresh(new_device)
     
-    # Optional handling of datetime for response compatibility
-    if new_device.last_health_check:
-        new_device.last_health_check = new_device.last_health_check.isoformat()
-        
     return new_device
 
 @router.get("/", response_model=List[DeviceResponse])
@@ -66,37 +88,74 @@ def read_devices(
     skip: int = 0, 
     limit: int = 100, 
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    scope = Depends(get_scope),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Retrieve devices. Can be filtered by hall. Admin only.
+    Retrieve devices in accessible halls. Can be filtered by hall.
     """
-    query = db.query(Device)
+    query = (
+        db.query(Device)
+        .join(Hall, Device.hall_id == Hall.id)
+        .filter(
+            Device.deleted_at.is_(None),
+            Hall.deleted_at.is_(None),
+            Hall.institution_id.in_(scope),
+        )
+    )
     if hall_id:
+        if not _get_scoped_hall(db, hall_id, scope):
+            return []
         query = query.filter(Device.hall_id == hall_id)
         
     devices = query.offset(skip).limit(limit).all()
-    # Handle datetime serialization if necessary (pydantic handles it usually when model allows string or datetime)
-    for device in devices:
-        if device.last_health_check:
-             device.last_health_check = device.last_health_check.isoformat()
     return devices
+
+@router.put("/{device_id}/placements", response_model=DeviceResponse)
+@limiter.limit("20/minute")
+def update_microphone_placements(
+    request: Request,
+    device_id: uuid.UUID,
+    placement_in: DevicePlacementsUpdate,
+    db: Session = Depends(get_db),
+    scope = Depends(get_scope),
+    # Invigilators place pins from the live camera modal too (same modal as admin),
+    # still scoped to their institution via get_scope.
+    _: User = Depends(RequireRole(["admin", "super_admin", "invigilator"])),
+) -> Any:
+    """
+    Replace camera-relative placement pins for a microphone device.
+    """
+    device = _get_scoped_device(db, device_id, scope)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    if device.type != "microphone":
+        raise HTTPException(status_code=422, detail="Placements are only supported for microphone devices")
+
+    position = dict(device.position or {}) if isinstance(device.position, dict) else {}
+    position["placements"] = [placement.model_dump() for placement in placement_in.placements]
+    device.position = position
+    device.last_health_check = datetime.now(timezone.utc)
+
+    db.add(device)
+    db.commit()
+    db.refresh(device)
+    return device
 
 @router.get("/{device_id}", response_model=DeviceResponse)
 def read_device(
     device_id: uuid.UUID, 
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    scope = Depends(get_scope),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Get device by ID. Admin only.
+    Get device by ID within accessible halls.
     """
-    device = db.query(Device).filter(Device.id == device_id).first()
+    device = _get_scoped_device(db, device_id, scope)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
         
-    if device.last_health_check:
-        device.last_health_check = device.last_health_check.isoformat()
     return device
 
 @router.put("/{device_id}", response_model=DeviceResponse)
@@ -106,25 +165,29 @@ def update_device(
     device_id: uuid.UUID, 
     device_in: DeviceUpdate,
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    scope = Depends(get_scope),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Update a device. Admin only.
+    Update a device within accessible halls.
     """
-    device = db.query(Device).filter(Device.id == device_id).first()
+    device = _get_scoped_device(db, device_id, scope)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
         
     update_data = device_in.model_dump(exclude_unset=True)
+    next_stream_url = update_data.get("stream_url", device.stream_url)
+    if device.type == "camera" and not (next_stream_url or "").strip():
+        raise HTTPException(status_code=422, detail="Camera devices require stream_url")
+
     for field, value in update_data.items():
-        setattr(device, field, value)
+        setattr(device, field, value if field != "stream_url" or value is not None else "")
+    device.last_health_check = datetime.now(timezone.utc)
         
     db.add(device)
     db.commit()
     db.refresh(device)
     
-    if device.last_health_check:
-        device.last_health_check = device.last_health_check.isoformat()
     return device
 
 @router.delete("/{device_id}", response_model=DeviceResponse)
@@ -133,18 +196,18 @@ def delete_device(
     request: Request,
     device_id: uuid.UUID, 
     db: Session = Depends(get_db),
-    _ = Depends(require_admin)
+    scope = Depends(get_scope),
+    _: User = Depends(require_admin_or_super_admin),
 ) -> Any:
     """
-    Delete a device. Admin only.
+    Delete a device within accessible halls.
     """
-    device = db.query(Device).filter(Device.id == device_id).first()
+    device = _get_scoped_device(db, device_id, scope)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
-        
-    db.delete(device)
+
+    device.deleted_at = datetime.now(timezone.utc)
+    db.add(device)
     db.commit()
-    
-    if device.last_health_check:
-         device.last_health_check = device.last_health_check.isoformat()
+    db.refresh(device)
     return device

@@ -5,10 +5,11 @@ by simply importing `from thaqib.db.models import Base`
 
 from .base import Base
 from .infrastructure import Institution, Hall, Device
-from .users import User
-from .exams import ExamSession, Assignment, exam_session_halls
+from .users import RefreshToken, User
+from .exams import ExamAdminAssignment, ExamSession, Assignment, exam_session_halls
 from .events import DetectionEvent, GroupEvent, Alert
 from .audit import AuditLog
+from .rf import RfScanner, RfDetection, RfWhitelistEntry
 
 __all__ = [
     "Base",
@@ -16,11 +17,16 @@ __all__ = [
     "Hall",
     "Device",
     "User",
+    "RefreshToken",
     "ExamSession",
     "Assignment",
+    "ExamAdminAssignment",
     "exam_session_halls",
     "DetectionEvent",
     "GroupEvent",
     "Alert",
     "AuditLog",
+    "RfScanner",
+    "RfDetection",
+    "RfWhitelistEntry",
 ]
