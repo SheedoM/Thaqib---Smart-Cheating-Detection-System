@@ -6,7 +6,7 @@ devices they hear during an exam. MAC addresses are NEVER stored in the clear �
 only a SHA-256 hash, so a device can be matched across sightings without the
 system holding a personally-identifying hardware address.
 
-Ref: SYSTEM_ARCHITECTURE.md §16 (RF Device Detection Subsystem).
+Ref: docs/SYSTEM_ARCHITECTURE.md §16 (RF Device Detection Subsystem).
 """
 
 import uuid
