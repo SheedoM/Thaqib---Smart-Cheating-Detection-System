@@ -1,5 +1,5 @@
 /// <reference types="vitest" />
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
@@ -18,13 +18,6 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         ws: true,
-        // Preserve cookies on WebSocket upgrades from LAN clients
-        configure: (proxy) => {
-          proxy.on('proxyReqWs', (_proxyReq, _req, _socket, _options, _head) => {
-            // cookies are forwarded automatically; this hook ensures the
-            // proxy does not strip the Cookie header before upgrade.
-          });
-        },
       },
     },
   },
@@ -32,5 +25,7 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: './src/test/setup.ts',
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
   },
 })

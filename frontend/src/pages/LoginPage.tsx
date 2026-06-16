@@ -39,8 +39,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
       });
 
       if (response.ok) {
-        const data = await response.json();
-        console.log('Login successful', data);
+        await response.json().catch(() => null);
         if (onLoginSuccess) {
           onLoginSuccess();
         }
@@ -48,7 +47,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
         const errData = await response.json();
         setErrorMsg(errData.detail || 'خطأ في اسم المستخدم أو كلمة المرور');
       }
-    } catch (err) {
+    } catch {
       setErrorMsg('تعذر الاتصال بالخادم. تأكد من تشغيل الباك إند.');
     } finally {
       setIsSubmitting(false);

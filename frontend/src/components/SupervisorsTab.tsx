@@ -7,6 +7,21 @@ interface Supervisor {
   email: string; role: string; image?: string; status?: string;
 }
 
+interface SupervisorPayload {
+  full_name: string;
+  username: string;
+  email: string;
+  role: string;
+  institution_id: string;
+  password?: string;
+  image?: string | null;
+}
+
+interface ValidationIssue {
+  loc: Array<string | number>;
+  msg: string;
+}
+
 export default function SupervisorsTab({ canManageAdmins = false }: { canManageAdmins?: boolean }) {
   const [supervisors, setSupervisors] = useState<Supervisor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -19,8 +34,8 @@ export default function SupervisorsTab({ canManageAdmins = false }: { canManageA
     try {
       const res = await authFetch('/api/users/');
       if (res.ok) {
-        const data = await res.json();
-        setSupervisors((data || []).filter((u: any) => u.role !== 'super_admin'));
+        const data = await res.json() as Supervisor[];
+        setSupervisors((data || []).filter((user) => user.role !== 'super_admin'));
       }
     } catch { /**/ } finally { setLoading(false); }
   };
@@ -93,6 +108,7 @@ export default function SupervisorsTab({ canManageAdmins = false }: { canManageA
 function SupervisorCard({ s, onEdit, onDelete }: { s: Supervisor, onEdit: () => void, onDelete: () => void }) {
   const available = s.status !== 'inactive';
   const initials = s.full_name.split(' ').map((n: string) => n[0]).slice(0, 2).join('');
+  const [imageFailed, setImageFailed] = useState(false);
 
   return (
     <div className="bg-[#F4F2FA] rounded-3xl overflow-hidden border border-gray-100 hover:shadow-lg transition-all duration-300 group">
@@ -106,15 +122,12 @@ function SupervisorCard({ s, onEdit, onDelete }: { s: Supervisor, onEdit: () => 
       {/* Avatar */}
       <div className="flex justify-center py-3">
         <div className="w-20 h-20 rounded-full overflow-hidden bg-gradient-to-br from-[#9351bb] to-[#44006E] flex items-center justify-center text-white text-2xl font-black shadow-md group-hover:scale-105 transition-transform duration-300">
-          {s.image ? (
+          {s.image && !imageFailed ? (
             <img 
               src={s.image.startsWith('data:') || s.image.startsWith('http') ? s.image : apiUrl(s.image)} 
               className="w-full h-full object-cover" 
               alt={s.full_name} 
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-                (e.currentTarget.parentElement as HTMLElement).innerHTML = initials;
-              }}
+              onError={() => setImageFailed(true)}
             />
           ) : initials}
         </div>
@@ -191,7 +204,7 @@ function SupervisorModal({
         imageUrl = uploaded.url;
       }
 
-      const payload: any = { full_name: form.full_name, username: form.username, email: form.email || `${form.username}@thaqib.example.com`, role: canManageAdmins ? form.role : 'invigilator', institution_id: institutionId };
+      const payload: SupervisorPayload = { full_name: form.full_name, username: form.username, email: form.email || `${form.username}@thaqib.example.com`, role: canManageAdmins ? form.role : 'invigilator', institution_id: institutionId };
       if (form.password) payload.password = form.password;
       if (imageUrl) payload.image = imageUrl;
 
@@ -201,7 +214,7 @@ function SupervisorModal({
         const err = await res.json().catch(() => ({ detail: `خطأ ${res.status}` }));
         let raw = '';
         if (Array.isArray(err.detail)) {
-          raw = err.detail.map((d: any) => `${d.loc.join('.')}: ${d.msg}`).join('\n');
+          raw = (err.detail as ValidationIssue[]).map((detail) => `${detail.loc.map(String).join('.')}: ${detail.msg}`).join('\n');
         } else {
           raw = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
         }

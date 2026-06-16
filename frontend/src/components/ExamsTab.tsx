@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 import { authFetch } from '../config/api';
 import ReportsTab from './ReportsTab';
@@ -18,12 +18,14 @@ interface ExamItem {
 }
 
 interface HallSimple { id: string; name: string; }
-interface UserSimple { id: string; full_name: string; image?: string | null; }
+interface UserSimple { id: string; full_name: string; role?: string; image?: string | null; }
 interface AssignmentSimple {
   id: string;
   invigilator_id: string;
   hall_id: string;
   role: 'primary' | 'secondary';
+  monitoring_started_at?: string | null;
+  monitoring_ended_at?: string | null;
 }
 
 interface DeviceReadiness {
@@ -41,6 +43,19 @@ interface HallReadiness {
   overall_status: 'passed' | 'warning';
   failed_count: number;
   devices: DeviceReadiness[];
+}
+
+type ExamStatusFilter = 'upcoming' | 'past' | 'all';
+
+const STATUS_TABS: Array<{ id: ExamStatusFilter; label: string }> = [
+  { id: 'all', label: 'الكل' },
+  { id: 'upcoming', label: 'القادمة' },
+  { id: 'past', label: 'السابقة' },
+];
+const EMPTY_HALLS: HallSimple[] = [];
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }
 
 // ─── Main Tab ────────────────────────────────────────────────────────────────
@@ -61,14 +76,14 @@ export default function ExamsTab() {
   const [hallFilter, setHallFilter] = useState('');
   const [dateFilter, setDateFilter] = useState('');
   const [timeFilter, setTimeFilter] = useState('');
-  const [activeStatus, setActiveStatus] = useState<'upcoming' | 'past' | 'all'>('all');
+  const [activeStatus, setActiveStatus] = useState<ExamStatusFilter>('all');
 
   const fetchExams = async () => {
     try {
       const res = await authFetch('/api/sessions/');
       if (res.ok) {
-        const data = await res.json();
-        setExams((data || []).map((ex: any) => ({
+        const data = await res.json() as ExamItem[];
+        setExams((data || []).map((ex) => ({
           ...ex,
           period: ex.configuration?.period || 'الفترة الأولي'
         })));
@@ -118,7 +133,7 @@ export default function ExamsTab() {
   }, []);
   
   if (viewingReport) {
-    return <ReportsTab initialReport={viewingReport as any} onBack={() => setViewingReport(null)} />;
+    return <ReportsTab initialReport={viewingReport} onBack={() => setViewingReport(null)} />;
   }
 
   return (
@@ -149,14 +164,10 @@ export default function ExamsTab() {
       <div className="mb-8 space-y-6">
         {/* Status Tabs */}
         <div className="flex bg-gray-100/50 p-1.5 rounded-2xl w-fit">
-          {[
-            { id: 'all', label: 'الكل' },
-            { id: 'upcoming', label: 'القادمة' },
-            { id: 'past', label: 'السابقة' }
-          ].map(tab => (
+          {STATUS_TABS.map(tab => (
             <button
               key={tab.id}
-              onClick={() => setActiveStatus(tab.id as any)}
+              onClick={() => setActiveStatus(tab.id)}
               className={`px-8 py-2.5 rounded-xl font-black text-sm transition-all cursor-pointer ${activeStatus === tab.id ? 'bg-white text-[#44006E] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
             >
               {tab.label}
@@ -305,7 +316,7 @@ function ExamCard({
 
   // Derive running state: is any hall currently being monitored?
   const activeAssignments = (exam.assignments || []).filter(
-    (a: any) => a.monitoring_started_at && !a.monitoring_ended_at
+    (assignment) => assignment.monitoring_started_at && !assignment.monitoring_ended_at
   );
   const isRunning = exam.status === 'active' || activeAssignments.length > 0;
   const isCompleted = exam.status === 'completed';
@@ -376,7 +387,7 @@ function ExamCard({
           <div className="mt-3 space-y-1.5">
             {exam.halls.map((hall) => {
               const hallActive = (exam.assignments || []).some(
-                (a: any) => a.hall_id === hall.id && a.monitoring_started_at && !a.monitoring_ended_at
+                (assignment) => assignment.hall_id === hall.id && assignment.monitoring_started_at && !assignment.monitoring_ended_at
               );
               return hallActive ? (
                 <div key={hall.id} className="flex items-center justify-between bg-red-50 border border-red-100 rounded-xl px-3 py-2">
@@ -430,9 +441,9 @@ function StartExamModal({
   const [loadingHallId, setLoadingHallId] = useState<string | null>(null);
   const [startingHallId, setStartingHallId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const halls = exam.halls || [];
+  const halls = exam.halls ?? EMPTY_HALLS;
 
-  const loadReadiness = async (hallId: string) => {
+  const loadReadiness = useCallback(async (hallId: string) => {
     setLoadingHallId(hallId);
     setError(null);
     try {
@@ -443,16 +454,16 @@ function StartExamModal({
       }
       const data = await res.json();
       setReadinessByHall((prev) => ({ ...prev, [hallId]: data }));
-    } catch (err: any) {
-      setError(err.message || 'تعذر فحص أجهزة القاعة');
+    } catch (err: unknown) {
+      setError(errorMessage(err, 'تعذر فحص أجهزة القاعة'));
     } finally {
       setLoadingHallId(null);
     }
-  };
+  }, [exam.id]);
 
   useEffect(() => {
     halls.forEach((hall) => { void loadReadiness(hall.id); });
-  }, [exam.id]);
+  }, [halls, loadReadiness]);
 
   const startHall = async (hallId: string) => {
     const readiness = readinessByHall[hallId];
@@ -470,8 +481,8 @@ function StartExamModal({
         throw new Error(typeof err.detail === 'string' ? err.detail : 'فشل بدء المراقبة');
       }
       onStarted();
-    } catch (err: any) {
-      setError(err.message || 'تعذر بدء المراقبة');
+    } catch (err: unknown) {
+      setError(errorMessage(err, 'تعذر بدء المراقبة'));
     } finally {
       setStartingHallId(null);
     }
@@ -594,7 +605,7 @@ function ExamModal({ exam, onClose, onSuccess }: { exam: ExamItem | null, onClos
     authFetch('/api/users/')
       .then((r) => {
         if (r.ok) {
-          return r.json().then((users: any[]) =>
+          return r.json().then((users: UserSimple[]) =>
             setSupervisors(users.filter(u => u.role === 'invigilator'))
           );
         }

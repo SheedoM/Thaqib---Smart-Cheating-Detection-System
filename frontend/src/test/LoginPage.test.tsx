@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import LoginPage from '../pages/LoginPage';
 
 // Mock fetch
-global.fetch = vi.fn();
+globalThis.fetch = vi.fn();
+const mockedFetch = () => globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
 
 describe('LoginPage Component', () => {
   beforeEach(() => {
@@ -18,10 +19,10 @@ describe('LoginPage Component', () => {
   });
 
   it('shows error message on failed login', async () => {
-    (fetch as any).mockResolvedValueOnce({
+    mockedFetch().mockResolvedValueOnce({
       ok: false,
       json: async () => ({ detail: 'Invalid credentials' }),
-    });
+    } as Response);
 
     render(<LoginPage />);
     
@@ -41,10 +42,10 @@ describe('LoginPage Component', () => {
 
   it('calls success callback on valid cookie session login', async () => {
     const onLoginSuccess = vi.fn();
-    (fetch as any).mockResolvedValueOnce({
+    mockedFetch().mockResolvedValueOnce({
       ok: true,
       json: async () => ({ token_type: 'cookie', csrf_token: 'csrf-token' }),
-    });
+    } as Response);
 
     render(<LoginPage onLoginSuccess={onLoginSuccess} />);
     

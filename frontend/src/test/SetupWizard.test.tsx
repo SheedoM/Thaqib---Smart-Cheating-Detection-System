@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import SetupWizard from '../components/SetupWizard';
 
 // Mock fetch
-global.fetch = vi.fn();
+globalThis.fetch = vi.fn();
+const mockedFetch = () => globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
 
 describe('SetupWizard Component', () => {
   beforeEach(() => {
@@ -20,13 +21,13 @@ describe('SetupWizard Component', () => {
 
   it('handles form submission successfully', async () => {
     const onSuccessMock = vi.fn();
-    (fetch as any).mockResolvedValueOnce({
+    mockedFetch().mockResolvedValueOnce({
       ok: true,
       json: async () => ({ 
         status: 'success', 
         generated_credentials: { username: 'admin' } 
       }),
-    });
+    } as Response);
 
     render(<SetupWizard onSuccess={onSuccessMock} />);
     

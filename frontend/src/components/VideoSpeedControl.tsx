@@ -11,11 +11,10 @@ export default function VideoSpeedControl({ videoRef }: VideoSpeedControlProps) 
   const [speed, setSpeed] = useState<number>(1);
 
   useEffect(() => {
-    setSpeed(1);
     if (videoRef.current) {
-      videoRef.current.playbackRate = 1;
+      videoRef.current.playbackRate = speed;
     }
-  }, [videoRef]);
+  }, [speed, videoRef]);
 
   const applySpeed = (nextSpeed: number) => {
     setSpeed(nextSpeed);

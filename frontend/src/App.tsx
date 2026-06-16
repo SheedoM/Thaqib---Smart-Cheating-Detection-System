@@ -10,8 +10,17 @@ import InvigilatorLayout from './layouts/InvigilatorLayout';
 import SchedulePage from './pages/invigilator/SchedulePage';
 import HallMonitoringPage from './pages/invigilator/HallMonitoringPage';
 
+interface AppUser {
+  role: 'admin' | 'super_admin' | 'invigilator' | string;
+}
+
+interface AppErrorState {
+  hasError: boolean;
+  message?: string;
+}
+
 export default function App() {
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
   const [isInstalled, setIsInstalled] = useState<boolean | null>(null);
   const [isMultiCollege, setIsMultiCollege] = useState<boolean>(false);
   const [loading, setLoading] = useState(true);
@@ -21,7 +30,7 @@ export default function App() {
       // 1. Check if user is logged in
       const sessionResponse = await authFetch('/api/auth/me');
       if (sessionResponse.ok) {
-        const userData = await sessionResponse.json();
+        const userData = await sessionResponse.json() as AppUser;
         setUser(userData);
 
         // 2. If admin/super_admin, check whether this is a multi-college university
@@ -155,12 +164,12 @@ export default function App() {
 
 class AppErrorBoundary extends Component<
   { children: ReactNode },
-  { hasError: boolean; message?: string }
+  AppErrorState
 > {
-  state = { hasError: false, message: undefined };
+  state: AppErrorState = { hasError: false, message: undefined };
 
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, message: error.message };
+  static getDerivedStateFromError(error: Error): AppErrorState {
+    return { hasError: true, message: import.meta.env.DEV ? error.message : undefined };
   }
 
   componentDidCatch(error: Error) {
