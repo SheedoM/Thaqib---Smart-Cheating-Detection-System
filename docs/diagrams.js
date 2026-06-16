@@ -331,7 +331,7 @@ function render(key, w, h, svg) {
     b += lbl(lx + 16, y + 26, title, { size: 15, bold: true, anchor: "start", color: stroke });
     b += textLines(lx + lw / 2 + 40, y + 60, sub, { size: 12.5, color: C.text });
   }
-  layer(40, "1. Data Acquisition", "IP cameras (RTSP / USB / file)        USB / IP microphones", "#EAF1FB", C.stroke);
+  layer(40, "1. Data Acquisition", "IP cameras (RTSP/USB/file)   USB/IP microphones   BLE scanner nodes", "#EAF1FB", C.stroke);
   layer(180, "2. Detection Engine  (Python)", "Video: YOLOv11 → BoT-SORT → OSNet → MediaPipe → Gaze → Evaluator\nAudio: Energy discriminator → Silero VAD → Faster-Whisper", C.accFill, C.accStroke);
   layer(320, "3. Backend  (FastAPI + SQLAlchemy)", "REST API · WebSocket voice · MJPEG streams · Alert review\nSQLite (dev) / PostgreSQL (prod)", "#EAF1FB", C.stroke);
   layer(460, "4. Dashboard  (React + TypeScript, Arabic RTL)", "Admin / control-room console      ·      Invigilator hall view", C.grnFill, C.grnStroke);
@@ -541,6 +541,45 @@ function render(key, w, h, svg) {
   });
   if (!CONF.data) b += lbl(w / 2, ly + 56, "Cells show – ; replace with measured counts from the exam-test log.", { size: 12, color: C.grey });
   render("fig_confusion", w, h, svgDoc(w, h, b));
+})();
+
+// =====================================================================
+// 14. RF DEVICE-DETECTION DATA FLOW
+// =====================================================================
+(function () {
+  const w = 940, h = 610;
+  let b = "";
+  const cx = 510, bw = 440;
+  const steps = [
+    ["ESP32 scanner nodes  —  passive BLE scan (no transmit, no jamming)", C.fill, C.stroke],
+    ["POST /api/v1/rf-push/{scanner_id}/detections   (pre-shared key)", C.accFill, C.accStroke],
+    ["Hash MAC → SHA-256  ·  record RfDetection  ·  RSSI → zone", C.accFill, C.accStroke],
+    ["Whitelist check  (per-hall baseline)", C.accFill, C.accStroke],
+  ];
+  let y = 24;
+  steps.forEach((s) => {
+    b += box(cx - bw / 2, y, bw, 46, s[0], { fill: s[1], stroke: s[2], size: 12 });
+    b += line(cx, y + 46, cx, y + 70);
+    y += 70;
+  });
+  // decision diamond
+  const dy = y;
+  b += `<path d="M${cx},${dy} L${cx + 58},${dy + 32} L${cx},${dy + 64} L${cx - 58},${dy + 32} z" fill="#fff" stroke="${C.stroke}" stroke-width="1.5"/>`;
+  b += textLines(cx, dy + 32, "known &\nquiet?", { size: 11, color: C.text });
+  // left branch (yes) -> record only box on the far left
+  b += `<path d="M${cx - 58},${dy + 32} H110 V${dy + 90}" fill="none" stroke="${C.line}" stroke-width="1.3" marker-end="url(#arrow)"/>`;
+  b += lbl(cx - 180, dy + 24, "yes", { size: 11, color: C.grnStroke });
+  b += box(20, dy + 90, 180, 46, "Record only\n(no alert)", { fill: C.grnFill, stroke: C.grnStroke, size: 12 });
+  // down branch (no) -> alert path
+  b += line(cx, dy + 64, cx, dy + 96, { color: C.line });
+  b += lbl(cx + 12, dy + 86, "unknown / RSSI spike", { size: 11, anchor: "start", color: C.accStroke });
+  y = dy + 96;
+  b += box(cx - bw / 2, y, bw, 46, "DetectionEvent(event_type = \"rf_transmission\")", { fill: "#FFF2CC", stroke: "#BF9000", size: 12, bold: true });
+  b += line(cx, y + 46, cx, y + 70, { color: C.line });
+  y += 70;
+  b += box(cx - bw / 2, y, bw, 52, "Tier-2 Alert  →  dashboard RF badge  +  hall voice card\n(“Unknown earbud near rows 3–4”)", { fill: C.grnFill, stroke: C.grnStroke, size: 12 });
+  b += lbl(w / 2, h - 14, "Raw MAC is never stored — only its SHA-256 hash.", { size: 11.5, color: C.grey });
+  render("fig_rf", w, h, svgDoc(w, h, b));
 })();
 
 fs.writeFileSync(path.join(FIG_DIR, "manifest.json"), JSON.stringify(manifest, null, 2));
