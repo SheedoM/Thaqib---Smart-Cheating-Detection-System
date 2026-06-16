@@ -53,14 +53,14 @@ jobs:
       - name: Build frontend image
         run: docker build -t thaqib-frontend:security ./frontend
       - name: Scan backend image
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: thaqib-backend:security
           format: sarif
           output: trivy-backend.sarif
           severity: HIGH,CRITICAL
       - name: Scan frontend image
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: thaqib-frontend:security
           format: sarif
