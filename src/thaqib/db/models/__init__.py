@@ -9,6 +9,7 @@ from .users import RefreshToken, User
 from .exams import ExamAdminAssignment, ExamSession, Assignment, exam_session_halls
 from .events import DetectionEvent, GroupEvent, Alert
 from .audit import AuditLog
+from .rf import RfScanner, RfDetection, RfWhitelistEntry
 
 __all__ = [
     "Base",
@@ -25,4 +26,7 @@ __all__ = [
     "GroupEvent",
     "Alert",
     "AuditLog",
+    "RfScanner",
+    "RfDetection",
+    "RfWhitelistEntry",
 ]

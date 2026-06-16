@@ -20,14 +20,36 @@ import type { HallMonitoringStatus, HallReadiness, HallAlert } from '../../types
 import { useHallVoice } from '../../hooks/useHallVoice';
 import { isInsecureLanContext } from '../../lib/secureContext';
 import CameraFeedGrid, { type CameraFeedGridItem } from '../../components/CameraFeedGrid';
-import VideoSpeedControl from '../../components/VideoSpeedControl';
-import CameraModal, { type CameraModalMic } from '../../components/CameraModal';
+import CameraModal, { type CameraModalMic, type CameraModalRfScanner } from '../../components/CameraModal';
+import RfBadge from '../../components/RfBadge';
 
 interface FeedItem {
   device_id: string;
   name: string;
   feed_path: string;
   source_configured: boolean;
+}
+
+interface CameraStats {
+  camera_id: string;
+  camera_identifier: string;
+  camera_name: string;
+  hall_id: string;
+  hall_name: string;
+  is_running: boolean;
+  fps: number;
+  tracked_count: number;
+  selected_count: number;
+  frame_index: number;
+  alert_count: number;
+  latency_ms: number;
+  resolution: string;
+  frame_drops: number;
+  uptime_seconds: number;
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }
 
 export default function HallMonitoringPage() {
@@ -40,7 +62,8 @@ export default function HallMonitoringPage() {
   const [isStarting, setIsStarting] = useState(false);
   const [feeds, setFeeds] = useState<FeedItem[]>([]);
   const [mics, setMics] = useState<CameraModalMic[]>([]);
-  const [statsByCamera, setStatsByCamera] = useState<Record<string, any>>({});
+  const [scanners, setScanners] = useState<CameraModalRfScanner[]>([]);
+  const [statsByCamera, setStatsByCamera] = useState<Record<string, CameraStats>>({});
   const [showAllAlerts, setShowAllAlerts] = useState(false);
   const [activeTab, setActiveTab] = useState<'cameras' | 'cases'>('cameras');
   const [enlargedFeed, setEnlargedFeed] = useState<CameraFeedGridItem | null>(null);
@@ -76,7 +99,7 @@ export default function HallMonitoringPage() {
       
       const statsRes = await authFetch('/api/stream/status');
       if (statsRes.ok) {
-        const statsData = await statsRes.json();
+        const statsData = await statsRes.json() as { cameras?: Record<string, CameraStats> };
         setStatsByCamera(statsData.cameras || {});
       }
     } catch (err) {
@@ -106,6 +129,15 @@ export default function HallMonitoringPage() {
     return () => clearInterval(interval);
   }, [fetchStatus, fetchFeeds]);
 
+  // RF scanner nodes for this hall (for the camera-modal overlay + placement).
+  useEffect(() => {
+    if (!hallId) return;
+    authFetch(`/api/v1/rf/scanners?hall_id=${hallId}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setScanners)
+      .catch(() => {});
+  }, [hallId]);
+
   const runReadinessCheck = async () => {
     setIsChecking(true);
     setError(null);
@@ -118,8 +150,8 @@ export default function HallMonitoringPage() {
       const data = await response.json();
       setReadiness(data);
       return data as HallReadiness;
-    } catch (err: any) {
-      setError(err.message || 'تعذر فحص أجهزة القاعة.');
+    } catch (err: unknown) {
+      setError(errorMessage(err, 'تعذر فحص أجهزة القاعة.'));
       return null;
     } finally {
       setIsChecking(false);
@@ -154,7 +186,7 @@ export default function HallMonitoringPage() {
       } else {
         setError('فشل في بدء المراقبة.');
       }
-    } catch (err) {
+    } catch {
       setError('خطأ في الاتصال بالخادم.');
     } finally {
       setIsStarting(false);
@@ -289,6 +321,7 @@ export default function HallMonitoringPage() {
           </span>
         </div>
         <div className="mr-auto flex items-center gap-2">
+          {hallId && <RfBadge hallId={hallId} active={Boolean(isMonitoring)} />}
           {/* PTT connection badge */}
           <div title={voice.statusText} className={`flex items-center gap-1 px-2 py-1 rounded-lg ${
             voice.state === 'error' ? 'bg-red-50' : voice.micBlocked ? 'bg-amber-50' : voice.state === 'connected' ? 'bg-green-50' : 'bg-gray-50'
@@ -573,6 +606,8 @@ export default function HallMonitoringPage() {
           }}
           stats={statsByCamera[enlargedFeed.id] || null}
           hallMics={mics}
+          hallId={hallId || null}
+          hallScanners={scanners}
           onClose={() => setEnlargedFeed(null)}
         />
       )}

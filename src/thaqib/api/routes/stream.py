@@ -125,6 +125,14 @@ _camera_states: dict[str, CameraRuntime] = {}
 _manager_lock = threading.Lock()
 
 
+def push_external_alert(alert_data: dict[str, Any]) -> None:
+    """Inject an alert raised outside the video pipeline (e.g. the RF subsystem)
+    into the live dashboard feed, so it surfaces through the same polling path."""
+    with _alerts_lock:
+        _alerts.insert(0, alert_data)
+        del _alerts[50:]
+
+
 def _infer_event_type(state: Any) -> str:
     if bool(getattr(state, "is_using_phone", False)):
         return "استخدام الهاتف"
@@ -211,6 +219,39 @@ def _poll_for_alert_clip(
         time.sleep(0.5)
 
 
+def _parse_alert_timestamp(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _attach_composer_clip(camera_id: str, output_path: Path) -> str:
+    """Move an AV composer clip under the latest matching alert folder."""
+    with _alerts_lock:
+        matching_alerts = [
+            alert for alert in _alerts
+            if alert.get("camera_id") == camera_id and alert.get("rel_prefix")
+        ]
+        if not matching_alerts:
+            raise ValueError(f"No alert found for camera {camera_id}")
+        alert = max(matching_alerts, key=lambda item: _parse_alert_timestamp(item.get("timestamp")))
+        rel_prefix = Path(str(alert["rel_prefix"]))
+
+        _, clip_dir = _ensure_alert_dirs(rel_prefix)
+        destination = clip_dir / output_path.name
+        if output_path.resolve() != destination.resolve():
+            output_path.replace(destination)
+
+        rel_path = (rel_prefix / "clips" / destination.name).as_posix()
+        alert["video_file"] = rel_path
+        return rel_path
+
+
 def _parse_source(source: str) -> int | str:
     try:
         return int(source)
@@ -250,6 +291,19 @@ def _serialize_camera(device: Device, hall: Hall, runtime: CameraRuntime | None)
     }
 
 
+def _serialize_microphone(device: Device) -> dict[str, Any]:
+    position = device.position if isinstance(device.position, dict) else {}
+    return {
+        "id": str(device.id),
+        "identifier": device.identifier,
+        "name": _camera_display_name(device),
+        "status": device.status,
+        "source_configured": bool((device.stream_url or "").strip()),
+        "placements": position.get("placements", []),
+        "position": position,
+    }
+
+
 def _hall_to_payload(hall: Hall, db: Session | None = None) -> dict[str, Any]:
     active_devices = [d for d in hall.devices if d.deleted_at is None]
     camera_devices = [device for device in active_devices if device.type == "camera"]
@@ -280,15 +334,7 @@ def _hall_to_payload(hall: Hall, db: Session | None = None) -> dict[str, Any]:
         "capacity": hall.capacity,
         "image": hall.image,
         "cameras": cameras,
-        "mics": [
-            {
-                "id": str(device.id),
-                "identifier": device.identifier,
-                "name": _camera_display_name(device),
-                "status": device.status,
-            }
-            for device in mic_devices
-        ],
+        "mics": [_serialize_microphone(device) for device in mic_devices],
     }
 
 
@@ -980,11 +1026,42 @@ async def pipeline_status(current_user: User = Depends(require_stream_view_user)
         raise HTTPException(status_code=500, detail="Failed to build pipeline status")
 
 
+def _placeholder_jpeg(camera: CameraRuntime) -> bytes:
+    frame = np.full((360, 640, 3), 30, dtype=np.uint8)
+    cv2.putText(
+        frame,
+        "Waiting for camera frame",
+        (150, 170),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (230, 230, 230),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        camera.camera_name[:40],
+        (180, 210),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (180, 180, 180),
+        1,
+        cv2.LINE_AA,
+    )
+    ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+    if not ok:
+        return b""
+    return jpeg.tobytes()
+
+
 @router.get("/feed/{device_id}")
 async def video_feed(device_id: str, current_user: User = Depends(require_feed_view_user)) -> StreamingResponse:
     runtime = _camera_states.get(device_id)
     if runtime is None:
-        raise HTTPException(status_code=404, detail="Camera feed not available")
+        _refresh_camera_states()
+        runtime = _camera_states.get(device_id)
+        if runtime is None:
+            raise HTTPException(status_code=404, detail="Camera feed not available")
     db = SessionLocal()
     try:
         if current_user.role == "invigilator":
@@ -1006,6 +1083,8 @@ async def video_feed(device_id: str, current_user: User = Depends(require_feed_v
         # fresh bytes object per pipeline frame, so identity tells us when it's new
         # and we avoid re-sending duplicates.
         last_sent: bytes | None = None
+        placeholder_sent = False
+        placeholder_frame = _placeholder_jpeg(runtime)
         while not runtime.stop_event.is_set():
             with runtime.frame_lock:
                 frame = runtime.latest_frame
@@ -1013,6 +1092,10 @@ async def video_feed(device_id: str, current_user: User = Depends(require_feed_v
                 last_sent = frame
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
                 await asyncio.sleep(0.04)  # ~25fps cap; yields control to the loop
+            elif not placeholder_sent and placeholder_frame:
+                placeholder_sent = True
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + placeholder_frame + b"\r\n"
+                await asyncio.sleep(0.04)
             else:
                 await asyncio.sleep(0.05)
 

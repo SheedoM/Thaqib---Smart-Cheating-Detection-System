@@ -119,7 +119,9 @@ def update_microphone_placements(
     placement_in: DevicePlacementsUpdate,
     db: Session = Depends(get_db),
     scope = Depends(get_scope),
-    _: User = Depends(require_admin_or_super_admin),
+    # Invigilators place pins from the live camera modal too (same modal as admin),
+    # still scoped to their institution via get_scope.
+    _: User = Depends(RequireRole(["admin", "super_admin", "invigilator"])),
 ) -> Any:
     """
     Replace camera-relative placement pins for a microphone device.

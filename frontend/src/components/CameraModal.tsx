@@ -61,6 +61,20 @@ export interface CameraModalMic {
   placements?: MicPlacement[];
 }
 
+export interface CameraModalRfScanner {
+  id: string;
+  identifier: string;
+  position?: { camera_id?: string; norm_pos?: number[]; label?: string } | null;
+}
+
+interface RfDetectionOverlay {
+  device_name: string | null;
+  estimated_zone: string | null;
+  is_spike: boolean;
+  camera_id: string | null;
+  norm_pos: number[] | null;
+}
+
 interface CameraModalProps {
   mode: 'camera' | 'alert';
   alert: Alert | null;
@@ -72,12 +86,14 @@ interface CameraModalProps {
   } | null;
   stats: CameraStats | null;
   hallMics?: CameraModalMic[];
+  hallId?: string | null;
+  hallScanners?: CameraModalRfScanner[];
   onConfirmAlert?: (alert: Alert) => void | Promise<void>;
   onCancelAlert?: (alert: Alert) => void | Promise<void>;
   onClose: () => void;
 }
 
-export default function CameraModal({ mode, alert, camera, stats, hallMics = [], onConfirmAlert, onCancelAlert, onClose }: CameraModalProps) {
+export default function CameraModal({ mode, alert, camera, stats, hallMics = [], hallId = null, hallScanners = [], onConfirmAlert, onCancelAlert, onClose }: CameraModalProps) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-container" onClick={(e) => e.stopPropagation()}>
@@ -90,7 +106,7 @@ export default function CameraModal({ mode, alert, camera, stats, hallMics = [],
         </button>
 
         {mode === 'camera' ? (
-          <CameraView camera={camera} stats={stats} hallMics={hallMics} />
+          <CameraView camera={camera} stats={stats} hallMics={hallMics} hallId={hallId} hallScanners={hallScanners} />
         ) : (
           <AlertView alert={alert} onConfirmAlert={onConfirmAlert} onCancelAlert={onCancelAlert} />
         )}
@@ -106,10 +122,14 @@ function CameraView({
   camera,
   stats,
   hallMics,
+  hallId,
+  hallScanners,
 }: {
   camera: CameraModalProps['camera'];
   stats: CameraStats | null;
   hallMics: CameraModalMic[];
+  hallId: string | null;
+  hallScanners: CameraModalRfScanner[];
 }) {
   const deviceId = camera?.id ?? null;
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -118,10 +138,59 @@ function CameraView({
   const [localMics, setLocalMics] = useState<CameraModalMic[]>(hallMics);
   const inFlightPathsRef = useRef<Set<string>>(new Set());
 
+  // ── RF: placement + live detection overlay ──
+  const [rfPlacementMode, setRfPlacementMode] = useState(false);
+  const [selectedScannerId, setSelectedScannerId] = useState(hallScanners[0]?.id ?? '');
+  const [localScanners, setLocalScanners] = useState<CameraModalRfScanner[]>(hallScanners);
+  const [rfDetections, setRfDetections] = useState<RfDetectionOverlay[]>([]);
+
   useEffect(() => {
     setLocalMics(hallMics);
     setSelectedMicId((current) => current || hallMics[0]?.id || '');
   }, [hallMics]);
+
+  useEffect(() => {
+    setLocalScanners(hallScanners);
+    setSelectedScannerId((current) => current || hallScanners[0]?.id || '');
+  }, [hallScanners]);
+
+  // Poll the RF subsystem for currently-unknown devices in this hall.
+  useEffect(() => {
+    if (!hallId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await authFetch(`/api/v1/rf/halls/${hallId}/unknown?window_minutes=5`);
+        if (!res.ok) return;
+        const data: RfDetectionOverlay[] = await res.json();
+        if (!cancelled) setRfDetections(data);
+      } catch { /* keep last */ }
+    };
+    poll();
+    const t = window.setInterval(poll, 5000);
+    return () => { cancelled = true; window.clearInterval(t); };
+  }, [hallId]);
+
+  const placeSelectedScanner = useCallback(async (event: MouseEvent<HTMLImageElement>) => {
+    if (!deviceId || !selectedScannerId) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    const norm_pos: [number, number] = [Number(x.toFixed(4)), Number(y.toFixed(4))];
+    await authFetch(`/api/v1/rf/scanners/${selectedScannerId}/placement`, {
+      method: 'PUT',
+      body: JSON.stringify({ camera_id: deviceId, norm_pos }),
+    });
+    setLocalScanners((items) => items.map((sc) => (
+      sc.id === selectedScannerId
+        ? { ...sc, position: { ...(sc.position || {}), camera_id: deviceId, norm_pos } }
+        : sc
+    )));
+  }, [deviceId, selectedScannerId]);
+
+  const scannerPins = localScanners.filter((sc) => sc.position?.camera_id === deviceId && sc.position?.norm_pos);
+  const rfMarkers = rfDetections.filter((d) => d.camera_id === deviceId && d.norm_pos);
 
   // Load current controls state on open
   useEffect(() => {
@@ -223,12 +292,13 @@ function CameraView({
 
         {camera?.feedPath ? (
           <>
+            <style>{`@keyframes rfPulse {0%{box-shadow:0 0 0 0 rgba(220,38,38,0.55)}70%{box-shadow:0 0 0 16px rgba(220,38,38,0)}100%{box-shadow:0 0 0 0 rgba(220,38,38,0)}}`}</style>
             <img
               src={apiUrl(camera.feedPath)}
               alt="بث مباشر"
               className="modal-video-img"
-              onClick={micPlacementMode ? placeSelectedMic : undefined}
-              style={micPlacementMode ? { cursor: 'crosshair' } : undefined}
+              onClick={micPlacementMode ? placeSelectedMic : rfPlacementMode ? placeSelectedScanner : undefined}
+              style={(micPlacementMode || rfPlacementMode) ? { cursor: 'crosshair' } : undefined}
             />
             {visiblePins.map(({ mic, norm_pos }) => (
               <span
@@ -251,6 +321,50 @@ function CameraView({
               >
                 {mic.name}
               </span>
+            ))}
+            {/* RF scanner node pins (static location markers) */}
+            {scannerPins.map((sc) => (
+              <span
+                key={`scan-${sc.id}`}
+                title={sc.identifier}
+                style={{
+                  position: 'absolute',
+                  left: `${sc.position!.norm_pos![0] * 100}%`,
+                  top: `${sc.position!.norm_pos![1] * 100}%`,
+                  transform: 'translate(-50%, -50%)',
+                  borderRadius: 999,
+                  background: sc.id === selectedScannerId && rfPlacementMode ? '#2563eb' : 'rgba(17,24,39,0.85)',
+                  color: '#fff', padding: '3px 7px', fontSize: 11, fontWeight: 800,
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.3)', pointerEvents: 'none',
+                }}
+              >
+                📡 {sc.identifier}
+              </span>
+            ))}
+            {/* RF live detection markers (pulsing) */}
+            {rfMarkers.map((d, i) => (
+              <div
+                key={`rf-${i}`}
+                style={{
+                  position: 'absolute',
+                  left: `${d.norm_pos![0] * 100}%`,
+                  top: `${d.norm_pos![1] * 100}%`,
+                  transform: 'translate(-50%, -50%)',
+                  pointerEvents: 'none', textAlign: 'center',
+                }}
+              >
+                <div style={{
+                  width: 18, height: 18, borderRadius: 999, margin: '0 auto',
+                  background: '#dc2626', border: '2px solid #fff', animation: 'rfPulse 1.6s infinite',
+                }} />
+                <div style={{
+                  marginTop: 4, display: 'inline-block', background: '#dc2626', color: '#fff',
+                  padding: '2px 8px', borderRadius: 8, fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                }}>
+                  📡 {d.is_spike ? '⚠️ ' : ''}{d.device_name || 'جهاز مجهول'}
+                </div>
+              </div>
             ))}
           </>
         ) : (
@@ -276,14 +390,42 @@ function CameraView({
             {hallMics.length > 0 && (
               <button
                 type="button"
-                onClick={() => setMicPlacementMode((value) => !value)}
+                onClick={() => { setMicPlacementMode((value) => !value); setRfPlacementMode(false); }}
                 aria-pressed={micPlacementMode}
                 style={{ marginRight: 8, background: micPlacementMode ? '#8e52cb' : 'none', color: micPlacementMode ? '#fff' : '#6b7280', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '4px 10px', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
               >
                 تحديد المايك
               </button>
             )}
+            {localScanners.length > 0 && (
+              <button
+                type="button"
+                onClick={() => { setRfPlacementMode((value) => !value); setMicPlacementMode(false); }}
+                aria-pressed={rfPlacementMode}
+                style={{ marginRight: 8, background: rfPlacementMode ? '#2563eb' : 'none', color: rfPlacementMode ? '#fff' : '#6b7280', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '4px 10px', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
+              >
+                تحديد جهاز RF
+              </button>
+            )}
           </div>
+          {rfPlacementMode && localScanners.length > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, direction: 'rtl', marginBottom: 6 }}>
+              <label style={{ fontSize: 12, color: '#4b5563', fontWeight: 800 }}>
+                جهاز RF
+                <select
+                  aria-label="جهاز RF"
+                  value={selectedScannerId}
+                  onChange={(event) => setSelectedScannerId(event.target.value)}
+                  style={{ marginRight: 8, border: '1px solid #e5e7eb', borderRadius: 8, padding: '4px 8px' }}
+                >
+                  {localScanners.map((sc) => (
+                    <option key={sc.id} value={sc.id}>{sc.identifier}</option>
+                  ))}
+                </select>
+              </label>
+              <span style={{ fontSize: 11, color: '#6b7280', alignSelf: 'center' }}>انقر على البث لتحديد موقع الجهاز</span>
+            </div>
+          )}
           {micPlacementMode && hallMics.length > 0 && (
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, direction: 'rtl' }}>
               <label style={{ fontSize: 12, color: '#4b5563', fontWeight: 800 }}>

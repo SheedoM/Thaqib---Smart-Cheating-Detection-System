@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import CameraModal from '../components/CameraModal';
+import CameraModal, { type CameraModalRfScanner } from '../components/CameraModal';
 import CameraFeedGrid, { type CameraFeedGridItem } from '../components/CameraFeedGrid';
 import HallsTab from '../components/HallsTab';
 import ExamsTab from '../components/ExamsTab';
 import SupervisorsTab from '../components/SupervisorsTab';
 import SettingsTab from '../components/SettingsTab';
+import RfBadge from '../components/RfBadge';
 import { authFetch, STREAM_BASE } from '../config/api';
 import { useHallVoice } from '../hooks/useHallVoice';
 
@@ -223,6 +224,8 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
     feedPath: string | null;
   } | null>(null);
   const [selectedCameraMics, setSelectedCameraMics] = useState<MicItem[]>([]);
+  const [selectedCameraHallId, setSelectedCameraHallId] = useState<string | null>(null);
+  const [selectedCameraScanners, setSelectedCameraScanners] = useState<CameraModalRfScanner[]>([]);
   const hallsPollRef = useRef<number | null>(null);
   const alertPollRef = useRef<number | null>(null);
   const statsPollRef = useRef<number | null>(null);
@@ -249,11 +252,12 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
   };
 
   useEffect(() => {
+    const clearTimers = clearTimersRef.current;
     return () => {
       if (hallsPollRef.current) clearInterval(hallsPollRef.current);
       if (alertPollRef.current) clearInterval(alertPollRef.current);
       if (statsPollRef.current) clearInterval(statsPollRef.current);
-      Object.values(clearTimersRef.current).forEach((t) => clearTimeout(t));
+      Object.values(clearTimers).forEach((t) => clearTimeout(t));
     };
   }, []);
 
@@ -349,7 +353,7 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
     };
   }, []);
 
-  const openCameraModal = (camera: CameraItem, hallName: string, hallMics: MicItem[] = []) => {
+  const openCameraModal = (camera: CameraItem, hallName: string, hallId: string, hallMics: MicItem[] = []) => {
     setModalMode('camera');
     setSelectedAlert(null);
     setSelectedCamera({
@@ -359,6 +363,12 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
       feedPath: camera.feed_path,
     });
     setSelectedCameraMics(hallMics);
+    setSelectedCameraHallId(hallId);
+    setSelectedCameraScanners([]);
+    authFetch(`/api/v1/rf/scanners?hall_id=${hallId}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setSelectedCameraScanners)
+      .catch(() => {});
   };
 
   const openAlertModal = (alert: Alert) => {
@@ -625,6 +635,8 @@ export default function DashboardPage({ onLogout }: { onLogout?: () => void }) {
           camera={selectedCamera}
           stats={selectedCamera ? statsByCamera[selectedCamera.id] ?? null : null}
           hallMics={selectedCameraMics}
+          hallId={selectedCameraHallId}
+          hallScanners={selectedCameraScanners}
           onConfirmAlert={confirmAlert}
           onCancelAlert={cancelAlert}
           onClose={closeModal}
@@ -770,7 +782,7 @@ function CamerasTab({
   hallsLoaded: boolean;
   statsByCamera: Record<string, CameraStats>;
   canOperate: boolean;
-  onClickCamera: (camera: CameraItem, hallName: string, hallMics: MicItem[]) => void;
+  onClickCamera: (camera: CameraItem, hallName: string, hallId: string, hallMics: MicItem[]) => void;
   recentAlertByCameraId: Record<string, Alert | null>;
   onViewAlert: (alert: Alert) => void;
 }) {
@@ -811,6 +823,7 @@ function CamerasTab({
               ) : (
                 <span className="hall-monitoring-badge inactive">في انتظار البدء</span>
               )}
+              <RfBadge hallId={hall.id} active={hall.monitoring_status === 'active'} />
             </div>
             {canOperate && (
               <div style={{ marginRight: 'auto', marginLeft: 0 }}>
@@ -848,7 +861,7 @@ function CamerasTab({
               })}
               onCameraClick={(item) => {
                 const camera = hall.cameras.find((candidate) => candidate.id === item.id);
-                if (camera) onClickCamera(camera, hall.name, hall.mics);
+                if (camera) onClickCamera(camera, hall.name, hall.id, hall.mics);
               }}
               onAlertClick={onViewAlert}
             />

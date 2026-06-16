@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { authFetch } from '../config/api';
+import RfScannerSection from './RfScannerSection';
 
 interface DeviceItem {
   name: string;
@@ -25,9 +26,11 @@ interface HallItem {
   mics: DeviceItem[];
 }
 
-interface HallsTabProps {}
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
 
-export default function HallsTab({}: HallsTabProps) {
+export default function HallsTab() {
   const [halls, setHalls] = useState<HallItem[]>([]);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingHall, setEditingHall] = useState<HallItem | null>(null);
@@ -55,9 +58,9 @@ export default function HallsTab({}: HallsTabProps) {
           throw new Error(errData.detail || 'Failed to delete hall');
         }
         fetchHalls();
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error('Failed to delete hall', err);
-        alert(err.message || 'حدث خطأ أثناء حذف القاعة');
+        alert(errorMessage(err, 'حدث خطأ أثناء حذف القاعة'));
       }
     }
   };
@@ -295,8 +298,8 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
       }
 
       onSuccess();
-    } catch (err: any) {
-      setErrorMsg(err.message || 'حدث خطأ أثناء الحفظ');
+    } catch (err: unknown) {
+      setErrorMsg(errorMessage(err, 'حدث خطأ أثناء الحفظ'));
     } finally {
       setIsSubmitting(false);
     }
@@ -493,6 +496,9 @@ function HallModal({ onClose, onSuccess, hall }: { onClose: () => void, onSucces
                 {mics.length === 0 && <div className="text-sm text-gray-400 text-center py-2">لم يتم إضافة أجهزة صوت</div>}
               </div>
             </div>
+
+            {/* RF scanner nodes — only for existing halls (registration needs a hall id) */}
+            {hall?.id && <RfScannerSection hallId={hall.id} />}
 
           </form>
         </div>
