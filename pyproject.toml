@@ -30,7 +30,7 @@ dependencies = [
     "alembic>=1.18.4,<1.19",
     "ultralytics>=8.0.0",        # YOLO detection (person + tools)
     "opencv-python>=4.10.0,<4.11", # Video capture and rendering; keep NumPy 1.26 compatible
-    "numpy==1.26.4",             # Vectorized spatial math; keep aligned with BoxMOT
+    "numpy==2.2.6",             # Vectorized spatial math; keep aligned with BoxMOT
     "mediapipe>=0.10.30",        # Face landmark extraction (Tasks API)
     "boxmot>=12.0.2,<13",        # BoT-SORT multi-object tracker
     "yacs>=0.1.8,<0.2",          # BoxMOT runtime config dependency
