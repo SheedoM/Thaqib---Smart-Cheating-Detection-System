@@ -210,7 +210,11 @@ class CameraStream:
                     failed_frames = 0
                 continue
 
-            is_file = isinstance(self.source, str) and not self.source.startswith("rtsp")
+            is_file = (
+                isinstance(self.source, str) 
+                and not self.source.startswith("rtsp") 
+                and not self.source.startswith("http")
+            )
 
             if is_file:
                 if stream_start_time is None:

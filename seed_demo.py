@@ -232,6 +232,18 @@ def _create_hall(db, institution_id, spec: dict) -> Hall:
                 status="online" if use_simulator_streams else "offline",
             ))
             
+        # Add RF Scanners to demonstrate RF detection UI
+        for idx, label in enumerate(["مستشعر الترددات 1", "مستشعر الترددات 2"], start=1):
+            scanner_id = f"{hall_prefix}_rf_{idx}"
+            db.add(Device(
+                hall_id=hall.id,
+                type="rf_scanner",
+                identifier=scanner_id,
+                stream_url=None,
+                position={"label": label},
+                status="online" if use_simulator_streams else "offline",
+            ))
+            
     db.flush()
 
     if use_simulator_streams and not (VIDEO_DIR / "cam1.mp4").exists():

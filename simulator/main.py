@@ -262,7 +262,7 @@ def mic_readiness() -> list[dict]:
 async def generate_mjpeg_stream(camera_id: str):
     """Generate MJPEG stream for a camera."""
     streamer = get_or_create_streamer(camera_id)
-    boundary = "--frameboundary"
+    boundary = "frameboundary"
 
     try:
         while True:
@@ -278,7 +278,7 @@ async def generate_mjpeg_stream(camera_id: str):
 
             # Yield MJPEG frame
             yield (
-                f"{boundary}\r\n"
+                f"--{boundary}\r\n"
                 f"Content-Type: image/jpeg\r\n"
                 f"Content-Length: {len(jpeg_bytes)}\r\n"
                 f"\r\n"
@@ -467,7 +467,7 @@ async def camera_feed(
 
     return StreamingResponse(
         generate_mjpeg_stream(camera_id),
-        media_type="multipart/x-mixed-replace; boundary=--frameboundary",
+        media_type="multipart/x-mixed-replace; boundary=frameboundary",
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
