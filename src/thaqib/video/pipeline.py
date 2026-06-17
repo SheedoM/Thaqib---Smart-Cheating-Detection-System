@@ -120,6 +120,7 @@ class AlertFrame:
     """
 
     frame: np.ndarray
+    frame_index: int = 0
     # track_id is None for pre-event (global) frames — not yet confirmed cheating.
     # phone_bboxes is [] for pre-event frames — phone not yet visible.
     track_id: int | None = None
@@ -207,7 +208,6 @@ class VideoPipeline:
         on_alert: Callable[[StudentState], None] | None = None,
         camera_id: str = "cam0",
         composer = None,
-        frame_buffer = None,
         clock = None,
     ):
         """
@@ -236,10 +236,10 @@ class VideoPipeline:
 
         self._camera_id = camera_id
         self._composer = composer
-        self._frame_buffer = frame_buffer
-
-        # Initialize components
-        self._camera = CameraStream(source=source, clock=clock)
+        self._camera = CameraStream(
+            source=source,
+            clock=clock
+        )
         self._detector = HumanDetector()
         self._tools_detector = ToolsDetector()
         self._tracker = ObjectTracker()
@@ -275,8 +275,7 @@ class VideoPipeline:
         self._track_aliases: dict[int, int] = {}
         self._alias_lock = threading.Lock()
         self._global_frame_buffer: deque[tuple[np.ndarray, None]] = deque(maxlen=90)
-        
-        # Initialize buffer lock and bounded executors to manage thread safety and memory.
+
         self._buffer_lock = threading.Lock()
         # _frame_lock: guards _current_frame_data written by run() and read by _detection_worker.
         self._frame_lock = threading.Lock()
@@ -286,7 +285,7 @@ class VideoPipeline:
         self._gaze_alert_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="GazeAlertWriter"
         )
-        
+
         # Async Detection State
         self._detection_queue: Queue[tuple[DetectionResult, ToolsDetectionResult]] = Queue(maxsize=1)
         self._current_frame_data: FrameData | None = None
@@ -298,27 +297,27 @@ class VideoPipeline:
         self._selected_ids: set[int] = set()
         self._auto_select_enabled: bool = True
         self._deselected_ids: set[int] = set()
-        
+
         # Initialize last logged track IDs to prevent all active students showing as new.
         self._last_logged_track_ids: set[int] = set()
-        
+
         # Face mesh futures: [(Future, track_id), ...]
         self._pending_fm_futures: list[tuple[Future, int]] = []
         self._fm_rr_idx: int = 0  # Round-robin index for face mesh job submission
-        
+
         # Archive recording: continuous video save to archive/ folder
         self._archive_writer: cv2.VideoWriter | None = None
         self._archive_path: str | None = None
         self._archive_size: tuple[int, int] | None = None  # (width, height) of archive writer
-        
+
         # Archive mode: 'raw' = original camera feed, 'annotated' = with overlays
         self._archive_annotated: bool = (settings.archive_mode == "annotated")
         logger.info(f"Archive mode: {'annotated (with overlays)' if self._archive_annotated else 'raw (original video)'}")
-        
+
         # Background archive writer thread (offloads 1-3ms/frame)
         self._archive_queue: queue.Queue = queue.Queue(maxsize=60)
         self._archive_thread: threading.Thread | None = None
-        
+
         # Track which track IDs we've already warned about recording cap
         # to avoid per-frame log spam.
         self._recording_skip_warned: set[int] = set()
@@ -560,7 +559,7 @@ class VideoPipeline:
                 if frame_data is not None:
                     # Run both inferences (Human + Tools)
                     f_copy = frame_data.frame.copy()
-                    
+
                     try:
                         # Wrap YOLO detections to prevent exceptions in worker threads from silencing pipeline.
                         detection_result = self._detector.detect(
@@ -568,7 +567,7 @@ class VideoPipeline:
                             frame_data.frame_index,
                             frame_data.timestamp,
                         )
-                        
+
                         tools_result = self._tools_detector.detect(
                             f_copy,
                             frame_data.frame_index,
@@ -578,21 +577,21 @@ class VideoPipeline:
                         logger.error("Detection worker exception — skipping frame: %s", exc)
                         time.sleep(1.0)
                         continue
-                    
+
                     last_detect_time = time.time()
-                    
+
                     # Update queue (drop old if present)
                     try:
                         while not self._detection_queue.empty():
                             self._detection_queue.get_nowait()
                     except Empty:
                         pass
-                    
+
                     try:
                         self._detection_queue.put_nowait((detection_result, tools_result))
                     except Exception as e:
                         logger.debug("Detection queue put failed (queue full?): %s", e)
-            
+
             time.sleep(0.01)  # Yield CPU
 
     def preload_models(self) -> None:
@@ -612,7 +611,7 @@ class VideoPipeline:
         if settings.torch_num_threads is not None:
             import torch
             torch.set_num_threads(settings.torch_num_threads)
-        
+
         logger.info("Starting video pipeline...")
 
         # Log all configuration at startup so every run is fully reproducible
@@ -638,7 +637,7 @@ class VideoPipeline:
             return False
 
         self._is_running = True
-        
+
         # Capture measured FPS from the device — used to derive post-event buffer
         # frame counts so they are correct for non-30-FPS sources.
         self._camera_fps: float = self._camera.actual_fps
@@ -676,7 +675,7 @@ class VideoPipeline:
             name="DetectionThread"
         )
         self._detection_thread.start()
-        
+
         # Start archive writer background thread (Fix 2)
         self._archive_thread = threading.Thread(
             target=self._archive_writer_loop,
@@ -692,7 +691,7 @@ class VideoPipeline:
         """Stop the pipeline and flush any in-progress recordings."""
         logger.info("Stopping video pipeline...")
         self._is_running = False
-        
+
         # Flush any in-progress alert recordings before shutdown
         # so the final cheating event in a video is never lost.
         for state in self._registry.get_all():
@@ -722,7 +721,7 @@ class VideoPipeline:
             self._phone_is_recording = False
             self._phone_recording_buffer.clear()
             self._save_phone_alert_video_async(frames_snapshot, time.time())
-        
+
         # Drain and close archive writer thread (Fix 2)
         if self._archive_thread is not None:
             self._archive_thread.join(timeout=3.0)
@@ -730,11 +729,11 @@ class VideoPipeline:
             self._archive_writer.release()
             self._archive_writer = None
             logger.info(f"Archive recording saved: {self._archive_path}")
-        
+
         if self._detection_thread is not None:
             self._detection_thread.join(timeout=1.0)
         self._camera.close()
-        
+
         # Clean up thread pool
         try:
             if self._face_executor is not None:
@@ -746,7 +745,7 @@ class VideoPipeline:
         # Shut down phone and gaze alert executors to clean up background worker threads.
         self._phone_alert_executor.shutdown(wait=True)
         self._gaze_alert_executor.shutdown(wait=True)
-        
+
         logger.info("Video pipeline stopped")
         # Flush and close the diagnostic log file
         self._vlog.close()
@@ -796,7 +795,7 @@ class VideoPipeline:
 
     def _process_frame(self, frame_data: FrameData) -> PipelineFrame:
         """Process a single frame through the pipeline."""
-        
+
         t0 = time.perf_counter()
 
         # Add to global frame ring buffer for alert recordings.
@@ -806,10 +805,8 @@ class VideoPipeline:
         with self._buffer_lock:
             _jpeg_bytes = encode_frame(frame_data.frame)
             self._global_frame_buffer.append(
-                JPEGFrame(data=_jpeg_bytes, timestamp=frame_data.timestamp)
+                JPEGFrame(data=_jpeg_bytes, timestamp=frame_data.timestamp, frame_index=frame_data.frame_index)
             )
-            if self._frame_buffer is not None:
-                self._frame_buffer.append((frame_data.timestamp, _jpeg_bytes))
 
         # Check for new detection async result
         new_detection = False
@@ -890,7 +887,7 @@ class VideoPipeline:
         except Empty:
             detection_result = self._last_detection_result
             tools_result = self._last_tools_result
-            
+
         t1 = time.perf_counter()
 
         # Update tracking
@@ -993,7 +990,7 @@ class VideoPipeline:
                 keep.append(current)
                 cx1, cy1, cx2, cy2 = current.bbox
                 c_area = (cx2 - cx1) * (cy2 - cy1)
-                
+
                 remaining = []
                 for track in sorted_tracks:
                     tx1, ty1, tx2, ty2 = track.bbox
@@ -1035,11 +1032,11 @@ class VideoPipeline:
         # Update spatial registry and compute neighbors for ALL tracks
         expired_states = self._registry.update(tracking_result.tracks, frame_data.frame_index, frame_data.timestamp)
         expired_ids = []
-        
+
         # Cleanup ReID memory and aliases
         if expired_states:
             expired_ids = [state.track_id for state in expired_states]
-            
+
             # Save in-progress recordings for expired tracks
             for state in expired_states:
                 if state.is_alert_recording and len(state.recording_buffer) > 0:
@@ -1062,16 +1059,16 @@ class VideoPipeline:
                         cheat_type=cheat_type, cheat_ctx=cheat_ctx
                     )
                 state.recording_buffer.clear()  # Free memory immediately
-            
+
             self._reid.remove_embeddings(expired_ids)
             # Use the public API to prune tracker state — avoids reaching
             # into private dicts/sets from outside the tracker class.
             self._tracker.remove_tracks(expired_ids)
-            
+
             with self._fm_cache_lock:
                 for track_id in expired_ids:
                     self._fm_cache.pop(track_id, None)
-                    
+
             with self._alias_lock:
                 keys_to_delete = [
                     bot_id for bot_id, thaqib_id in self._track_aliases.items()
@@ -1096,9 +1093,9 @@ class VideoPipeline:
                 expired_ids=sorted(expired_ids) if expired_ids else [],
                 registry_size=len(self._registry.get_all()),
             )
-        
+
         self._neighbor_computer.compute_neighbors(self._registry, k=get_settings().neighbor_k)
-        
+
         # Compute paper neighbors specifically (excluding the student's closest paper)
         if tools_result is not None:
             # Labels that are NOT phones — treat as papers on the desk
@@ -1109,7 +1106,7 @@ class VideoPipeline:
             # Keep a center→bbox map so alert frames can draw exact paper boxes
             self._paper_bboxes = {t.center: t.bbox for t in paper_tools}
             self._neighbor_computer.compute_paper_neighbors(self._registry, paper_centers, self._selected_ids)
-            
+
             # Phone detection — NOT linked to any student.
             # A phone anywhere in the frame triggers an independent alert clip.
             # phone label strings — keep in sync with VideoVisualizer._PHONE_LABELS
@@ -1143,7 +1140,7 @@ class VideoPipeline:
                     bbox_count=len(phone_tools),
                     bboxes=[t.bbox for t in phone_tools],
                 )
-        
+
         t4 = time.perf_counter()
 
         # Process selected students only
@@ -1171,7 +1168,7 @@ class VideoPipeline:
         # 2. Face mesh via thread pool:
         #    - First, COLLECT any completed futures from PREVIOUS cycle
         #    - Then, SUBMIT new jobs for this cycle
-        
+
         # Collect completed futures — housekeeping only.
         # ReID, face_mesh update, and cheating evaluation all happen in
         # the done_callback (_make_fm_callback) immediately when the result
@@ -1234,14 +1231,14 @@ class VideoPipeline:
                 for state in student_states:
                     if state.track_id in pending_track_ids:
                         continue
-                    
+
                     reg_state = self._registry.get(state.track_id)
                     if reg_state is None:
                         continue
-                        
+
                     if (frame_data.frame_index - reg_state.fm_last_frame) < FACE_MESH_INTERVAL:
                         continue
-                        
+
                     new_students.append((state, reg_state))
 
                 if new_students:
@@ -1290,7 +1287,7 @@ class VideoPipeline:
             for state in student_states:
                 reg_state = self._registry.get(state.track_id)
                 if reg_state is not None:
-                    self._cheating_evaluator.evaluate(state.track_id)
+                    self._cheating_evaluator.evaluate(state.track_id, frame_data.timestamp)
 
         # 4. Alert recording collector — runs AFTER cheating evaluation,
         #    so is_cheating and is_alert_recording are guaranteed stable.
@@ -1318,7 +1315,7 @@ class VideoPipeline:
                             active_recordings=active_recordings,
                         )
                     continue
-                
+
                 # START recording: snapshot pre-buffer (last ~2s) from global_frame_buffer.
                 # Frames are already JPEG-encoded (JPEGFrame objects) — cheap to copy.
                 # Pre-event frames carry tid=None so the writer renders them raw.
@@ -1336,7 +1333,7 @@ class VideoPipeline:
                     post_buffer_frames=self._post_buffer_frames,
                     cheat_type=cheat_type_start,
                 )
-            
+
             if not state.is_alert_recording:
                 continue
 
@@ -1345,6 +1342,7 @@ class VideoPipeline:
                 JPEGFrame(
                     data=encode_frame(frame_data.frame),
                     timestamp=frame_data.timestamp,
+                    frame_index=frame_data.frame_index,
                     track_id=state.track_id,
                     student_bbox=state.bbox,
                     student_center=state.center,
@@ -1363,10 +1361,10 @@ class VideoPipeline:
                     frames_snapshot = list(state.recording_buffer)
                     state.is_alert_recording = False
                     state.recording_buffer = deque(maxlen=_MAX_RECORDING_FRAMES)
-                    
+
                     # Determine cheat type BEFORE resetting state
                     cheat_type = "phone" if state.is_using_phone else "gaze"
-                    
+
                     # Snapshot cheating context BEFORE reset so the background
                     # writer can render paper/victim annotations correctly.
                     # Without this, cheating_target_paper is already None by
@@ -1382,7 +1380,7 @@ class VideoPipeline:
                         'phone_bbox': state.phone_bbox,
                         'suspicious_start_time': state.suspicious_start_time,
                     }
-                    
+
                     # Fully reset cheating state — the event is captured.
                     # Student returns to normal (no more red box).
                     state.is_cheating = False
@@ -1392,7 +1390,7 @@ class VideoPipeline:
                     state.cheating_target_neighbor = None
                     state.is_using_phone = False
                     state.phone_bbox = None
-                    
+
                     self._save_alert_video_async(
                         frames_snapshot, state.track_id, frame_data.timestamp,
                         cheat_type=cheat_type, cheat_ctx=cheat_ctx
@@ -1417,6 +1415,7 @@ class VideoPipeline:
                     JPEGFrame(
                         data=item.data,
                         timestamp=item.timestamp,
+                        frame_index=item.frame_index,
                         phone_bboxes=[],
                     )
                     for item in pre
@@ -1436,6 +1435,7 @@ class VideoPipeline:
                 JPEGFrame(
                     data=encode_frame(frame_data.frame),
                     timestamp=frame_data.timestamp,
+                    frame_index=frame_data.frame_index,
                     phone_bboxes=list(self._phone_current_bboxes),
                 )
             )
@@ -1559,7 +1559,7 @@ class VideoPipeline:
 
     def remove_student(self, track_id: int) -> None:
         """Remove a student from monitoring and realign paper assignments.
-        
+
         Clears the student's paper so they can no longer be a cheating 'victim',
         removes them from other students' neighbor lists, and invalidates the
         neighbor cache so papers realign to adjacent students on the next frame.
@@ -1573,14 +1573,14 @@ class VideoPipeline:
             ids_before=ids_before,
             ids_after=sorted(self._selected_ids),
         )
-        
+
         # Clear this student's paper so it's no longer a neighbor paper target
         state = self._registry.get(track_id)
         if state:
             state.detected_paper = None
             state.is_heuristic_paper = False
             state.surrounding_papers = []
-        
+
         # Remove from other students' neighbor/paper lists immediately
         for s in self._registry.get_all():
             if track_id in s.neighbors:
@@ -1594,7 +1594,7 @@ class VideoPipeline:
                     p for p in s.surrounding_papers
                     if p != state.paper_center
                 ]
-        
+
         # Invalidate the neighbor stability cache so the next frame
         # fully recomputes neighbors and paper assignments.
         self._neighbor_computer._prev_centers = None
@@ -1618,7 +1618,7 @@ class VideoPipeline:
 
     def toggle_archive_mode(self) -> str:
         """Toggle archive recording between raw and annotated mode.
-        
+
         Returns:
             The new mode as a string ('raw' or 'annotated').
         """
@@ -1660,7 +1660,7 @@ class VideoPipeline:
         """
         frame = raw_frame.copy()
         cheater = self._registry.get(cheater_track_id)
-        
+
         # Fallback to registry if student_bbox or student_center are not passed
         bbox = student_bbox
         center = student_center
@@ -1685,27 +1685,27 @@ class VideoPipeline:
         # Draw the cheater in RED with full body bbox
         cx1, cy1, cx2, cy2 = bbox
         cv2.rectangle(frame, (cx1, cy1), (cx2, cy2), (0, 0, 255), 3)
-        
+
         # Label depends on cheating type
         if is_using_phone:
             cheat_label = f"PHONE CHEATER ID:{cheater_track_id}"
         else:
             cheat_label = f"CHEATER ID:{cheater_track_id}"
-        
+
         # Draw label with background for readability
         (tw, th), _ = cv2.getTextSize(cheat_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
         cv2.rectangle(frame, (cx1, cy1 - th - 8), (cx1 + tw, cy1), (0, 0, 255), -1)
         cv2.putText(frame, cheat_label,
                     (cx1, cy1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     (255, 255, 255), 2, cv2.LINE_AA)
-        
+
         # Draw phone bbox in bright RED if phone cheating
         if is_using_phone and phone_bbox is not None:
             px1, py1, px2, py2 = phone_bbox
             cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 0, 255), 3)
             cv2.putText(frame, "PHONE", (px1, py1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
-        
+
         # Draw YELLOW box around the paper being looked at
         if target_paper is not None and not is_using_phone:
             # Try snapshot bbox first, then fall back to live _paper_bboxes
@@ -1731,7 +1731,7 @@ class VideoPipeline:
                 cv2.putText(frame, "PAPER", (px - 28, py - 28),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA)
                 cv2.line(frame, center, (px, py), (0, 0, 255), 2, cv2.LINE_AA)
-        
+
         # Draw status banner at top
         banner_h = 40
         cv2.rectangle(frame, (0, 0), (frame.shape[1], banner_h), (0, 0, 180), -1)
@@ -1743,7 +1743,7 @@ class VideoPipeline:
                 status_text += f" copying from Student {target_neighbor}"
         cv2.putText(frame, status_text, (10, 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-        
+
         return frame
 
     def _render_phone_alert_frame(
@@ -1788,7 +1788,7 @@ class VideoPipeline:
         def writer_task():
             from pathlib import Path
             from datetime import datetime
-            
+
             writer = None
             try:
                 if not frames:
@@ -1871,24 +1871,41 @@ class VideoPipeline:
                 if getattr(self, '_composer', None) is not None:
                     if subject_point is None:
                         subject_point = (width // 2, height // 2)
-                        
-                    def _get_ts(itm):
-                        if hasattr(itm, 'timestamp'):
-                            return itm.timestamp
-                        if isinstance(itm, tuple):
-                            return itm[0]
-                        return timestamp
 
-                    timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
-                    timestamp_end = _get_ts(frames[-1]) if frames else timestamp
-                    
-                    self._composer.on_video_alert(
-                        frames=annotated_frames,
+                    def _get_relative_time(itm):
+                        if hasattr(itm, 'frame_index'):
+                            return itm.frame_index / float(self._camera_fps)
+                        if isinstance(itm, tuple) and hasattr(itm[1], 'frame_index'):
+                            return itm[1].frame_index / float(self._camera_fps)
+                        return None
+
+                    timestamp_start = _get_relative_time(frames[0]) if frames else 0.0
+                    timestamp_end = _get_relative_time(frames[-1]) if frames else 0.0
+
+                    if timestamp_start is None or timestamp_start == 0.0:
+                        def _get_ts(itm):
+                            if hasattr(itm, 'timestamp'):
+                                return itm.timestamp
+                            if isinstance(itm, tuple):
+                                return itm[0]
+                            return timestamp
+
+                        timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
+                        timestamp_end = _get_ts(frames[-1]) if frames else timestamp
+
+                    mic_id = None
+                    if self._composer.layout:
+                        mic_pin = self._composer.layout.nearest_mic_for_point(subject_point, self._camera_id, (width, height))
+                        if mic_pin:
+                            mic_id = mic_pin.mic_id
+
+                    self._composer.compose_video_alert(
+                        camera_id=self._camera_id,
+                        mic_id=mic_id,
+                        start_sec=timestamp_start,
+                        end_sec=timestamp_end,
                         alert_type="phone",
                         subject_point=subject_point,
-                        camera_id=self._camera_id,
-                        timestamp_start=timestamp_start,
-                        timestamp_end=timestamp_end
                     )
                     return
 
@@ -1924,7 +1941,7 @@ class VideoPipeline:
                 for out_frame in annotated_frames:
                     writer.write(out_frame)
                     frames_written += 1
-                    
+
                 duration = frames_written / self._camera_fps
                 logger.info(
                     f"Saved phone alert video: {filename} "
@@ -2029,19 +2046,19 @@ class VideoPipeline:
         def writer_task():
             from pathlib import Path
             from datetime import datetime
-            
+
             writer = None
             try:
                 if not frames:
                     logger.warning(f"Alert video for track {track_id}: empty frame list, skipping.")
                     return
-                
+
                 # Resolve alerts_dir to prevent path traversal vulnerability.
                 alerts_dir = Path(self._settings.alerts_dir).resolve()
                 alerts_dir.mkdir(exist_ok=True)
-                
+
                 time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
-                
+
                 # Determine frame dimensions by decoding the first valid item.
                 height, width = None, None
                 for item in frames:
@@ -2068,13 +2085,13 @@ class VideoPipeline:
                     width  = int(width  * scale)
                     height = max_h
                 out_size = (width, height)
-                
+
                 prefix = "phone_alert" if cheat_type == "phone" else "gaze_alert"
-                
+
                 frames_written = 0
                 annotated_frames = []
                 subject_point = None
-                
+
                 for item in frames:
                     # Decode JPEG bytes if needed (JPEGFrame), else extract raw array.
                     if isinstance(item, JPEGFrame):
@@ -2130,27 +2147,48 @@ class VideoPipeline:
                     if subject_point is None:
                         subject_point = (width // 2, height // 2)
 
-                    # Extract the original timestamp from the frame tuple/AlertFrame
-                    def _get_ts(itm):
-                        if hasattr(itm, 'timestamp'):
-                            return itm.timestamp
-                        if isinstance(itm, tuple):
-                            return itm[0]
-                        return timestamp
+                    # Extract relative time using frame_index for perfect archive sync
+                    def _get_relative_time(itm):
+                        if hasattr(itm, 'frame_index'):
+                            return itm.frame_index / float(self._camera_fps)
+                        # Fallback for tuples if any
+                        if isinstance(itm, tuple) and hasattr(itm[1], 'frame_index'):
+                            return itm[1].frame_index / float(self._camera_fps)
+                        return None
 
-                    if cheat_ctx and cheat_ctx.get('suspicious_start_time', 0.0) > 0.0:
-                        timestamp_start = cheat_ctx['suspicious_start_time'] - 2.0
-                    else:
-                        timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
-                    timestamp_end = _get_ts(frames[-1]) if frames else timestamp
-                    
-                    self._composer.on_video_alert(
-                        frames=annotated_frames,
-                        alert_type=cheat_type,
-                        subject_point=subject_point,
+                    # Use the first and last frames of the buffer directly,
+                    # as the buffer naturally contains the pre-roll and post-roll.
+                    timestamp_start = _get_relative_time(frames[0]) if frames else 0.0
+                    timestamp_end = _get_relative_time(frames[-1]) if frames else 0.0
+
+                    # Fallback to system time if frame_index is somehow missing
+                    if timestamp_start is None or timestamp_start == 0.0:
+                        def _get_ts(itm):
+                            if hasattr(itm, 'timestamp'):
+                                return itm.timestamp
+                            if isinstance(itm, tuple):
+                                return itm[0]
+                            return timestamp
+                        if cheat_ctx and cheat_ctx.get('suspicious_start_time', 0.0) > 0.0:
+                            timestamp_start = cheat_ctx['suspicious_start_time'] - 2.0
+                        else:
+                            timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
+                        timestamp_end = _get_ts(frames[-1]) if frames else timestamp
+
+                    # Find the nearest mic ID to the student
+                    mic_id = None
+                    if self._composer.layout:
+                        mic_pin = self._composer.layout.nearest_mic_for_point(subject_point, self._camera_id, (width, height))
+                        if mic_pin:
+                            mic_id = mic_pin.mic_id
+
+                    self._composer.compose_video_alert(
                         camera_id=self._camera_id,
-                        timestamp_start=timestamp_start,
-                        timestamp_end=timestamp_end
+                        mic_id=mic_id,
+                        start_sec=timestamp_start,
+                        end_sec=timestamp_end,
+                        alert_type=cheat_type,
+                        subject_point=subject_point
                     )
                     return
 
@@ -2161,7 +2199,7 @@ class VideoPipeline:
                     ('XVID', '.avi'),
                     ('MJPG', '.avi'),
                 ]
-                
+
                 filename = None
                 for codec, ext in codec_options:
                     filename = alerts_dir / f"{prefix}_track{track_id}_{time_str}{ext}"
@@ -2173,7 +2211,7 @@ class VideoPipeline:
                         break
                     writer.release()
                     writer = None
-                
+
                 if writer is None or not writer.isOpened():
                     logger.error(f"Failed to create video writer — all codecs failed for track {track_id}. Attempting JPEG fallback.")
                     jpg_dir = alerts_dir / f"{prefix}_frames_track{track_id}_{time_str}"
@@ -2206,7 +2244,7 @@ class VideoPipeline:
             finally:
                 if writer is not None:
                     writer.release()
-                
+
         # Use a bounded thread pool executor for gaze alert writing to prevent uncapped memory footprint.
         self._gaze_alert_executor.submit(writer_task)
 

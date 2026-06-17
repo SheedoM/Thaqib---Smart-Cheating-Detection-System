@@ -4,11 +4,9 @@ import os
 import shutil
 import threading
 from pathlib import Path
-from threading import Lock
 import time
 import sys
 import subprocess
-from collections import deque
 
 # Check ffmpeg at startup
 try:
@@ -113,51 +111,36 @@ def main():
     # 3. Create SimClock
     clock = SimClock()
 
-    # 4. Create shared rolling buffers
-    # 500 chunks = 250 seconds of audio history
-    audio_buffers = {mic_id: deque(maxlen=500) for mic_id in mic_sources}
-    # 1800 frames = 60 seconds at 30fps — must be long enough to cover
-    # the full VAD+Whisper latency so on_audio_alert still finds frames.
-    video_buffers = {cam_id: deque(maxlen=1800) for cam_id in video_sources.keys()}
-    video_registries = {}
+    # 4. Create Composer with Archives dicts
+    # In testing mode (when paths are files), the source paths are the archives.
+    audio_archives = {mic_id: path for mic_id, path in audio_sources.items()}
+    video_archives = {cam_id: path for cam_id, path in video_sources.items()}
 
-    # C-2/C-3: per-buffer locks so AVAlertComposer snapshots are race-free
-    video_buffer_locks = {cam_id: Lock() for cam_id in video_sources}
-    audio_buffer_locks = {mic_id: Lock() for mic_id in mic_sources}
-
-    # 5. Create Composer
-    from thaqib.config import get_settings as _gs
-    _s = _gs()
     composer = AVAlertComposer(
+        audio_archives=audio_archives,
+        video_archives=video_archives,
         layout=layout,
-        audio_buffers=audio_buffers,
-        video_buffers=video_buffers,
-        video_registries=video_registries,
-        output_dir="alerts",
-        video_fps=float(_s.camera_fps),
-        audio_sample_rate=int(_s.audio_sample_rate),
-        video_buffer_locks=video_buffer_locks,
-        audio_buffer_locks=audio_buffer_locks,
+        output_dir="alerts"
     )
 
     # 6. Create Pipelines
     video_pipelines = []
+    # For manual mic mapping mode, we start with no mics mapped to cameras.
+    # The user will use the UI to manually assign mics to camera pins.
     for cam_id, source in video_sources.items():
         vp = VideoPipeline(
             source=source,
             camera_id=cam_id,
             composer=composer,
-            frame_buffer=video_buffers[cam_id],
             clock=clock
         )
         video_pipelines.append(vp)
-        video_registries[cam_id] = vp._registry
 
     source = FileAudioSource(audio_paths, clock=clock, real_time=True)
     ap = AudioPipeline(
         source=source,
         composer=composer,
-        audio_buffers=audio_buffers,
+        layout=layout,
         mic_ids=mic_sources,
         clock=clock
     )
@@ -168,7 +151,7 @@ def main():
     def run_video(vp, barrier, layout, available_mic_ids):
         visualizer = VideoVisualizer()
         vp.set_visualizer(visualizer)
-        
+
         # Inject layout info into visualizer for mic placement
         visualizer._layout = layout
         visualizer._camera_id = vp._camera_id
@@ -176,7 +159,7 @@ def main():
 
         window_name = f"Thaqib - {vp._camera_id}"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        
+
         # Combined mouse callback: handles both deselect mode and mic placement
         _deselect_mode = [False]
         _latest_frame = [None]
@@ -187,7 +170,7 @@ def main():
                 visualizer.handle_mouse(event, x, y, flags, param)
                 if event in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_RBUTTONDOWN):
                     return
-            
+
             # Normal modes only care about left click
             if event != cv2.EVENT_LBUTTONDOWN:
                 return
@@ -211,12 +194,12 @@ def main():
         except threading.BrokenBarrierError:
             logger.error(f"Barrier broken or timed out in run_video ({vp._camera_id}). Aborting.")
             return
-        
+
         try:
             with vp:
                 for pipeline_frame in vp.run():
                     _latest_frame[0] = pipeline_frame
-                    
+
                     if pipeline_frame.annotated_frame is not None:
                         annotated = pipeline_frame.annotated_frame
                     else:
@@ -290,7 +273,7 @@ def main():
         except threading.BrokenBarrierError:
             logger.error("Barrier broken or timed out in run_audio. Aborting.")
             return
-            
+
         try:
             ap.run_sync()
         except Exception as e:
@@ -311,19 +294,19 @@ def main():
         # Wait for all video streams to finish (e.g. reach EOF)
         for t in video_threads:
             t.join()
-            
+
         logger.info("All video streams ended. Stopping audio pipeline and composer...")
         ap.stop()
         composer.stop()
         audio_thread.join()
-        
+
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received, stopping pipelines...")
         for vp in video_pipelines:
             vp.stop()
         ap.stop()
         composer.stop()
-        
+
         for t in video_threads:
             t.join()
         audio_thread.join()

@@ -66,7 +66,7 @@ class CheatingEvaluator:
     def on_alert(self, callback):
         self._on_alert = callback
 
-    def _handle_face_lost(self, state, track_id: int) -> None:
+    def _handle_face_lost(self, state, track_id: int, current_time: float) -> None:
         """Called when face mesh or gaze is unavailable for a student.
 
         Implements a grace period: the suspicious_start_time is preserved for
@@ -74,7 +74,7 @@ class CheatingEvaluator:
         brief detection glitches from resetting a genuine cheating event.
         After the grace period expires, the timer is cleared as usual.
         """
-        now = self._clock.now() if self._clock else time.time()
+        now = current_time
 
         # Record the moment the face was first lost (don't overwrite if already set)
         if track_id not in self._face_lost_times:
@@ -132,7 +132,7 @@ class CheatingEvaluator:
                 in_grace_period=False,
             )
 
-    def evaluate(self, track_id: int) -> None:
+    def evaluate(self, track_id: int, current_time: float) -> None:
         """
         Evaluate cheating rules for a single student.
         
@@ -147,7 +147,7 @@ class CheatingEvaluator:
         # between our guard check here and any subsequent attribute access below.
         face_mesh = state.face_mesh
         if not face_mesh:
-            self._handle_face_lost(state, track_id)
+            self._handle_face_lost(state, track_id, current_time)
             return
         # face is present — clear any face-lost timer
         self._face_lost_times.pop(track_id, None)
@@ -158,7 +158,7 @@ class CheatingEvaluator:
         # Use shared gaze computation (single source of truth with visualizer)
         gaze_dir = compute_gaze_direction(face_mesh)
         if gaze_dir is None:
-            self._handle_face_lost(state, track_id)
+            self._handle_face_lost(state, track_id, current_time)
             return
 
         # Face is present — clear any grace period timer
@@ -198,7 +198,6 @@ class CheatingEvaluator:
                 break
 
         # Apply the suspicious duration rule from settings
-        current_time = self._clock.now() if self._clock else time.time()
         duration_threshold = settings.suspicious_duration_threshold
         
         # Compute the best dot product for logging (max over all papers).
