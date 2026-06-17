@@ -2078,6 +2078,14 @@ class VideoPipeline:
                 annotated_frames = []
                 subject_point = None
                 
+                def _get_relative_time(itm):
+                    if hasattr(itm, 'frame_index'):
+                        return itm.frame_index / float(self._camera_fps)
+                    # Fallback for tuples if any
+                    if isinstance(itm, tuple) and hasattr(itm[1], 'frame_index'):
+                        return itm[1].frame_index / float(self._camera_fps)
+                    return None
+
                 for item in frames:
                     # Decode JPEG bytes if needed (JPEGFrame), else extract raw array.
                     if isinstance(item, JPEGFrame):
@@ -2119,7 +2127,10 @@ class VideoPipeline:
                     if out.shape[:2] != (height, width):
                         out = cv2.resize(out, out_size, interpolation=cv2.INTER_AREA)
                     # Always burn timestamp into gaze alert videos
-                    draw_timestamp_overlay(out)
+                    # Calculate archive offset for the current frame
+                    current_offset = _get_relative_time(item)
+                    import time
+                    draw_timestamp_overlay(out, ts=time.time(), archive_offset_sec=current_offset)
                     annotated_frames.append(out)
 
                 # Composer integration path
@@ -2132,15 +2143,6 @@ class VideoPipeline:
 
                     if subject_point is None:
                         subject_point = (width // 2, height // 2)
-
-                    # Extract relative time using frame_index for perfect archive sync
-                    def _get_relative_time(itm):
-                        if hasattr(itm, 'frame_index'):
-                            return itm.frame_index / float(self._camera_fps)
-                        # Fallback for tuples if any
-                        if isinstance(itm, tuple) and hasattr(itm[1], 'frame_index'):
-                            return itm[1].frame_index / float(self._camera_fps)
-                        return None
 
                     # Use the first and last frames of the buffer directly,
                     # as the buffer naturally contains the pre-roll and post-roll.
