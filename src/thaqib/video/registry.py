@@ -52,6 +52,7 @@ class StudentSpatialState:
 
     # Alert recording state
     is_alert_recording: bool = False
+    metadata_history: deque = field(default_factory=lambda: deque(maxlen=600))
     recording_buffer: deque = field(default_factory=lambda: deque(maxlen=_MAX_RECORDING_FRAMES))
     frames_to_record: int = 0
     

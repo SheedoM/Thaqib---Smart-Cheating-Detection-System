@@ -86,6 +86,7 @@ data/
 *.parquet
 *.db
 *.sqlite
+*.jpg
 
 # Model weights (download separately)
 *.pt

@@ -246,7 +246,8 @@ class AudioPipeline:
         sessions_dir: str | None = None,
         vad_context_ms: int | None = None,
         composer=None,
-        audio_buffers: dict[str, deque] | None = None,
+        audio_buffers: dict[str, deque] = None,
+        layout=None,
         mic_ids: list[str] | None = None,
         clock=None,
     ):
@@ -326,7 +327,9 @@ class AudioPipeline:
         self._clip_sec_after = _clip_sec_after
 
         self._composer = composer
+        self._layout = layout
         self._audio_buffers = audio_buffers
+        self._mic_ids = mic_ids or []
 
         # Buffer identity debug logging requested by user
         if self._audio_buffers is not None and "mic0" in self._audio_buffers:
@@ -373,12 +376,14 @@ class AudioPipeline:
             vad_context_ms=_vad_context_ms,
         )
 
+        # Store registry for log messages throughout the pipeline
+        # Build registry from CLI args (_mic_ids) instead of static .env file
+        self._mic_registry: dict[int, str] = {i: name for i, name in enumerate(self._mic_ids)}
+
         self._evidence_recorder = AudioEvidenceRecorder(
             output_dir=_output_dir,
-            mic_names=s.mic_registry,           # dict[int, str] — supports IPs, any count
+            mic_names=self._mic_registry,
         )
-        # Store registry for log messages throughout the pipeline
-        self._mic_registry: dict[int, str] = s.mic_registry
 
         # Session recorder — streams all audio to WAV for post-exam analysis
         self._session_recorder: SessionAudioRecorder | None = (
@@ -1309,19 +1314,22 @@ class AudioPipeline:
         )
 
     def _dispatch_audio_alert(self, alert: "AudioAlert") -> None:
+        # First, always save the audio evidence
+        try:
+            wav_path, json_path = self._evidence_recorder.save_alert(alert)
+        except Exception as e:
+            logger.error(f"Error saving audio alert: {e}")
+            return
+            
         if getattr(self, '_composer', None) is not None:
             mic_id_str = self._mic_ids[alert.mic_id] if hasattr(self, '_mic_ids') and alert.mic_id < len(self._mic_ids) else str(alert.mic_id)
-            self._composer.on_audio_alert(
-                audio_clip=alert.audio_clip,
+            camera_ids = self._layout.cameras_for_mic(mic_id_str) if getattr(self, '_layout', None) is not None else []
+            self._composer.compose_audio_alert(
+                alert_wav_path=wav_path,
                 mic_id=mic_id_str,
-                timestamp_start=alert.timestamp_start,
-                timestamp_end=alert.timestamp_end,
-                keywords=alert.matched_keywords if hasattr(alert, 'matched_keywords') else [],
-                sample_rate=alert.sample_rate
-            )
-        else:
-            self._async_writer.enqueue_write(
-                self._evidence_recorder.save_alert, alert
+                camera_ids=camera_ids,
+                start_sec=alert.timestamp_start,
+                end_sec=alert.timestamp_end
             )
 
     def _whisper_worker(self) -> None:

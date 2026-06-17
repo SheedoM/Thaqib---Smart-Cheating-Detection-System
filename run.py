@@ -113,51 +113,38 @@ def main():
     # 3. Create SimClock
     clock = SimClock()
 
-    # 4. Create shared rolling buffers
-    # 500 chunks = 250 seconds of audio history
-    audio_buffers = {mic_id: deque(maxlen=500) for mic_id in mic_sources}
-    # 1800 frames = 60 seconds at 30fps — must be long enough to cover
-    # the full VAD+Whisper latency so on_audio_alert still finds frames.
-    video_buffers = {cam_id: deque(maxlen=1800) for cam_id in video_sources.keys()}
-    video_registries = {}
-
-    # C-2/C-3: per-buffer locks so AVAlertComposer snapshots are race-free
-    video_buffer_locks = {cam_id: Lock() for cam_id in video_sources}
-    audio_buffer_locks = {mic_id: Lock() for mic_id in mic_sources}
-
-    # 5. Create Composer
+    # 4. Create Composer with Archives dicts
+    # In testing mode (when paths are files), the source paths are the archives.
+    audio_archives = {mic_id: path for mic_id, path in audio_sources.items()}
+    video_archives = {cam_id: path for cam_id, path in video_sources.items()}
+    
     from thaqib.config import get_settings as _gs
     _s = _gs()
     composer = AVAlertComposer(
+        audio_archives=audio_archives,
+        video_archives=video_archives,
         layout=layout,
-        audio_buffers=audio_buffers,
-        video_buffers=video_buffers,
-        video_registries=video_registries,
-        output_dir="alerts",
-        video_fps=float(_s.camera_fps),
-        audio_sample_rate=int(_s.audio_sample_rate),
-        video_buffer_locks=video_buffer_locks,
-        audio_buffer_locks=audio_buffer_locks,
+        output_dir="alerts"
     )
 
     # 6. Create Pipelines
     video_pipelines = []
+    # For manual mic mapping mode, we start with no mics mapped to cameras.
+    # The user will use the UI to manually assign mics to camera pins.
     for cam_id, source in video_sources.items():
         vp = VideoPipeline(
             source=source,
             camera_id=cam_id,
             composer=composer,
-            frame_buffer=video_buffers[cam_id],
             clock=clock
         )
         video_pipelines.append(vp)
-        video_registries[cam_id] = vp._registry
 
     source = FileAudioSource(audio_paths, clock=clock, real_time=True)
     ap = AudioPipeline(
         source=source,
         composer=composer,
-        audio_buffers=audio_buffers,
+        layout=layout,
         mic_ids=mic_sources,
         clock=clock
     )

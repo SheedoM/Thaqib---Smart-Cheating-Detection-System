@@ -120,6 +120,7 @@ class AlertFrame:
     """
 
     frame: np.ndarray
+    frame_index: int = 0
     # track_id is None for pre-event (global) frames — not yet confirmed cheating.
     # phone_bboxes is [] for pre-event frames — phone not yet visible.
     track_id: int | None = None
@@ -207,7 +208,6 @@ class VideoPipeline:
         on_alert: Callable[[StudentState], None] | None = None,
         camera_id: str = "cam0",
         composer = None,
-        frame_buffer = None,
         clock = None,
     ):
         """
@@ -236,10 +236,10 @@ class VideoPipeline:
 
         self._camera_id = camera_id
         self._composer = composer
-        self._frame_buffer = frame_buffer
-
-        # Initialize components
-        self._camera = CameraStream(source=source, clock=clock)
+        self._camera = CameraStream(
+            source=source,
+            clock=clock
+        )
         self._detector = HumanDetector()
         self._tools_detector = ToolsDetector()
         self._tracker = ObjectTracker()
@@ -276,7 +276,6 @@ class VideoPipeline:
         self._alias_lock = threading.Lock()
         self._global_frame_buffer: deque[tuple[np.ndarray, None]] = deque(maxlen=90)
         
-        # Initialize buffer lock and bounded executors to manage thread safety and memory.
         self._buffer_lock = threading.Lock()
         # _frame_lock: guards _current_frame_data written by run() and read by _detection_worker.
         self._frame_lock = threading.Lock()
@@ -809,10 +808,8 @@ class VideoPipeline:
         with self._buffer_lock:
             _jpeg_bytes = encode_frame(frame_data.frame)
             self._global_frame_buffer.append(
-                JPEGFrame(data=_jpeg_bytes, timestamp=frame_data.timestamp)
+                JPEGFrame(data=_jpeg_bytes, timestamp=frame_data.timestamp, frame_index=frame_data.frame_index)
             )
-            if self._frame_buffer is not None:
-                self._frame_buffer.append((frame_data.timestamp, _jpeg_bytes))
 
         # Check for new detection async result
         new_detection = False
@@ -1293,7 +1290,7 @@ class VideoPipeline:
             for state in student_states:
                 reg_state = self._registry.get(state.track_id)
                 if reg_state is not None:
-                    self._cheating_evaluator.evaluate(state.track_id)
+                    self._cheating_evaluator.evaluate(state.track_id, frame_data.timestamp)
 
         # 4. Alert recording collector — runs AFTER cheating evaluation,
         #    so is_cheating and is_alert_recording are guaranteed stable.
@@ -1348,6 +1345,7 @@ class VideoPipeline:
                 JPEGFrame(
                     data=encode_frame(frame_data.frame),
                     timestamp=frame_data.timestamp,
+                    frame_index=frame_data.frame_index,
                     track_id=state.track_id,
                     student_bbox=state.bbox,
                     student_center=state.center,
@@ -1420,6 +1418,7 @@ class VideoPipeline:
                     JPEGFrame(
                         data=item.data,
                         timestamp=item.timestamp,
+                        frame_index=item.frame_index,
                         phone_bboxes=[],
                     )
                     for item in pre
@@ -1439,6 +1438,7 @@ class VideoPipeline:
                 JPEGFrame(
                     data=encode_frame(frame_data.frame),
                     timestamp=frame_data.timestamp,
+                    frame_index=frame_data.frame_index,
                     phone_bboxes=list(self._phone_current_bboxes),
                 )
             )
@@ -2133,27 +2133,48 @@ class VideoPipeline:
                     if subject_point is None:
                         subject_point = (width // 2, height // 2)
 
-                    # Extract the original timestamp from the frame tuple/AlertFrame
-                    def _get_ts(itm):
-                        if hasattr(itm, 'timestamp'):
-                            return itm.timestamp
-                        if isinstance(itm, tuple):
-                            return itm[0]
-                        return timestamp
+                    # Extract relative time using frame_index for perfect archive sync
+                    def _get_relative_time(itm):
+                        if hasattr(itm, 'frame_index'):
+                            return itm.frame_index / float(self._camera_fps)
+                        # Fallback for tuples if any
+                        if isinstance(itm, tuple) and hasattr(itm[1], 'frame_index'):
+                            return itm[1].frame_index / float(self._camera_fps)
+                        return None
 
-                    if cheat_ctx and cheat_ctx.get('suspicious_start_time', 0.0) > 0.0:
-                        timestamp_start = cheat_ctx['suspicious_start_time'] - 2.0
-                    else:
-                        timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
-                    timestamp_end = _get_ts(frames[-1]) if frames else timestamp
+                    # Use the first and last frames of the buffer directly,
+                    # as the buffer naturally contains the pre-roll and post-roll.
+                    timestamp_start = _get_relative_time(frames[0]) if frames else 0.0
+                    timestamp_end = _get_relative_time(frames[-1]) if frames else 0.0
                     
-                    self._composer.on_video_alert(
-                        frames=annotated_frames,
-                        alert_type=cheat_type,
-                        subject_point=subject_point,
+                    # Fallback to system time if frame_index is somehow missing
+                    if timestamp_start is None or timestamp_start == 0.0:
+                        def _get_ts(itm):
+                            if hasattr(itm, 'timestamp'):
+                                return itm.timestamp
+                            if isinstance(itm, tuple):
+                                return itm[0]
+                            return timestamp
+                        if cheat_ctx and cheat_ctx.get('suspicious_start_time', 0.0) > 0.0:
+                            timestamp_start = cheat_ctx['suspicious_start_time'] - 2.0
+                        else:
+                            timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
+                        timestamp_end = _get_ts(frames[-1]) if frames else timestamp
+                    
+                    # Find the nearest mic ID to the student
+                    mic_id = None
+                    if self._composer.layout:
+                        mic_pin = self._composer.layout.nearest_mic_for_point(subject_point, self._camera_id, (width, height))
+                        if mic_pin:
+                            mic_id = mic_pin.mic_id
+
+                    self._composer.compose_video_alert(
                         camera_id=self._camera_id,
-                        timestamp_start=timestamp_start,
-                        timestamp_end=timestamp_end
+                        mic_id=mic_id,
+                        start_sec=timestamp_start,
+                        end_sec=timestamp_end,
+                        alert_type=cheat_type,
+                        subject_point=subject_point
                     )
                     return
 

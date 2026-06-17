@@ -88,6 +88,7 @@ class JPEGFrame:
 
     # Metadata — mirrors AlertFrame fields so writers can use either type.
     timestamp: float = 0.0
+    frame_index: int = 0
     track_id: int | None = None
     phone_bboxes: list = field(default_factory=list)
     student_bbox: tuple[int, int, int, int] | None = None

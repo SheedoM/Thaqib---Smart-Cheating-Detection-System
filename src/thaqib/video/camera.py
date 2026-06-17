@@ -84,6 +84,7 @@ class CameraStream:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._clock = clock
+        self._clock = clock
 
     def open(self) -> bool:
         """
@@ -147,8 +148,18 @@ class CameraStream:
         frame_time_target = 1.0 / fps
         failed_frames = 0
 
+        failed_frames = 0
+        stream_start_time = None
+        file_frame_idx = 0
+        
+        # Get actual file FPS for fallback calculation if CAP_PROP_POS_MSEC fails
+        file_fps = 30.0
+        if self._cap and self._cap.isOpened():
+            file_fps = self._cap.get(cv2.CAP_PROP_FPS)
+            if file_fps <= 0:
+                file_fps = 30.0
+
         while not self._stop_event.is_set() and self._is_opened:
-            start_time = time.time()
             if self._cap is None or not self._cap.isOpened():
                 logger.warning("Camera lost, reconnecting...")
                 if self._cap is not None:
@@ -199,23 +210,45 @@ class CameraStream:
                     failed_frames = 0
                 continue
                 
-            failed_frames = 0
+            is_file = isinstance(self.source, str) and not self.source.startswith("rtsp")
+            
+            if is_file:
+                if stream_start_time is None:
+                    stream_start_time = self._clock.now() if self._clock else time.time()
+                    
+                frame_msec = self._cap.get(cv2.CAP_PROP_POS_MSEC)
+                if frame_msec > 0:
+                    frame_sec = frame_msec / 1000.0
+                else:
+                    frame_sec = file_frame_idx / file_fps
+                    
+                file_frame_idx += 1
+                
+                now = self._clock.now() if self._clock else time.time()
+                elapsed_since_start = now - stream_start_time
+                
+                sleep_time = frame_sec - elapsed_since_start
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                elif sleep_time < -(1.0 / fps):
+                    # Drop frame if we are lagging behind by more than 1 frame duration
+                    # This ensures 60fps videos play correctly at 30fps without slow motion
+                    continue
+                    
+                ts = stream_start_time + frame_sec
+            else:
+                ts = self._clock.now() if self._clock else time.time()
+                
             self._frame_index += 1
+                
             fd = FrameData(
                 frame=frame,
-                timestamp=self._clock.now() if self._clock else time.time(),
+                timestamp=ts,
                 frame_index=self._frame_index,
                 width=frame.shape[1],
                 height=frame.shape[0],
             )
             self._frame_queue.append(fd)
-            
-            # Pace video files so they don't immediately exhaust the deque
-            if isinstance(self.source, str):
-                elapsed = time.time() - start_time
-                sleep_time = frame_time_target - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
 
         # Stop event already set in the EOF branch above; set it again here
         # in case the loop exited through the while-condition (stop_event or
