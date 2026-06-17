@@ -188,6 +188,7 @@ class AVAlertComposer:
         end_sec: float,
         subject_point: tuple[int, int] = None,
     ) -> bool:
+        from thaqib.video.timestamps import draw_timestamp_overlay
         import cv2
 
         cap = cv2.VideoCapture(video_archive)
@@ -230,6 +231,9 @@ class AVAlertComposer:
                 # Draw a prominent yellow dot with a black border
                 cv2.circle(frame, (px, py), 10, (0, 255, 255), -1, cv2.LINE_AA)
                 cv2.circle(frame, (px, py), 10, (0, 0, 0), 2, cv2.LINE_AA)
+
+            # Draw system timestamp and archive offset
+            draw_timestamp_overlay(frame, ts=time.time(), archive_offset_sec=current_sec)
 
             out.write(frame)
             frames_written += 1
