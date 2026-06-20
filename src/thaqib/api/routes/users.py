@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from src.thaqib.db.database import get_db
 from src.thaqib.db.models.users import User
 from src.thaqib.db.models.infrastructure import Institution
-from src.thaqib.schemas.users import UserCreate, UserResponse, UserUpdate
+from src.thaqib.schemas.users import UserCreate, UserPreferences, UserResponse, UserUpdate
 from src.thaqib.api.dependencies import RequireRole, get_current_user, get_scope
 from src.thaqib.core.security import get_password_hash, verify_password
 from src.thaqib.core.limiter import limiter
@@ -16,6 +16,7 @@ from src.thaqib.core.limiter import limiter
 router = APIRouter()
 
 require_admin_or_super_admin = RequireRole(["admin", "super_admin"])
+require_invigilator = RequireRole(["invigilator"])
 
 class PasswordChangePayload(BaseModel):
     current_password: str
@@ -38,6 +39,33 @@ def change_my_password(
     db.add(current_user)
     db.commit()
     return {"message": "تم تغيير كلمة المرور بنجاح"}
+
+
+def _current_preferences(user: User) -> UserPreferences:
+    data = user.preferences if isinstance(user.preferences, dict) else {}
+    return UserPreferences(**data)
+
+
+@router.get("/me/preferences", response_model=UserPreferences)
+def read_my_preferences(
+    current_user: User = Depends(require_invigilator),
+) -> UserPreferences:
+    """Return account-wide invigilator dashboard preferences for the current user."""
+    return _current_preferences(current_user)
+
+
+@router.put("/me/preferences", response_model=UserPreferences)
+def update_my_preferences(
+    payload: UserPreferences,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_invigilator),
+) -> UserPreferences:
+    """Persist account-wide invigilator dashboard preferences for the current user."""
+    current_user.preferences = payload.model_dump()
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return _current_preferences(current_user)
 
 UPLOADS_DIR = Path("uploads/users")
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)

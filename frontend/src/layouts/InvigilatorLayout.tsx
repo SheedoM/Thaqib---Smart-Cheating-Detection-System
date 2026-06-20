@@ -11,9 +11,8 @@ export default function InvigilatorLayout({ onLogout }: InvigilatorLayoutProps) 
     <div className="flex flex-col min-h-screen bg-[#F5F5F7]" dir="rtl">
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white border-b border-[#EEE] px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <img src="/thaqib-logo.png" alt="Thaqib" className="h-8 w-8 object-contain rounded-md" />
-          <span className="font-black text-[#44006E] text-lg">Thaqib</span>
+        <div className="flex items-center">
+          <img src="/Frame 75.svg" alt="Thaqib" className="h-10 w-auto object-contain" />
         </div>
         <div className="flex items-center gap-4">
           {isInsecureLanContext() && (

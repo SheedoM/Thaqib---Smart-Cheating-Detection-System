@@ -9,6 +9,7 @@ import UniversityDashboardPage from './pages/UniversityDashboardPage';
 import InvigilatorLayout from './layouts/InvigilatorLayout';
 import SchedulePage from './pages/invigilator/SchedulePage';
 import HallMonitoringPage from './pages/invigilator/HallMonitoringPage';
+import InvigilatorSettingsPage from './pages/invigilator/InvigilatorSettingsPage';
 
 interface AppUser {
   role: 'admin' | 'super_admin' | 'invigilator' | string;
@@ -143,7 +144,7 @@ export default function App() {
               <Route path="/invigilator" element={<InvigilatorLayout onLogout={handleLogout} />}>
                 <Route index element={<SchedulePage />} />
                 <Route path="session/:sessionId/:hallId" element={<HallMonitoringPage />} />
-                <Route path="settings" element={<div className="p-8 text-center text-gray-500">قريباً...</div>} />
+                <Route path="settings" element={<InvigilatorSettingsPage onLogout={handleLogout} />} />
               </Route>
               <Route path="*" element={<Navigate to="/invigilator" replace />} />
             </>

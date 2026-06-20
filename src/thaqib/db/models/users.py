@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, SoftDeleteMixin, TimestampMixin, UUIDMixin
@@ -38,6 +38,7 @@ class User(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     # 'super_admin', 'admin', 'invigilator'
     status: Mapped[str] = mapped_column(String(20), default="active")
+    preferences: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     image: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Relationships

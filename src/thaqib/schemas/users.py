@@ -1,5 +1,5 @@
 import uuid
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, EmailStr, ConfigDict, Field
 
 # Token Schemas
@@ -40,6 +40,13 @@ class UserResponse(UserBase):
     image: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+class UserPreferences(BaseModel):
+    alert_cue_mode: Literal["sound_vibrate", "sound_only", "vibrate_only", "silent"] = "sound_vibrate"
+    alert_volume: int = Field(80, ge=0, le=100)
+    browser_notifications_enabled: bool = False
+    compact_display: bool = False
+    large_text: bool = False
 
 class SessionResponse(BaseModel):
     token_type: str = "cookie"
