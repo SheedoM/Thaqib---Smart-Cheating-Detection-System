@@ -405,7 +405,7 @@ Continuous recording of the full camera feed, saved as `archive_YYYYMMDD_HHMMSS.
 ---
 
 ## Team
-
+- **Shady Mohamed Faragallah**
 - **Mohamed Elsaied Shalaan**
 
 ## License
