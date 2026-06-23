@@ -40,7 +40,7 @@ dependencies = [
     "python-dotenv>=1.0.0",      # Environment variables
     "pyjwt>=2.13.0,<2.14",       # JWT Tokens
     "passlib[bcrypt]>=1.7.4",    # Password Hashing
-    "bcrypt==4.0.1",             # Keep compatible with passlib 1.7.4
+    "bcrypt==5.0.0",             # Keep compatible with passlib 1.7.4
     "python-multipart>=0.0.32,<0.1", # OAuth2 Forms
     "psycopg2-binary>=2.9.12,<2.10", # PostgreSQL driver
     "slowapi>=0.1.10,<0.2",      # Rate limiting
