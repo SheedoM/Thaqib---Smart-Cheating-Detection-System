@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 require_stream_view_user = RequireRole(["admin", "super_admin"])
-require_stream_operator = RequireRole(["admin"])
+require_stream_operator = RequireRole(["admin", "super_admin"])
 # The live feed (and only the live feed) is also viewable by invigilators, scoped
 # to the hall they are assigned to. All other stream endpoints stay admin-only.
 require_feed_view_user = RequireRole(["admin", "super_admin", "invigilator"])
