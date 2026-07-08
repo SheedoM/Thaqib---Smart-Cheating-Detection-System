@@ -1,7 +1,7 @@
 # Thaqib Smart Cheating Detection System — Architecture Analysis
 
-> **Last Updated**: After Audit Fix Round (commits 633e1cf, 4d699c5, 73d2d2bd and subsequent)
-> **Status**: All 10 prioritized findings fixed. Additional improvements applied.
+> **Last Updated**: After Video Synchronization & Dynamic Audio Registry Fixes (current session)
+> **Status**: All prioritized findings fixed. Frame-index synchronization and dynamic mic mapping implemented.
 > See git log for full change history.
 
 > **Methodology**: All conclusions below are drawn from direct, line-by-line reading of the source code.
@@ -165,6 +165,7 @@ AudioPipeline (orchestrator)
   ├─ Main loop: source.read() → preprocess → VAD worker queue
   ├─ VAD worker thread: discriminator → keyword detector → AlertQueue
   ├─ Whisper worker thread: transcription + keyword matching
+  ├─ Dynamic mic_registry: Derived directly from CLI arguments, ignoring static .env
   └─ on_audio_alert callback → AVAlertComposer
 ```
 
@@ -177,6 +178,7 @@ AVAlertComposer — receives alerts from BOTH pipelines, muxes A/V via ffmpeg
   └─ _draw_mic_pins() for visual overlay
   └─ ThreadPoolExecutor(max_workers=2) instead of raw threads
   └─ _mux_and_save uses -af apad -shortest
+  └─ Zero-frame resilience: skips ffmpeg merge if video archive yields 0 frames (e.g. after EOF)
 ```
 
 ---
@@ -251,8 +253,9 @@ VideoPipeline.run()  ← main thread loop
   │    │         is_cheating=F, recording=T  → POST: countdown frames_to_record
   │    │           → _save_alert_video_async(snapshot, track_id, …)
   │    │               → GazeAlertWriter thread pool
+  │    │               → Calculates exact archive cut bounds using frame_index / fps
   │    │               → _render_alert_frame() per frame (red bbox, paper box, gaze line)
-  │    │               → IF _composer: _composer.on_video_alert(frames, …)
+  │    │               → IF _composer: _composer.compose_video_alert(camera_id, start_sec, end_sec, …)
   │    │                     → AVAlertComposer: nearest_mic lookup
   │    │                     → audio_buffer extraction for time window (timestamp_start = suspicious_start_time, pre-roll = suspicious_duration_threshold + 2.0s)
   │    │                     → _draw_mic_pins (red=source, green=others)
