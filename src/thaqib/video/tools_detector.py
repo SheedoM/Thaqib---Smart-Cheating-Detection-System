@@ -73,7 +73,18 @@ class ToolsDetector:
         # Log available classes
         logger.info(f"Tools model classes: {self._model.names}")
         logger.info(f"Target labels: {self.target_labels}")
-        
+
+        # Guardrail: if the configured target labels don't exist in the model's
+        # class names, no papers/tools will EVER be detected (silent zero output).
+        model_labels = set(self._model.names.values())
+        if self.target_labels and not (set(self.target_labels) & model_labels):
+            logger.warning(
+                "tools_target_labels=%s do not match any class in tools model '%s' "
+                "(classes: %s). NO papers/tools will be detected — check "
+                "TOOLS_MODEL / TOOLS_TARGET_LABELS.",
+                self.target_labels, model_path, sorted(model_labels),
+            )
+
         # Warmup
         dummy_img = np.zeros((720, 1280, 3), dtype=np.uint8)
         self._model(dummy_img, verbose=False)

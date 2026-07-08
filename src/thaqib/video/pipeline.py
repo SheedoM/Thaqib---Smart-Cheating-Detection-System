@@ -1314,16 +1314,17 @@ class VideoPipeline:
         #   is_cheating=F, recording=T → POST: countdown 60 frames (2s), then save
         for state in self._registry.get_all():
             if state.is_cheating and not state.is_alert_recording:
-                # Cap concurrent recordings to 3 to prevent OOM.
+                # Cap concurrent recordings to bound memory (each buffers frames).
+                max_recordings = self._settings.max_concurrent_alert_recordings
                 active_recordings = sum(
                     1 for s in self._registry.get_all() if s.is_alert_recording
                 )
-                if active_recordings >= 3:
+                if active_recordings >= max_recordings:
                     # Only warn once per track to avoid per-frame log spam
                     if state.track_id not in self._recording_skip_warned:
                         logger.warning(
                             f"Skipping alert recording for track {state.track_id}: "
-                            f"{active_recordings} recordings already active (max 3)"
+                            f"{active_recordings} recordings already active (max {max_recordings})"
                         )
                         self._recording_skip_warned.add(state.track_id)
                         self._vlog.log_recording_cap_hit(

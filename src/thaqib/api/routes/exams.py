@@ -26,7 +26,7 @@ from src.thaqib.services.evidence_retention import apply_alert_retention
 router = APIRouter()
 require_admin = RequireRole(["admin"])
 require_admin_or_super_admin = RequireRole(["admin", "super_admin"])
-require_hall_operator = RequireRole(["invigilator", "admin"])
+require_hall_operator = RequireRole(["invigilator", "admin", "super_admin"])
 
 
 def _parse_camera_source(source: str) -> int | str:
@@ -139,11 +139,12 @@ def _get_session_hall_and_assignment(
     if not hall or (not hall_linked and assignment is None):
         raise HTTPException(status_code=404, detail="Hall is not linked to this exam session")
 
-    if current_user.role == "admin":
+    if current_user.role == "super_admin":
+        pass  # super_admin has full access within its institution scope
+    elif current_user.role == "admin":
         _require_admin_assigned_to_exam(db, session_id, current_user)
-    else:
-        if not assignment or assignment.invigilator_id != current_user.id:
-            raise HTTPException(status_code=403, detail="You are not assigned to monitor this hall")
+    elif not assignment or assignment.invigilator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You are not assigned to monitor this hall")
 
     return session, hall, assignment
 
@@ -230,11 +231,13 @@ def start_monitoring(
         raise HTTPException(status_code=404, detail="No assignment found for this hall and session")
         
     # Check permission
-    if current_user.role == "admin":
+    if current_user.role == "super_admin":
+        pass  # super_admin has full access within its institution scope
+    elif current_user.role == "admin":
         _require_admin_assigned_to_exam(db, session_id, current_user)
     elif assignment.invigilator_id != current_user.id:
         raise HTTPException(status_code=403, detail="You are not assigned to monitor this hall")
-        
+
     # Prevent invigilators from starting a stopped/cancelled exam
     if assignment.exam_session.status in ["completed", "cancelled"] and current_user.role not in ["admin", "super_admin"]:
         raise HTTPException(status_code=400, detail=f"Cannot start monitoring for a {assignment.exam_session.status} exam session")
@@ -355,11 +358,13 @@ def stop_monitoring(
         raise HTTPException(status_code=404, detail="No assignment found for this hall and session")
         
     # Check permission
-    if current_user.role == "admin":
+    if current_user.role == "super_admin":
+        pass  # super_admin has full access within its institution scope
+    elif current_user.role == "admin":
         _require_admin_assigned_to_exam(db, session_id, current_user)
     elif assignment.invigilator_id != current_user.id:
         raise HTTPException(status_code=403, detail="You are not assigned to this hall")
-        
+
     stream.stop_hall_monitoring(hall_id, session_id, db)
     return {"status": "monitoring stopped"}
 

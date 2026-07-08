@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     # Performance
     face_mesh_workers: int = 4           # Max parallel face mesh worker processes
     torch_num_threads: int | None = None # PyTorch CPU threads (None = OS default)
+    # Max simultaneous alert video recordings per camera. Each buffers frames in
+    # memory, so this bounds RAM; too low means concurrent cheaters get no clip.
+    max_concurrent_alert_recordings: int = 6
 
     # Data Storage
     data_dir: Path = Field(default=Path("./data"))

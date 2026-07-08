@@ -1168,14 +1168,66 @@ async def resume_active_sessions() -> None:
         db.close()
 
 
+# ── Freeze watchdog ───────────────────────────────────────────────────────────
+# A running pipeline can stall (e.g. a source stops sending frames) while its
+# stats still read is_running=True, leaving a frozen feed with no alerts and no
+# signal. The watchdog notices when a camera's frame_index stops advancing and
+# restarts that camera so monitoring self-heals.
+_FRAME_STALL_SECONDS = 30.0
+_watchdog_thread: threading.Thread | None = None
+_watchdog_stop = threading.Event()
+
+
+def _watchdog_loop() -> None:
+    # device_id -> (last frame_index, wall time it last changed)
+    last_seen: dict[str, tuple[int, float]] = {}
+    while not _watchdog_stop.wait(10.0):
+        with _manager_lock:
+            runtimes = list(_camera_states.items())
+        now = time.time()
+        for device_id, runtime in runtimes:
+            if not runtime.stats.get("is_running"):
+                last_seen.pop(device_id, None)
+                continue
+            frame_index = runtime.stats.get("frame_index", 0)
+            prev = last_seen.get(device_id)
+            if prev is None or frame_index != prev[0]:
+                last_seen[device_id] = (frame_index, now)
+                continue
+            if now - prev[1] >= _FRAME_STALL_SECONDS:
+                logger.error(
+                    "Watchdog: camera %s stalled at frame %s for %.0fs — restarting",
+                    runtime.identifier, frame_index, now - prev[1],
+                )
+                runtime.stats["last_error"] = "Camera stalled — auto-restarting"
+                runtime.stats["last_error_at"] = _now_utc().isoformat()
+                _stop_camera_runtime(runtime)
+                with _manager_lock:
+                    _camera_states.pop(device_id, None)
+                last_seen.pop(device_id, None)
+                # Recreate the camera if its hall is still under active monitoring.
+                _refresh_camera_states()
+
+
+def _start_watchdog() -> None:
+    global _watchdog_thread
+    if _watchdog_thread is not None and _watchdog_thread.is_alive():
+        return
+    _watchdog_stop.clear()
+    _watchdog_thread = threading.Thread(target=_watchdog_loop, daemon=True, name="StreamWatchdog")
+    _watchdog_thread.start()
+
+
 def startup_stream_manager() -> None:
-    """Initialize the stream manager. Does not auto-start cameras anymore; 
+    """Initialize the stream manager. Does not auto-start cameras anymore;
     resuming is handled by resume_active_sessions during lifespan."""
     logger.info("Initializing monitoring stream manager (idle)")
+    _start_watchdog()
 
 
 def shutdown_stream_manager() -> None:
     logger.info("Stopping monitoring stream manager")
+    _watchdog_stop.set()
     with _manager_lock:
         runtimes = list(_camera_states.values())
         _camera_states.clear()
