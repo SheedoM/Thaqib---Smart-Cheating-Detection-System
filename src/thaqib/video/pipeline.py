@@ -1887,24 +1887,34 @@ class VideoPipeline:
                 if getattr(self, '_composer', None) is not None:
                     if subject_point is None:
                         subject_point = (width // 2, height // 2)
-                        
-                    def _get_ts(itm):
+
+                    # Use frame_index / fps for archive-accurate seek offsets.
+                    def _get_offset(itm):
+                        if hasattr(itm, 'frame_index'):
+                            return itm.frame_index / float(self._camera_fps)
                         if hasattr(itm, 'timestamp'):
                             return itm.timestamp
-                        if isinstance(itm, tuple):
-                            return itm[0]
                         return timestamp
 
-                    timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
-                    timestamp_end = _get_ts(frames[-1]) if frames else timestamp
-                    
-                    self._composer.on_video_alert(
-                        frames=annotated_frames,
+                    timestamp_start = _get_offset(frames[0]) if frames else max(0.0, timestamp - (len(annotated_frames) / self._camera_fps))
+                    timestamp_end   = _get_offset(frames[-1]) if frames else timestamp
+
+                    # Find nearest mic to phone location (for audio extraction)
+                    mic_id = None
+                    if self._composer.layout:
+                        mic_pin = self._composer.layout.nearest_mic_for_point(
+                            subject_point, self._camera_id, (width, height)
+                        )
+                        if mic_pin:
+                            mic_id = mic_pin.mic_id
+
+                    self._composer.compose_video_alert(
+                        camera_id=self._camera_id,
+                        mic_id=mic_id,
+                        start_sec=timestamp_start,
+                        end_sec=timestamp_end,
                         alert_type="phone",
                         subject_point=subject_point,
-                        camera_id=self._camera_id,
-                        timestamp_start=timestamp_start,
-                        timestamp_end=timestamp_end
                     )
                     return
 
@@ -2003,6 +2013,11 @@ class VideoPipeline:
                     self._archive_writer = writer
                     self._archive_path = str(filepath)
                     self._archive_size = (w, h)
+                    # P-2: Notify composer of the actual archive path so that
+                    # live-camera alerts seek in the correct dynamically-created
+                    # archive file rather than the original source path.
+                    if self._composer is not None:
+                        self._composer.update_video_archive(self._camera_id, str(filepath))
                     logger.info(
                         f"Archive recording started: {filepath} "
                         f"(codec={codec}, quality={self._video_quality}, size={w}x{h})"

@@ -210,15 +210,25 @@ class AVAlertComposer:
                 
             logger.info(f"AV Composer successfully extracted video for audio alert: {output_path}")
 
+    def update_video_archive(self, camera_id: str, archive_path: str) -> None:
+        """Update the video archive path for a camera.
+
+        Called automatically by VideoPipeline when it creates a new archive
+        file (live camera mode). Ensures the composer always seeks in the
+        correct, currently-being-written archive file.
+        """
+        self.video_archives[camera_id] = archive_path
+        logger.info(f"Video archive updated for {camera_id}: {archive_path}")
+
     def _extract_and_annotate_video(
-        self, 
-        video_archive: str, 
-        output_path: str, 
-        camera_id: str, 
-        mic_id: str, 
-        start_sec: float, 
+        self,
+        video_archive: str,
+        output_path: str,
+        camera_id: str,
+        mic_id: str,
+        start_sec: float,
         end_sec: float,
-        subject_point: tuple[int, int] = None
+        subject_point: tuple[int, int] = None,
     ):
         from thaqib.video.timestamps import draw_timestamp_overlay
         import cv2
