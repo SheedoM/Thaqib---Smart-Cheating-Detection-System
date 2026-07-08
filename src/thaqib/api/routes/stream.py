@@ -878,6 +878,14 @@ def _run_pipeline(camera: CameraRuntime) -> None:
 
     pipeline = VideoPipeline(source=parsed_source, detection_interval=_detection_interval, on_alert=on_alert)
     pipeline._archive_annotated = (_archive_mode == "annotated")
+    # Attach a VideoVisualizer so the browser feed gets the same toggle-able
+    # overlays as the desktop viewer (papers / phones / gaze-lines / neighbors /
+    # face-mesh / timestamp / control-panel). The [T][D][F][L][K][W][P] endpoints
+    # flip flags on camera._visualizer, and _process_frame renders through it.
+    from src.thaqib.video.visualizer import VideoVisualizer
+    visualizer = VideoVisualizer(camera_id=camera.identifier)
+    pipeline.set_visualizer(visualizer)
+    camera._visualizer = visualizer
     # Expose pipeline to HTTP control endpoints (toggle_video_quality / toggle_processing_resolution)
     camera._pipeline = pipeline
 
@@ -917,18 +925,24 @@ def _run_pipeline(camera: CameraRuntime) -> None:
                         camera.identifier,
                     )
 
-            # Downscale high-res frames (e.g. 4K) to prevent memory crashes and improve MJPEG performance.
-            original_frame = frame_data.frame
-            h, w = original_frame.shape[:2]
+            # Prefer the visualizer-rendered frame (carries all toggle overlays);
+            # fall back to the lightweight fixed overlay only if no visualizer is
+            # attached (headless/test). Downscale high-res frames (e.g. 4K) to
+            # prevent memory crashes and improve MJPEG performance.
+            base_frame = frame_data.annotated_frame if frame_data.annotated_frame is not None else frame_data.frame
+            h, w = frame_data.frame.shape[:2]
             scale = 1.0
             if w > max_stream_w and w > 0:
                 scale = max_stream_w / float(w)
                 new_h = max(1, int(h * scale))
-                display_frame = cv2.resize(original_frame, (max_stream_w, new_h), interpolation=cv2.INTER_AREA)
+                display_frame = cv2.resize(base_frame, (max_stream_w, new_h), interpolation=cv2.INTER_AREA)
             else:
-                display_frame = original_frame
+                display_frame = base_frame
 
-            annotated = _draw_annotations(display_frame, frame_data, scale=scale)
+            if frame_data.annotated_frame is not None:
+                annotated = display_frame  # already annotated by the visualizer
+            else:
+                annotated = _draw_annotations(display_frame, frame_data, scale=scale)
             now = time.time()
             if now - last_emit < min_interval:
                 camera.stats["frame_drops"] = camera.stats.get("frame_drops", 0) + 1

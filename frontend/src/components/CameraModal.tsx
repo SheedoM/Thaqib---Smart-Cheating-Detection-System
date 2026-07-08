@@ -253,9 +253,13 @@ function CameraView({
         case 'r': path = '/archive'; break;
         case 's': path = '/select-all'; break;
         case 'c': path = '/clear-selection'; break;
-        // Visualizer display toggles (T/D/F/L/K/W/P) are intentionally omitted:
-        // the web MJPEG pipeline draws a fixed overlay and attaches no
-        // VideoVisualizer, so those endpoints are no-ops in the browser.
+        case 't': path = '/toggle/neighbors'; break;
+        case 'd': path = '/toggle/papers'; break;
+        case 'f': path = '/toggle/phones'; break;
+        case 'l': path = '/toggle/gaze-lines'; break;
+        case 'k': path = '/toggle/facemesh'; break;
+        case 'w': path = '/toggle/timestamp'; break;
+        case 'p': path = '/toggle/panel'; break;
       }
       if (!path) return;
       e.preventDefault();
@@ -453,6 +457,13 @@ function CameraView({
               ['R', 'تبديل وضع الأرشيف (raw / annotated)'],
               ['S', 'مراقبة جميع الطلاب المكتشفين'],
               ['C', 'إيقاف مراقبة الجميع'],
+              ['T', 'تبديل رسوم الجيران ON/OFF'],
+              ['D', 'تبديل عرض إطارات الورق ON/OFF'],
+              ['F', 'تبديل عرض إطارات الهاتف ON/OFF'],
+              ['L', 'تبديل خطوط النظرة→ورق ON/OFF'],
+              ['K', 'تبديل عرض نقاط خريطة الوجه ON/OFF'],
+              ['W', 'تبديل التوقيت المرئي ON/OFF'],
+              ['P', 'إخفاء/إظهار لوحة التحكم'],
               ['Esc', 'إغلاق النافذة'],
             ] as [string, string][]).map(([key, desc]) => (
               <>
