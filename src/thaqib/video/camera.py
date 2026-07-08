@@ -78,7 +78,7 @@ class CameraStream:
         self._is_opened = False
         self._original_width: int = 0
         self._original_height: int = 0
-
+        
         # Threaded Queue
         self._frame_queue = deque(maxlen=5)
         self._thread: threading.Thread | None = None
@@ -134,7 +134,7 @@ class CameraStream:
 
         self._is_opened = True
         self._frame_index = 0
-
+        
         # Start reader thread
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._update_loop, daemon=True)
@@ -151,7 +151,7 @@ class CameraStream:
         failed_frames = 0
         stream_start_time = None
         file_frame_idx = 0
-
+        
         # Get actual file FPS for fallback calculation if CAP_PROP_POS_MSEC fails
         file_fps = 30.0
         if self._cap and self._cap.isOpened():
@@ -165,7 +165,7 @@ class CameraStream:
                 if self._cap is not None:
                     self._cap.release()
                 time.sleep(2.0)
-
+                
                 # Attempt to reconnect
                 if isinstance(self.source, int):
                     if platform.system() == "Windows":
@@ -177,7 +177,7 @@ class CameraStream:
                     self._cap = cv2.VideoCapture(self.source, backend)
                 else:
                     self._cap = cv2.VideoCapture(self.source)
-
+                    
                 if self._cap.isOpened():
                     self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
                     self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
@@ -189,7 +189,7 @@ class CameraStream:
                     logger.error("Reconnection failed. Retrying in 2 seconds...")
                     time.sleep(2.0)
                     continue
-
+                
             ret, frame = self._cap.read()
             if not ret:
                 failed_frames += 1
@@ -209,28 +209,24 @@ class CameraStream:
                     self._cap = None
                     failed_frames = 0
                 continue
-
-            is_file = (
-                isinstance(self.source, str) 
-                and not self.source.startswith("rtsp") 
-                and not self.source.startswith("http")
-            )
-
+                
+            is_file = isinstance(self.source, str) and not self.source.startswith("rtsp")
+            
             if is_file:
                 if stream_start_time is None:
                     stream_start_time = self._clock.now() if self._clock else time.time()
-
+                    
                 frame_msec = self._cap.get(cv2.CAP_PROP_POS_MSEC)
                 if frame_msec > 0:
                     frame_sec = frame_msec / 1000.0
                 else:
                     frame_sec = file_frame_idx / file_fps
-
+                    
                 file_frame_idx += 1
-
+                
                 now = self._clock.now() if self._clock else time.time()
                 elapsed_since_start = now - stream_start_time
-
+                
                 sleep_time = frame_sec - elapsed_since_start
                 if sleep_time > 0:
                     time.sleep(sleep_time)
@@ -238,13 +234,13 @@ class CameraStream:
                     # Drop frame if we are lagging behind by more than 1 frame duration
                     # This ensures 60fps videos play correctly at 30fps without slow motion
                     continue
-
+                    
                 ts = stream_start_time + frame_sec
             else:
                 ts = self._clock.now() if self._clock else time.time()
-
+                
             self._frame_index += 1
-
+                
             fd = FrameData(
                 frame=frame,
                 timestamp=ts,
@@ -265,7 +261,7 @@ class CameraStream:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
-
+            
         if self._cap is not None:
             self._cap.release()
             self._cap = None
@@ -290,11 +286,11 @@ class CameraStream:
             except IndexError:
                 # queue emptied between check and pop — spin again
                 pass
-
+            
             if not self._is_opened or self._stop_event.is_set():
                 break
             time.sleep(0.01)
-
+            
         return None
 
     def frames(self) -> Generator[FrameData, None, None]:

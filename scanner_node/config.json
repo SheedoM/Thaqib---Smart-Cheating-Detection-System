@@ -1,0 +1,7 @@
+{
+  "scanner_id": "REPLACE_WITH_SCANNER_UUID",
+  "api_key": "REPLACE_WITH_PRESHARED_KEY",
+  "backend_url": "http://192.168.1.50:8001",
+  "scan_seconds": 3.0,
+  "post_seconds": 3.0
+}

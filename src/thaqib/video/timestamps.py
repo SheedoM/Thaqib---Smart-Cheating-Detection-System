@@ -21,9 +21,9 @@ def draw_timestamp_overlay(frame: np.ndarray, ts: float | None = None, archive_o
     """
     dt = (datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone()
           if ts else datetime.datetime.now().astimezone())
-
+    
     texts = [dt.strftime("%Y-%m-%d  %H:%M:%S")]
-
+    
     if archive_offset_sec is not None:
         m, s = divmod(int(archive_offset_sec), 60)
         h, m = divmod(m, 60)
@@ -40,13 +40,13 @@ def draw_timestamp_overlay(frame: np.ndarray, ts: float | None = None, archive_o
     max_tw = 0
     total_th = 0
     lines_meta = []
-
+    
     for text in texts:
         (tw, t_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
         max_tw = max(max_tw, tw)
         lines_meta.append({'text': text, 'tw': tw, 'th': t_h, 'baseline': baseline})
         total_th += t_h + baseline + line_spacing
-
+        
     total_th -= line_spacing # remove trailing spacing
 
     x0 = w - max_tw - pad * 2

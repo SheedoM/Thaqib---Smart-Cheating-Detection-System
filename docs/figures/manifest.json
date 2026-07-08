@@ -1,0 +1,72 @@
+{
+  "fig_context": {
+    "path": "figures/fig_context.png",
+    "w": 900,
+    "h": 520
+  },
+  "fig_usecase": {
+    "path": "figures/fig_usecase.png",
+    "w": 1000,
+    "h": 760
+  },
+  "fig_class": {
+    "path": "figures/fig_class.png",
+    "w": 1020,
+    "h": 760
+  },
+  "fig_sequence": {
+    "path": "figures/fig_sequence.png",
+    "w": 1000,
+    "h": 620
+  },
+  "fig_activity": {
+    "path": "figures/fig_activity.png",
+    "w": 760,
+    "h": 940
+  },
+  "fig_state": {
+    "path": "figures/fig_state.png",
+    "w": 920,
+    "h": 380
+  },
+  "fig_arch": {
+    "path": "figures/fig_arch.png",
+    "w": 880,
+    "h": 600
+  },
+  "fig_video": {
+    "path": "figures/fig_video.png",
+    "w": 820,
+    "h": 760
+  },
+  "fig_audio": {
+    "path": "figures/fig_audio.png",
+    "w": 940,
+    "h": 470
+  },
+  "fig_erd": {
+    "path": "figures/fig_erd.png",
+    "w": 1000,
+    "h": 640
+  },
+  "fig_gaze": {
+    "path": "figures/fig_gaze.png",
+    "w": 820,
+    "h": 460
+  },
+  "fig_setup": {
+    "path": "figures/fig_setup.png",
+    "w": 940,
+    "h": 480
+  },
+  "fig_confusion": {
+    "path": "figures/fig_confusion.png",
+    "w": 760,
+    "h": 560
+  },
+  "fig_rf": {
+    "path": "figures/fig_rf.png",
+    "w": 940,
+    "h": 610
+  }
+}

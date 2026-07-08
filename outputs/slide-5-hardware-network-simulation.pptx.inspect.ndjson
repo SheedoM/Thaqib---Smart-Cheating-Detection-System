@@ -1,0 +1,38 @@
+{"kind":"deck","id":"pr/pkk31g","name":"Deck"}
+{"kind":"layout","layoutId":"082462b9-bc91-44c4-8798-9e1d8972f4c2","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"940b2db0-686e-4ad4-a62a-363dd9c09d47","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/y8uuck","slide":1,"title":"SLIDE 05  |  HARDWARE NETWORK SIMULATION","textShapes":21}
+{"kind":"textbox","id":"sh/donyd0z6","slide":1,"name":"section-label","text":"SLIDE 05  |  HARDWARE NETWORK SIMULATION","textPreview":"SLIDE 05  |  HARDWARE NETWORK SIMULATION","textChars":40,"textLines":1,"bbox":[72,42,520,26]}
+{"kind":"textbox","id":"sh/2x4nap4r","slide":1,"name":"main-title","text":"Simulating the Physical Environment","textPreview":"Simulating the Physical Environment","textChars":35,"textLines":1,"bbox":[72,76,760,58]}
+{"kind":"textbox","id":"sh/vixczed8","slide":1,"name":"subtitle","text":"A Docker-based camera and microphone simulator turns local test media into live streams, so the backend behaves as if it is connected to real exam-hall devices.","textPreview":"A Docker-based camera and microphone simulator turns local test media into live streams, so the backend behaves as if it is connected to ...","textChars":160,"textLines":1,"bbox":[74,140,620,58]}
+{"kind":"textbox","id":"sh/kre1w7mp","slide":1,"name":"slide-number","text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1160,46,58,38]}
+{"kind":"shape","id":"sh/dcbulwva","slide":1,"name":"diagram-surface","bbox":[58,216,1164,420]}
+{"kind":"textbox","id":"sh/6psfil0r","slide":1,"name":"flow-caption","text":"Local files become network devices","textPreview":"Local files become network devices","textChars":34,"textLines":1,"bbox":[92,238,370,28]}
+{"kind":"textbox","id":"sh/val87ed8","slide":1,"name":"mounted-volume","text":"Mounted media volume\n/app/videos","textPreview":"Mounted media volume | /app/videos","textChars":32,"textLines":2,"bbox":[92,294,226,86]}
+{"kind":"textbox","id":"sh/knih4byh","slide":1,"name":"mp4-files","text":".mp4 camera clips\ncam1.mp4, cam2.mp4","textPreview":".mp4 camera clips | cam1.mp4, cam2.mp4","textChars":36,"textLines":2,"bbox":[112,404,186,64]}
+{"kind":"textbox","id":"sh/d8bat47y","slide":1,"name":"wav-files","text":".wav mic clips\nhall audio","textPreview":".wav mic clips | hall audio","textChars":25,"textLines":2,"bbox":[112,486,186,64]}
+{"kind":"textbox","id":"sh/pkzupwb2","slide":1,"name":"docker-container","text":"Camera Streaming Simulator Container","textPreview":"Camera Streaming Simulator Container","textChars":36,"textLines":1,"bbox":[382,258,438,332]}
+{"kind":"textbox","id":"sh/0z61032l","slide":1,"name":"docker-badge","text":"Docker :8000","textPreview":"Docker :8000","textChars":12,"textLines":1,"bbox":[666,274,128,34]}
+{"kind":"textbox","id":"sh/7ed8bat4","slide":1,"name":"sim-reader","text":"1  Read files\nOpenCV + audio loader","textPreview":"1  Read files | OpenCV + audio loader","textChars":35,"textLines":2,"bbox":[418,338,170,74]}
+{"kind":"textbox","id":"sh/itgfmlkj","slide":1,"name":"sim-converter","text":"2  Convert\nMJPEG frames + PCM16 chunks","textPreview":"2  Convert | MJPEG frames + PCM16 chunks","textChars":38,"textLines":2,"bbox":[610,338,170,74]}
+{"kind":"textbox","id":"sh/p8nqxs72","slide":1,"name":"sim-server","text":"3  Serve live HTTP\nFastAPI streaming endpoints","textPreview":"3  Serve live HTTP | FastAPI streaming endpoints","textChars":46,"textLines":2,"bbox":[514,444,198,78]}
+{"kind":"textbox","id":"sh/0nuxc3yl","slide":1,"name":"camera-feed","text":"GET /camera/{id}/feed\nHTTP MJPEG","textPreview":"GET /camera/{id}/feed | HTTP MJPEG","textChars":32,"textLines":2,"bbox":[414,544,180,46]}
+{"kind":"textbox","id":"sh/72x4nap4","slide":1,"name":"mic-feed","text":"GET /mic/{id}/feed\nPCM16 audio","textPreview":"GET /mic/{id}/feed | PCM16 audio","textChars":30,"textLines":2,"bbox":[606,544,180,46]}
+{"kind":"textbox","id":"sh/ih4byhgn","slide":1,"name":"thaqib-backend","text":"Main Thaqib Backend\nFastAPI :8001","textPreview":"Main Thaqib Backend | FastAPI :8001","textChars":33,"textLines":2,"bbox":[904,306,252,92]}
+{"kind":"textbox","id":"sh/p4r65wju","slide":1,"name":"device-stream-url","text":"Device.stream_url\npoints to simulator feeds","textPreview":"Device.stream_url | points to simulator feeds","textChars":43,"textLines":2,"bbox":[914,426,232,62]}
+{"kind":"textbox","id":"sh/wjudg7ad","slide":1,"name":"backend-pipelines","text":"Video + audio pipelines\nrun unchanged","textPreview":"Video + audio pipelines | run unchanged","textChars":37,"textLines":2,"bbox":[914,506,232,62]}
+{"kind":"textbox","id":"sh/szqtcj6t","slide":1,"name":"input-label","text":"Test assets","textPreview":"Test assets","textChars":11,"textLines":1,"bbox":[132,570,150,24]}
+{"kind":"textbox","id":"sh/lkjm1cfa","slide":1,"name":"network-label","text":"Docker bridge / LAN","textPreview":"Docker bridge / LAN","textChars":19,"textLines":1,"bbox":[802,264,130,24]}
+{"kind":"shape","id":"sh/at47y1kr","slide":1,"bbox":[318,337,100,38]}
+{"kind":"shape","id":"sh/3ex0nuxc","slide":1,"bbox":[298,375,120,61]}
+{"kind":"shape","id":"sh/sneloj2t","slide":1,"bbox":[298,375,120,143]}
+{"kind":"shape","id":"sh/l87ed8ba","slide":1,"bbox":[588,375,22,0]}
+{"kind":"shape","id":"sh/ahoza1gv","slide":1,"bbox":[613,412,82,32]}
+{"kind":"shape","id":"sh/32lszqtc","slide":1,"bbox":[504,522,109,22]}
+{"kind":"shape","id":"sh/wb2hwfyx","slide":1,"bbox":[613,522,83,22]}
+{"kind":"shape","id":"sh/lwval87e","slide":1,"bbox":[594,352,310,215]}
+{"kind":"shape","id":"sh/bq1oryts","slide":1,"bbox":[786,352,118,215]}
+{"kind":"shape","id":"sh/m58z25kb","slide":1,"bbox":[1030,398,0,28]}
+{"kind":"shape","id":"sh/twra5gbq","slide":1,"bbox":[1030,488,0,18]}
+{"kind":"textbox","id":"sh/4byhgn29","slide":1,"name":"takeaway","text":"Result: repeatable hardware-free demos with the same stream URLs the production backend expects.","textPreview":"Result: repeatable hardware-free demos with the same stream URLs the production backend expects.","textChars":96,"textLines":1,"bbox":[92,650,1080,38]}
+{"kind":"notes","id":"nt/y8uuck","slide":1,"text":""}

@@ -236,11 +236,6 @@ def main():
                     logger.info(f"Paper link lines: {'ON' if visualizer.show_gaze_lines else 'OFF'}")
                     vlog.log_keypress(key="l", action=f"GAZE_LINES {'ON' if visualizer.show_gaze_lines else 'OFF'}")
 
-                elif key == ord("k"):
-                    # Toggle face mesh points display (detection still runs)
-                    visualizer.toggle_face_mesh()
-                    logger.info(f"Face mesh display: {'ON' if visualizer.show_face_mesh else 'OFF'}")
-
                 elif key == ord("v"):
                     # Cycle video quality: LOW (50) → MED (75) → HIGH (90) → ...
                     pipeline.toggle_video_quality()

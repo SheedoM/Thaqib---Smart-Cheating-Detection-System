@@ -623,7 +623,7 @@ class AudioPipeline:
         finally:
             self._source.stop()
             self._async_writer.stop()
-
+            
             # Shutdown Health Monitor Agent
             self._monitor_stop_event.set()
             if self._monitor_thread is not None:
@@ -758,7 +758,7 @@ class AudioPipeline:
                         pending.post_collected += 1
                         if pending.post_collected >= pending.target_post_chunks:
                             completed_alerts.append(pending)
-
+                    
                     # 2. Save any completed alerts
                     for completed in completed_alerts:
                         self._pending_alerts.remove(completed)
@@ -807,7 +807,7 @@ class AudioPipeline:
 
                 # 4. Add to history buffer
                 self._chunk_history.append(chunk)
-
+                
                 # 5. Enqueue for slow inference if local
                 if classification and classification.is_local:
                     history_list = list(self._chunk_history)
@@ -1320,7 +1320,7 @@ class AudioPipeline:
         except Exception as e:
             logger.error(f"Error saving audio alert: {e}")
             return
-
+            
         if getattr(self, '_composer', None) is not None:
             mic_id_str = self._mic_ids[alert.mic_id] if hasattr(self, '_mic_ids') and alert.mic_id < len(self._mic_ids) else str(alert.mic_id)
             camera_ids = self._layout.cameras_for_mic(mic_id_str) if getattr(self, '_layout', None) is not None else []
@@ -1508,7 +1508,7 @@ class AudioPipeline:
                     alert.audio_clip = np.concatenate(pre_buffer + [mic_audio.copy()])
 
                 # Now that audio_clip covers the full pre+speech window, update
-                # timestamp_start to match so the composer fetches the right
+                # timestamp_start to match so on_audio_alert fetches the right
                 # video frames (= duration of audio_clip before the chunk end).
                 alert.timestamp_start = alert.timestamp_end - (len(alert.audio_clip) / chunk.sample_rate)
 
