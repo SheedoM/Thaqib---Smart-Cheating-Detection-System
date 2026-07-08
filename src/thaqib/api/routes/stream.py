@@ -32,6 +32,9 @@ from src.thaqib.db.models.events import Alert, DetectionEvent
 from src.thaqib.api.dependencies import RequireRole
 from src.thaqib.core.scoping import accessible_institution_ids
 from src.thaqib.db.models.users import User
+from src.thaqib.mic_layout import MicLayout
+from src.thaqib.av_alert_composer import AVAlertComposer
+from src.thaqib.audio.stream_recorder import MicStreamRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +125,180 @@ class CameraRuntime:
 _alerts: list[dict[str, Any]] = []
 _alerts_lock = threading.Lock()
 _camera_states: dict[str, CameraRuntime] = {}
-_manager_lock = threading.Lock()
+_manager_lock = threading.RLock()
+
+# ── Session audio (nearest-mic AV alerts) ─────────────────────────────────────
+# The web/dashboard pipeline reads a live HTTP stream and has no synchronised
+# archive, so the desktop AVAlertComposer's re-extraction can't align audio. We
+# instead record each hall mic's PCM feed for the duration of monitoring and mux
+# the matching wall-clock slice onto the pipeline's real alert clip. Alignment
+# works because the recorders and the video pipeline share one wall clock.
+# Pre-roll (seconds) captured before the confirmed-cheating instant — matches the
+# pipeline's 2-second pre-buffer used to build the alert clip.
+_AUDIO_PRE_ROLL_SEC = 2.0
+_DEFAULT_CLIP_DURATION_SEC = 4.0
+_AUDIO_ARCHIVE_DIR = ALERTS_DIR / "audio_archives"
+
+
+@dataclass
+class HallAudioSession:
+    composer: AVAlertComposer
+    layout: MicLayout
+    recorders: dict[str, MicStreamRecorder]  # mic identifier -> recorder
+
+
+_hall_audio: dict[str, HallAudioSession] = {}
+_audio_lock = threading.Lock()
+
+
+def _start_hall_audio(hall: Hall) -> None:
+    """Build a MicLayout from the hall's mic placements and start recording each
+    mic's PCM feed. Idempotent per hall."""
+    hall_id = str(hall.id)
+    with _audio_lock:
+        if hall_id in _hall_audio:
+            return
+
+        # Normalise camera references (placements key cameras by identifier OR
+        # device UUID) so nearest-mic lookups by camera identifier always resolve.
+        cam_norm: dict[str, str] = {}
+        for device in hall.devices:
+            if device.deleted_at is None and device.type == "camera":
+                cam_norm[str(device.id)] = device.identifier
+                cam_norm[device.identifier] = device.identifier
+
+        layout = MicLayout()
+        recorders: dict[str, MicStreamRecorder] = {}
+        for device in hall.devices:
+            if device.deleted_at is not None or device.type != "microphone":
+                continue
+            position = device.position if isinstance(device.position, dict) else {}
+            for placement in position.get("placements", []) or []:
+                cam_key = cam_norm.get(str(placement.get("camera_id")))
+                norm_pos = placement.get("norm_pos")
+                if cam_key and isinstance(norm_pos, (list, tuple)) and len(norm_pos) == 2:
+                    layout.add_pin(device.identifier, cam_key, (float(norm_pos[0]), float(norm_pos[1])))
+            source = (device.stream_url or "").strip()
+            if source:
+                recorder = MicStreamRecorder(device.identifier, source, _AUDIO_ARCHIVE_DIR)
+                recorder.start()
+                recorders[device.identifier] = recorder
+
+        if not recorders:
+            return  # nothing to record — leave audio disabled for this hall
+
+        composer = AVAlertComposer(
+            audio_archives={}, video_archives={}, layout=layout, output_dir=str(ALERTS_DIR)
+        )
+        _hall_audio[hall_id] = HallAudioSession(composer=composer, layout=layout, recorders=recorders)
+        logger.info("Started hall audio session for %s with mics: %s", hall.name, list(recorders))
+
+
+def _stop_hall_audio(hall_id: str) -> None:
+    with _audio_lock:
+        session = _hall_audio.pop(hall_id, None)
+    if session is not None:
+        for recorder in session.recorders.values():
+            recorder.stop()
+        logger.info("Stopped hall audio session for hall %s", hall_id)
+
+
+def _is_clip_complete(path: Path) -> bool:
+    """True once the mp4 is fully written. cv2.VideoWriter only flushes the moov
+    atom on release(), so a clip that exists on disk but isn't finalized yet
+    reports 0 frames — muxing it would fail with 'moov atom not found'."""
+    try:
+        cap = cv2.VideoCapture(str(path))
+        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        opened = cap.isOpened()
+        cap.release()
+        return bool(opened) and frames and frames > 0
+    except Exception:
+        return False
+
+
+def _probe_duration_sec(path: Path) -> float:
+    """Return a video clip's duration in seconds via OpenCV (frame count / fps),
+    or a sensible default. Avoids an ffprobe dependency (only ffmpeg is bundled)."""
+    try:
+        cap = cv2.VideoCapture(str(path))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        cap.release()
+        if fps and fps > 0 and frames and frames > 0:
+            return frames / fps
+    except Exception:
+        pass
+    return _DEFAULT_CLIP_DURATION_SEC
+
+
+def _attach_nearest_audio(
+    hall_id: str,
+    camera_identifier: str,
+    subject_point: tuple[int, int] | None,
+    frame_size: tuple[int, int] | None,
+    event_epoch: float,
+    video_abs_path: Path,
+) -> Path | None:
+    """Mux the nearest microphone's time-aligned audio onto an alert video clip.
+
+    Returns the combined file path, or None if audio could not be attached
+    (no session, no mic in range, recorder not ready, or ffmpeg failure).
+    """
+    with _audio_lock:
+        session = _hall_audio.get(hall_id)
+    if session is None or not subject_point or not frame_size:
+        return None
+
+    mic_pin = session.layout.nearest_mic_for_point(subject_point, camera_identifier, frame_size)
+    if mic_pin is None:
+        return None
+    recorder = session.recorders.get(mic_pin.mic_id)
+    if recorder is None:
+        return None
+
+    clip_start_epoch = event_epoch - _AUDIO_PRE_ROLL_SEC
+    audio_start = recorder.offset_for(clip_start_epoch)
+    if audio_start is None:
+        return None
+    duration = _probe_duration_sec(video_abs_path)
+    audio_end = audio_start + duration
+
+    # Clamp the audio window to what has actually been recorded. Without this an
+    # offset past the PCM's end yields 0 audio samples and, with ffmpeg -shortest,
+    # an empty output file. If the whole window is beyond the recording, keep the
+    # silent clip rather than emit a broken one.
+    try:
+        pcm_dur = recorder.pcm_path.stat().st_size / float(max(1, recorder.sample_rate) * 2)
+    except OSError:
+        pcm_dur = 0.0
+    if pcm_dur < 1.0:
+        logger.warning("mic %s has <1s recorded — skipping audio", mic_pin.mic_id)
+        return None
+    # The PCM feed can drift a few seconds behind wall-clock, so a wall-clock
+    # offset may overshoot what's recorded. Rather than emit a silent clip, anchor
+    # the window to the recording's tail (the most recent audio ≈ the alert moment).
+    if audio_end > pcm_dur:
+        audio_end = pcm_dur
+        audio_start = max(0.0, pcm_dur - duration)
+    logger.info(
+        "audio-attach mic=%s start=%.2f end=%.2f dur=%.2f pcm_len=%.2f",
+        mic_pin.mic_id, audio_start, audio_end, duration, pcm_dur,
+    )
+
+    combined = video_abs_path.with_name(f"AV_{video_abs_path.stem}.mp4")
+    ok = session.composer.mux_live_audio_onto_clip(
+        video_input=str(video_abs_path),
+        pcm_input=str(recorder.pcm_path),
+        sample_rate=recorder.sample_rate,
+        audio_start=audio_start,
+        audio_end=audio_end,
+        output_path=str(combined),
+    )
+    if not ok or not combined.exists():
+        return None
+    logger.info("Attached mic %s audio to alert clip %s", mic_pin.mic_id, combined.name)
+    return combined
 
 
 def push_external_alert(alert_data: dict[str, Any]) -> None:
@@ -147,8 +323,16 @@ def _poll_for_alert_clip(
     created_at_iso: str,
     rel_prefix_str: str,
     timeout_s: float = 25.0,
+    hall_id: str | None = None,
+    camera_identifier: str | None = None,
+    subject_point: tuple[int, int] | None = None,
+    frame_size: tuple[int, int] | None = None,
 ) -> None:
-    """Attach video_file to an alert once pipeline writer saves it to ./alerts/."""
+    """Attach video_file to an alert once pipeline writer saves it to ./alerts/.
+
+    When a hall audio session is active, the nearest microphone's time-aligned
+    audio is muxed onto the clip and the combined AV file is attached instead.
+    """
     try:
         created_at = datetime.fromisoformat(created_at_iso)
     except Exception:
@@ -180,6 +364,11 @@ def _poll_for_alert_clip(
                 best = p
                 best_mtime = mtime
 
+        # Only proceed once the writer has finalized the mp4 (moov atom present);
+        # otherwise keep polling. Prevents moving/muxing a half-written clip.
+        if best is not None and not _is_clip_complete(best):
+            best = None
+
         if best is not None:
             # Move clip into structured folder
             rel_prefix = Path(rel_prefix_str)
@@ -192,6 +381,20 @@ def _poll_for_alert_clip(
             except Exception:
                 # If move fails, still attach original filename
                 pass
+
+            # Mux the nearest-mic audio onto the (now finalized) video clip,
+            # aligned to the alert's wall-clock window. Falls back to the silent
+            # clip when no audio session/mic/recording is available.
+            if hall_id and camera_identifier:
+                try:
+                    event_epoch = created_at.timestamp()
+                except Exception:
+                    event_epoch = time.time()
+                combined = _attach_nearest_audio(
+                    hall_id, camera_identifier, subject_point, frame_size, event_epoch, best,
+                )
+                if combined is not None:
+                    best = combined
 
             with _alerts_lock:
                 for a in _alerts:
@@ -647,10 +850,21 @@ def _run_pipeline(camera: CameraRuntime) -> None:
             getattr(state, "looking_at_neighbor_id", None),
         )
 
-        # Attach clip filename once pipeline writer flushes it to disk
+        # Subject point (student centre) + frame size drive nearest-mic selection.
+        subject_point = getattr(state, "center", None)
+        frame_h, frame_w = frame_img.shape[:2]
+
+        # Attach clip filename once pipeline writer flushes it to disk, then mux
+        # the nearest microphone's aligned audio onto it.
         threading.Thread(
             target=_poll_for_alert_clip,
             args=(alert_data["id"], state.track_id, created_at, rel_prefix.as_posix()),
+            kwargs={
+                "hall_id": camera.hall_id,
+                "camera_identifier": camera.identifier,
+                "subject_point": subject_point,
+                "frame_size": (frame_w, frame_h),
+            },
             daemon=True,
             name=f"AlertClipPoll-{state.track_id}",
         ).start()
@@ -838,6 +1052,9 @@ def start_hall_monitoring(hall_id: uuid.UUID, session_id: uuid.UUID, db: Session
     if not hall:
         return
 
+    # Start recording hall mics so alert clips can carry nearest-mic audio.
+    _start_hall_audio(hall)
+
     with _manager_lock:
         for device in hall.devices:
             if device.deleted_at or device.type != "camera":
@@ -930,6 +1147,9 @@ def stop_hall_monitoring(hall_id: uuid.UUID, session_id: uuid.UUID, db: Session)
                 _stop_camera_runtime(_camera_states[device_id])
                 del _camera_states[device_id]
 
+    # Stop hall mic recorders.
+    _stop_hall_audio(str(hall_id))
+
 
 async def resume_active_sessions() -> None:
     """Resume monitoring for all assignments that were active before server restart."""
@@ -961,6 +1181,10 @@ def shutdown_stream_manager() -> None:
         _camera_states.clear()
     for runtime in runtimes:
         _stop_camera_runtime(runtime)
+    with _audio_lock:
+        hall_ids = list(_hall_audio.keys())
+    for hall_id in hall_ids:
+        _stop_hall_audio(hall_id)
 
 
 def _force_restart_all_cameras() -> None:

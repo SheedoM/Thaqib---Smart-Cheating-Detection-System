@@ -86,6 +86,18 @@ class CameraStream:
         self._clock = clock
         self._clock = clock
 
+    @property
+    def _is_live_stream(self) -> bool:
+        """True for network video sources (RTSP/RTMP/HTTP MJPEG).
+
+        These are continuous live streams — unlike a local file they must NOT be
+        paced by presentation timestamps, and a read failure means a transient
+        network hiccup to reconnect from, not end-of-file.
+        """
+        return isinstance(self.source, str) and self.source.startswith(
+            ("rtsp://", "rtmp://", "http://", "https://")
+        )
+
     def open(self) -> bool:
         """
         Open the camera connection.
@@ -110,11 +122,29 @@ class CameraStream:
                 backend = cv2.CAP_ANY
             self._cap = cv2.VideoCapture(self.source, backend)
         else:
+            if self._is_live_stream:
+                # Bound FFmpeg's socket open/read so a stalled MJPEG/RTSP read can
+                # never block the reader thread forever. Under CPU contention from
+                # the ML workload, an un-timed read on a live HTTP stream would hang
+                # the whole pipeline (frozen feed, no alerts); with a timeout the
+                # read fails fast and the reconnect path below recovers it.
+                # OPENCV_FFMPEG_CAPTURE_OPTIONS values are in microseconds.
+                import os
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rw_timeout;5000000|timeout;5000000"
             self._cap = cv2.VideoCapture(self.source)
 
         if not self._cap.isOpened():
             logger.error(f"Failed to open camera source: {self.source}")
             return False
+
+        # Belt-and-suspenders read/open timeouts (ms) for network streams; these
+        # complement the FFmpeg capture options above on builds that honour them.
+        if self._is_live_stream:
+            try:
+                self._cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
+                self._cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
+            except Exception:
+                pass
 
         # Set resolution
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
@@ -196,7 +226,10 @@ class CameraStream:
                 if failed_frames > 15:
                     # For video files, EOF is expected — stop cleanly
                     # instead of reconnecting (which would replay the file).
-                    if isinstance(self.source, str) and not self.source.startswith("rtsp"):
+                    # Live network streams (HTTP/RTSP) never "EOF": repeated read
+                    # failures there mean a stalled/timed-out socket, so fall
+                    # through to the reconnect path instead of stopping.
+                    if isinstance(self.source, str) and not self._is_live_stream:
                         logger.info("Video file ended (EOF). Stopping reader thread.")
                         logger.warning(f"Camera stream disconnected — video buffer is now stale.")
                         self._is_opened = False
@@ -210,7 +243,7 @@ class CameraStream:
                     failed_frames = 0
                 continue
                 
-            is_file = isinstance(self.source, str) and not self.source.startswith("rtsp")
+            is_file = isinstance(self.source, str) and not self._is_live_stream
             
             if is_file:
                 if stream_start_time is None:

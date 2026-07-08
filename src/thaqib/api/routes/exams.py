@@ -37,6 +37,8 @@ def _parse_camera_source(source: str) -> int | str:
 
 
 def _camera_readiness(device: Device) -> dict[str, Any]:
+    import urllib.request
+
     source = (device.stream_url or "").strip()
     if not source:
         return {
@@ -48,17 +50,28 @@ def _camera_readiness(device: Device) -> dict[str, Any]:
             "message": "Camera stream URL is not configured.",
         }
 
-    capture = cv2.VideoCapture(_parse_camera_source(source))
-    try:
-        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 1500)
-        capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1500)
-    except Exception:
-        pass
-
-    try:
-        ok, _ = capture.read() if capture.isOpened() else (False, None)
-    finally:
-        capture.release()
+    # For HTTP simulator streams, ping the lightweight /info endpoint instead of
+    # trying to open the full MJPEG feed via cv2 (which can exceed 1500ms).
+    if source.startswith(("http://", "https://")):
+        info_url = source.replace("/feed", "/info")
+        ok = False
+        try:
+            with urllib.request.urlopen(info_url, timeout=3) as resp:
+                ok = resp.status < 400
+        except Exception:
+            pass
+    else:
+        # Physical camera index — use cv2 as before
+        capture = cv2.VideoCapture(_parse_camera_source(source))
+        try:
+            capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
+            capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000)
+        except Exception:
+            pass
+        try:
+            ok, _ = capture.read() if capture.isOpened() else (False, None)
+        finally:
+            capture.release()
 
     if not ok:
         return {

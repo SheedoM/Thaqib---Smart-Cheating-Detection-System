@@ -1,9 +1,24 @@
 import logging
 import os
+import shutil
 import subprocess
 import time
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _ffmpeg_bin() -> str:
+    """Resolve the ffmpeg executable: PATH first, else the ffmpeg.exe bundled at
+    the repo root (this file lives at src/thaqib/av_alert_composer.py), else the
+    bare name as a last resort. Avoids CWD/PATH surprises across processes."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    bundled = Path(__file__).resolve().parent.parent.parent / "ffmpeg.exe"
+    if bundled.exists():
+        return str(bundled)
+    return "ffmpeg"
 
 class AVAlertComposer:
     def __init__(
@@ -112,6 +127,47 @@ class AVAlertComposer:
                 subject_point=subject_point
             )
             logger.info(f"AV Composer generated video-only alert: {video_only_path}")
+
+    def mux_live_audio_onto_clip(
+        self,
+        video_input: str,
+        pcm_input: str,
+        sample_rate: int,
+        audio_start: float,
+        audio_end: float,
+        output_path: str,
+    ) -> bool:
+        """Web/dashboard flow: attach a time-aligned audio slice to an already
+        rendered alert clip.
+
+        Unlike ``compose_video_alert`` (which re-extracts video from a
+        synchronised archive), the live flow keeps the pipeline's real captured
+        clip and only muxes in the nearest microphone's audio for the matching
+        wall-clock window. ``pcm_input`` is a raw little-endian PCM16 mono file
+        (see MicStreamRecorder); ``audio_start``/``audio_end`` are second offsets
+        into that recording.
+
+        Returns True if the combined file was produced.
+        """
+        audio_start = max(0.0, float(audio_start))
+        audio_end = max(audio_start + 0.1, float(audio_end))
+        cmd = [
+            _ffmpeg_bin(), "-y", "-hide_banner", "-loglevel", "error",
+            "-i", video_input,
+            "-f", "s16le", "-ar", str(int(sample_rate)), "-ac", "1",
+            "-ss", f"{audio_start:.3f}", "-to", f"{audio_end:.3f}",
+            "-i", pcm_input,
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "copy", "-c:a", "aac",
+            "-shortest",
+            output_path,
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
+            logger.error("mux_live_audio_onto_clip ffmpeg failed (%d):\n%s", result.returncode, stderr_text)
+            return False
+        return True
 
     def compose_audio_alert(self, alert_wav_path: str, mic_id: str, camera_ids: list[str], start_sec: float, end_sec: float):
         """
@@ -248,7 +304,7 @@ class AVAlertComposer:
         audio_end: float = None
     ):
         """Runs FFmpeg to combine inputs, applying cutting to whichever needs it."""
-        cmd = ["ffmpeg", "-y"]
+        cmd = [_ffmpeg_bin(), "-y"]
         
         # Add video input (with or without seeking)
         if video_start is not None and video_end is not None:

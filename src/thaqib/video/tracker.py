@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import cv2
-from boxmot.trackers.bbox.botsort.botsort import BotSort
+from boxmot import BotSort
 
 from thaqib.config import get_settings
 from thaqib.video.detector import Detection, DetectionResult
@@ -280,12 +280,9 @@ class ObjectTracker:
             track_low_thresh=0.10,
             new_track_thresh=0.20,
             track_buffer=self.max_age,
-            max_age=self.max_age,
-            max_obs=self.max_age + 5,
             match_thresh=0.8,      # Tighter matching reduces ID switches
             proximity_thresh=0.7,
             appearance_thresh=0.25,
-            cmc_method=None,     # Disable Camera Motion Compensation for static cameras to prevent jitter
         )
 
     def reset(self) -> None:

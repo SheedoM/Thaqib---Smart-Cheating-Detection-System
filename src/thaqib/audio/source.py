@@ -11,7 +11,8 @@ the pipeline doesn't care where the audio comes from.
 
 import logging
 import time
-import threading\nimport urllib.request
+import threading
+import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -384,7 +385,9 @@ class StreamAudioSource(AudioSource):
     @property
     def sample_rate(self) -> int:
         return self._sample_rate
-\n\nclass LiveAudioSource(AudioSource):
+
+
+class LiveAudioSource(AudioSource):
     """
     Captures audio from live microphones in real-time.
 

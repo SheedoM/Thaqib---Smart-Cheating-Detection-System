@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     yolo_model: str = "models/yolo11m.pt"
     detection_confidence: float = 0.15
     tools_target_labels: list[str] = ["document"]  # Classes treated as papers
-    tools_model: str = "models/best.pt"
+    tools_model: str = "models/best.pt"  # Custom single-class 'document' detector
     tools_confidence: float = 0.45    # Confidence threshold for paper/phone detection
     detection_imgsz: int = 640        # YOLO inference resolution (640=fast, 1280=accurate)
     # Phone detection via YOLO

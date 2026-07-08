@@ -33,6 +33,20 @@ CONFIG_PATH = Path(__file__).parent / "config.yaml"
 DEFAULT_VIDEOS_DIR = Path(os.environ.get("VIDEOS_DIR", Path(__file__).parent / "test_videos"))
 
 
+def _ffmpeg_bin() -> str:
+    """Resolve ffmpeg: PATH first, else the ffmpeg.exe bundled at the repo root
+    (one level up from this simulator/ dir). The simulator runs with CWD=simulator/,
+    so a bare "ffmpeg" would otherwise not resolve on Windows."""
+    import shutil
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    bundled = Path(__file__).parent.parent / "ffmpeg.exe"
+    if bundled.exists():
+        return str(bundled)
+    return "ffmpeg"
+
+
 def load_config() -> dict:
     """Load camera configuration from YAML file."""
     if CONFIG_PATH.exists():
@@ -309,7 +323,7 @@ async def generate_pcm_stream(mic_id: str):
         if Path(audio_path).exists():
             process = subprocess.Popen(
                 [
-                    "ffmpeg",
+                    _ffmpeg_bin(),
                     "-hide_banner",
                     "-loglevel",
                     "error",

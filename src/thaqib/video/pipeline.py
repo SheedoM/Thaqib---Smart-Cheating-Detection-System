@@ -39,6 +39,14 @@ from thaqib.video.jpeg_buffer import JPEGFrame, encode_frame, decode_frame
 # At 30 FPS with N=3: ~10 updates/sec per student — sufficient for gaze accuracy.
 FACE_MESH_INTERVAL: int = 3
 
+# Serializes MediaPipe FaceLandmarker construction across ALL worker threads and
+# pipelines. `vision.FaceLandmarker.create_from_options()` is NOT safe to call
+# concurrently — parallel graph initialization deadlocks inside MediaPipe's C++
+# layer while holding the GIL, which freezes the entire process (frozen feeds,
+# no alerts). Building landmarkers one at a time avoids the deadlock; the cost is
+# only paid once per worker thread on its first inference.
+_FM_INIT_LOCK: threading.Lock = threading.Lock()
+
 
 class ConstantVelocityExtrapolator:
     """Extrapolates bounding boxes on intermediate frames using historical velocity."""
@@ -486,7 +494,12 @@ class VideoPipeline:
                 output_face_blendshapes=False,
                 output_facial_transformation_matrixes=True,
             )
-            tl.landmarker = vision.FaceLandmarker.create_from_options(opts)
+            # Serialize graph construction — concurrent create_from_options() calls
+            # deadlock MediaPipe's C++ layer while holding the GIL and freeze the
+            # whole pipeline (see _FM_INIT_LOCK). Only the one-time build is guarded;
+            # detect() below still runs fully in parallel.
+            with _FM_INIT_LOCK:
+                tl.landmarker = vision.FaceLandmarker.create_from_options(opts)
 
         # Scale bbox to match the (potentially downscaled) frame
         x1, y1, x2, y2 = [int(v * fm_scale) for v in bbox]

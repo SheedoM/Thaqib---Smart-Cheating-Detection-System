@@ -44,7 +44,7 @@ INVIG_PASSWORD = "Demo12345!"
 CAM_VIDEO = {
     "front": VIDEO_DIR / "cam1.mp4",
     "back":  VIDEO_DIR / "cam2.mp4",
-    "side":  VIDEO_DIR / "cam1.mp4",
+    # "side" is always a placeholder — no backing file needed
 }
 CAM_LABEL = {
     "front": "الكاميرا الأمامية",
@@ -200,39 +200,31 @@ def _create_hall(db, institution_id, spec: dict) -> Hall:
     for key in ("front", "back", "side"):
         camera_id = f"{hall_prefix}_cam_{key}"
         camera_ids.append(camera_id)
+        # Side camera is always a placeholder — never gets a live stream
+        is_live = use_simulator_streams and key != "side"
         cam = Device(
             hall_id=hall.id,
             type="camera",
             identifier=camera_id,
-            stream_url=_simulator_camera_url(camera_id) if use_simulator_streams else None,
+            stream_url=_simulator_camera_url(camera_id) if is_live else None,
             position={"label": CAM_LABEL[key]},
-            status="online" if use_simulator_streams else "offline",
+            status="online" if is_live else "offline",
         )
         db.add(cam)
 
-    mic_id = f"{hall_prefix}_mic_front"
-    db.add(Device(
-        hall_id=hall.id,
-        type="microphone",
-        identifier=mic_id,
-        stream_url=_simulator_mic_url(mic_id) if use_simulator_streams else None,
-        position={"label": "الميكروفون الرئيسي", "placements": _default_mic_placements(camera_ids)},
-        status="online" if use_simulator_streams else "offline",
-    ))
-    
-    if hall_prefix == "hall101":
-        for idx, label in enumerate(["الميكروفون الثاني", "الميكروفون الثالث"], start=2):
-            extra_mic_id = f"{hall_prefix}_mic_{idx}"
-            db.add(Device(
-                hall_id=hall.id,
-                type="microphone",
-                identifier=extra_mic_id,
-                stream_url=_simulator_mic_url(extra_mic_id) if use_simulator_streams else None,
-                position={"label": label, "placements": _default_mic_placements(camera_ids)},
-                status="online" if use_simulator_streams else "offline",
-            ))
+    for key, label in [("front", "الميكروفون الأمامي"), ("back", "الميكروفون الخلفي")]:
+        mic_id = f"{hall_prefix}_mic_{key}"
+        db.add(Device(
+            hall_id=hall.id,
+            type="microphone",
+            identifier=mic_id,
+            stream_url=_simulator_mic_url(mic_id) if use_simulator_streams else None,
+            position={"label": label, "placements": _default_mic_placements(camera_ids)},
+            status="online" if use_simulator_streams else "offline",
+        ))
             
-        # Add RF Scanners to demonstrate RF detection UI
+    # Add RF Scanners to demonstrate RF detection UI
+    if hall_prefix == "hall101":
         for idx, label in enumerate(["مستشعر الترددات 1", "مستشعر الترددات 2"], start=1):
             scanner_id = f"{hall_prefix}_rf_{idx}"
             db.add(Device(
