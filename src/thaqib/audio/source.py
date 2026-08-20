@@ -130,7 +130,8 @@ class FileAudioSource(AudioSource):
         self._position = 0
         self._chunk_index = 0
         self._is_running = True
-        self._start_time = time.time()
+        self._start_monotonic = time.monotonic()
+        self._start_clock_time = self._clock.now() if self._clock else 0.0
 
     @staticmethod
     def _load_audio_file(path, sample_rate: int = 16000) -> "np.ndarray":
@@ -222,8 +223,12 @@ class FileAudioSource(AudioSource):
         # Stack into (n_mics, n_samples)
         mic_data = np.stack(mic_chunks, axis=0)
 
+        # R2: Deterministic media stream timestamp, independent of CPU pacing jitter
+        media_sec = self._chunk_index * (self._chunk_ms / 1000.0)
+        chunk_ts = self._start_clock_time + media_sec if self._clock else media_sec
+
         audio_chunk = AudioChunk(
-            timestamp=self._clock.now() if self._clock else time.time(),
+            timestamp=chunk_ts,
             mic_data=mic_data,
             sample_rate=self._sample_rate,
             duration_ms=self._chunk_ms,
@@ -233,12 +238,12 @@ class FileAudioSource(AudioSource):
         self._position = end
         self._chunk_index += 1
 
-        # Simulate real-time playback speed without cumulative drift
+        # Simulate real-time playback speed using monotonic clock without cumulative drift
         if self._real_time:
-            expected_time = self._start_time + (self._chunk_index * self._chunk_ms / 1000.0)
-            now = time.time()
-            if expected_time > now:
-                time.sleep(expected_time - now)
+            expected_elapsed = self._chunk_index * (self._chunk_ms / 1000.0)
+            actual_elapsed = time.monotonic() - self._start_monotonic
+            if expected_elapsed > actual_elapsed:
+                time.sleep(expected_elapsed - actual_elapsed)
 
         return audio_chunk
 

@@ -116,13 +116,26 @@ class AudioEvidenceRecorder:
         Returns:
             Tuple of (wav_path, json_path) for the saved files.
         """
-        # sys_time_str reflects when the suspicious audio was CAPTURED,
-        # not when the file was saved (which may be seconds later due to
-        # async inference). This is intentional.
-        sys_time_str = datetime.fromtimestamp(alert.timestamp).strftime("%H-%M-%S")
+        # Determine WallTime for forensic filenames and timestamps
+        if getattr(alert, "wall_time", 0.0) > 0.0:
+            sys_time = datetime.fromtimestamp(alert.wall_time)
+        elif alert.timestamp > 1e9:
+            sys_time = datetime.fromtimestamp(alert.timestamp)
+        else:
+            sys_time = datetime.now()
 
-        # Offset from recording start
-        offset_sec = alert.timestamp - alert.recording_start
+        sys_time_str = sys_time.strftime("%H-%M-%S")
+
+        # Calculate StreamTime offset (seconds since stream start)
+        if getattr(alert, "stream_offset", 0.0) > 0.0:
+            offset_sec = alert.stream_offset
+        elif alert.recording_start > 0.0 and alert.timestamp >= alert.recording_start and (alert.timestamp - alert.recording_start) < 86400 * 30:
+            offset_sec = alert.timestamp - alert.recording_start
+        elif alert.timestamp < 1e9:
+            offset_sec = max(0.0, alert.timestamp)
+        else:
+            offset_sec = 0.0
+
         offset_h   = int(offset_sec // 3600)
         offset_m   = int((offset_sec % 3600) // 60)
         offset_s   = int(offset_sec % 60)
@@ -149,13 +162,20 @@ class AudioEvidenceRecorder:
         # Any post-save modification of the file will produce a different hash.
         wav_sha256 = self._sha256(wav_path)
 
+        rec_start_iso = (
+            datetime.fromtimestamp(alert.recording_start).isoformat()
+            if alert.recording_start > 1e9
+            else sys_time.isoformat()
+        )
+
         # Save JSON metadata
         metadata = {
-            "timestamp": datetime.fromtimestamp(alert.timestamp).isoformat(),
-            "timestamp_unix": alert.timestamp,
-            "system_time":      datetime.fromtimestamp(alert.timestamp).strftime("%H:%M:%S"),
+            "timestamp": sys_time.isoformat(),
+            "timestamp_unix": sys_time.timestamp(),
+            "stream_offset_sec": round(offset_sec, 3),
+            "system_time":      sys_time.strftime("%H:%M:%S"),
             "recording_offset": f"{offset_h:02d}:{offset_m:02d}:{offset_s:02d}",
-            "recording_start":  datetime.fromtimestamp(alert.recording_start).isoformat(),
+            "recording_start":  rec_start_iso,
             "mic_id":   alert.mic_id,
             "mic_name": self._mic_label(alert.mic_id),
             "active_mics": [

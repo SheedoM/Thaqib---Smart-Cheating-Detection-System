@@ -52,9 +52,17 @@ class StudentSpatialState:
 
     # Alert recording state
     is_alert_recording: bool = False
+    active_incident_type: str | None = None   # "phone" | "gaze" | None (latched during recording)
+    incident_context: dict = field(default_factory=dict)  # Frozen incident metadata snapshot
     metadata_history: deque = field(default_factory=lambda: deque(maxlen=600))
     recording_buffer: deque = field(default_factory=lambda: deque(maxlen=_MAX_RECORDING_FRAMES))
     frames_to_record: int = 0
+    
+    # Deferred / overflow recording state (when concurrent memory recording limit is reached)
+    has_deferred_incident: bool = False
+    deferred_start_sec: float = 0.0
+    deferred_type: str = "gaze"
+    deferred_ctx: dict = field(default_factory=dict)
     
     # Face Mesh overload protection
     fm_last_frame: int = 0   # frame index of last submitted face mesh job
@@ -66,11 +74,11 @@ class GlobalStudentRegistry:
         self._states: dict[int, StudentSpatialState] = {}
         self._lock = threading.Lock()
 
-    def update(self, tracks: list[TrackedObject], frame_index: int, timestamp: float) -> list[int]:
+    def update(self, tracks: list[TrackedObject], frame_index: int, timestamp: float) -> list[StudentSpatialState]:
         """
         Update registry with new tracking data.
         Does not delete lost students immediately (keeps for 3 seconds before purging).
-        Returns a list of expired track IDs that were purged.
+        Returns a list of expired StudentSpatialState objects that were purged.
         """
         active_ids = {t.track_id for t in tracks}
 

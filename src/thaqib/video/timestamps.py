@@ -49,10 +49,10 @@ def draw_timestamp_overlay(frame: np.ndarray, ts: float | None = None, archive_o
         
     total_th -= line_spacing # remove trailing spacing
 
-    x0 = w - max_tw - pad * 2
+    x0 = max(0, w - max_tw - pad * 2)
     y0 = pad
     x1 = w
-    y1 = y0 + total_th + pad * 2
+    y1 = min(h, y0 + total_th + pad * 2)
 
     # Semi-transparent dark background
     roi = frame[y0:y1, x0:x1]

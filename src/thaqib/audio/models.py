@@ -106,6 +106,8 @@ class AudioAlert:
     confidence: float
     chunk_index: int = 0
     recording_start: float = 0.0
+    wall_time: float = 0.0
+    stream_offset: float = 0.0
     # Discriminator forensic metadata
     discriminator_baseline: float = 0.0
     discriminator_raw_ratio: float = 0.0

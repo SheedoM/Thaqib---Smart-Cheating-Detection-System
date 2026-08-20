@@ -700,21 +700,26 @@ class VideoPipeline:
         for state in self._registry.get_all():
             if state.is_alert_recording and len(state.recording_buffer) > 0:
                 frames_snapshot = list(state.recording_buffer)
+                cheat_type = state.active_incident_type or ("phone" if getattr(state, 'is_using_phone', False) else "gaze")
+                cheat_ctx = dict(getattr(state, 'incident_context', {}))
+                if not cheat_ctx:
+                    cheat_ctx = {
+                        'target_paper': state.cheating_target_paper,
+                        'target_neighbor': state.cheating_target_neighbor,
+                        'paper_bbox': self._paper_bboxes.get(
+                            state.cheating_target_paper
+                        ) if state.cheating_target_paper else None,
+                        'is_heuristic_paper': state.is_heuristic_paper,
+                        'is_using_phone': (cheat_type == "phone"),
+                        'phone_bbox': getattr(state, 'phone_bbox', None),
+                        'suspicious_start_time': getattr(state, 'suspicious_start_time', 0.0),
+                    }
                 state.is_alert_recording = False
-                cheat_ctx = {
-                    'target_paper': state.cheating_target_paper,
-                    'target_neighbor': state.cheating_target_neighbor,
-                    'paper_bbox': self._paper_bboxes.get(
-                        state.cheating_target_paper
-                    ) if state.cheating_target_paper else None,
-                    'is_heuristic_paper': state.is_heuristic_paper,
-                    'is_using_phone': getattr(state, 'is_using_phone', False),
-                    'phone_bbox': getattr(state, 'phone_bbox', None),
-                    'suspicious_start_time': getattr(state, 'suspicious_start_time', 0.0),
-                }
+                state.active_incident_type = None
+                state.incident_context = {}
                 self._save_alert_video_async(
                     frames_snapshot, state.track_id, time.time(),
-                    cheat_ctx=cheat_ctx
+                    cheat_type=cheat_type, cheat_ctx=cheat_ctx
                 )
             state.recording_buffer.clear()  # Free memory immediately
 
@@ -1044,29 +1049,49 @@ class VideoPipeline:
             for state in expired_states:
                 if state.is_alert_recording and len(state.recording_buffer) > 0:
                     frames_snapshot = list(state.recording_buffer)
+                    cheat_type = state.active_incident_type or ("phone" if getattr(state, 'is_using_phone', False) else "gaze")
+                    cheat_ctx = dict(getattr(state, 'incident_context', {}))
+                    if not cheat_ctx:
+                        cheat_ctx = {
+                            'target_paper': state.cheating_target_paper,
+                            'target_neighbor': state.cheating_target_neighbor,
+                            'paper_bbox': self._paper_bboxes.get(
+                                state.cheating_target_paper
+                            ) if state.cheating_target_paper else None,
+                            'is_heuristic_paper': state.is_heuristic_paper,
+                            'is_using_phone': (cheat_type == "phone"),
+                            'phone_bbox': getattr(state, 'phone_bbox', None),
+                            'suspicious_start_time': getattr(state, 'suspicious_start_time', 0.0),
+                        }
                     state.is_alert_recording = False
-                    cheat_type = "phone" if state.is_using_phone else "gaze"
-                    cheat_ctx = {
-                        'target_paper': state.cheating_target_paper,
-                        'target_neighbor': state.cheating_target_neighbor,
-                        'paper_bbox': self._paper_bboxes.get(
-                            state.cheating_target_paper
-                        ) if state.cheating_target_paper else None,
-                        'is_heuristic_paper': state.is_heuristic_paper,
-                        'is_using_phone': state.is_using_phone,
-                        'phone_bbox': state.phone_bbox,
-                        'suspicious_start_time': state.suspicious_start_time,
-                    }
+                    state.active_incident_type = None
+                    state.incident_context = {}
                     self._save_alert_video_async(
                         frames_snapshot, state.track_id, frame_data.timestamp,
                         cheat_type=cheat_type, cheat_ctx=cheat_ctx
                     )
+                elif state.has_deferred_incident:
+                    # R4: Flush deferred incident for expired track via archive extraction
+                    end_sec = frame_data.frame_index / float(self._camera_fps)
+                    mic_id = self._layout.nearest_mic_for_point(self._camera_id, state.center) if self._layout else None
+                    if self._composer is not None:
+                        self._composer.compose_video_alert(
+                            camera_id=self._camera_id,
+                            mic_id=mic_id,
+                            start_sec=state.deferred_start_sec,
+                            end_sec=end_sec,
+                            alert_type=state.deferred_type,
+                            subject_point=state.center
+                        )
+                    state.has_deferred_incident = False
                 state.recording_buffer.clear()  # Free memory immediately
             
             self._reid.remove_embeddings(expired_ids)
             # Use the public API to prune tracker state — avoids reaching
             # into private dicts/sets from outside the tracker class.
             self._tracker.remove_tracks(expired_ids)
+            self._deselected_ids.difference_update(expired_ids)
+            self._recording_skip_warned.difference_update(expired_ids)
             
             with self._fm_cache_lock:
                 for track_id in expired_ids:
@@ -1132,9 +1157,18 @@ class VideoPipeline:
                             nearest = s
                     if nearest is not None:
                         nearest.is_using_phone = True
+                        nearest.phone_bbox = tool.bbox
                         if not nearest.is_cheating:
                             nearest.is_cheating = True
                             nearest.cheating_cooldown = self._post_buffer_frames
+                        # If recording is already active, upgrade severity to phone
+                        if nearest.is_alert_recording:
+                            nearest.active_incident_type = "phone"
+                            if not getattr(nearest, 'incident_context', None):
+                                nearest.incident_context = {}
+                            nearest.incident_context['is_using_phone'] = True
+                            nearest.incident_context['phone_bbox'] = tool.bbox
+                            nearest.frames_to_record = self._post_buffer_frames
             self._phone_current_bboxes = [t.bbox for t in phone_tools]
             if self._phone_detected:
                 logger.warning(f"PHONE DETECTED: {len(phone_tools)} phone(s) in frame")
@@ -1306,11 +1340,28 @@ class VideoPipeline:
                     1 for s in self._registry.get_all() if s.is_alert_recording
                 )
                 if active_recordings >= 3:
-                    # Only warn once per track to avoid per-frame log spam
+                    # R4: Concurrent memory recording limit reached (3).
+                    # Rather than silently dropping the incident, register deferred archive
+                    # extraction metadata to compose the evidence from the continuous archive.
+                    if not state.has_deferred_incident:
+                        state.has_deferred_incident = True
+                        state.deferred_start_sec = max(0.0, (frame_data.frame_index - self._post_buffer_frames) / float(self._camera_fps))
+                        state.deferred_type = "phone" if state.is_using_phone else "gaze"
+                        state.deferred_ctx = {
+                            'target_paper': state.cheating_target_paper,
+                            'target_neighbor': state.cheating_target_neighbor,
+                            'paper_bbox': self._paper_bboxes.get(
+                                state.cheating_target_paper
+                            ) if state.cheating_target_paper else None,
+                            'is_heuristic_paper': state.is_heuristic_paper,
+                            'is_using_phone': (state.deferred_type == "phone"),
+                            'phone_bbox': state.phone_bbox,
+                            'suspicious_start_time': getattr(state, 'suspicious_start_time', 0.0),
+                        }
                     if state.track_id not in self._recording_skip_warned:
                         logger.warning(
-                            f"Skipping alert recording for track {state.track_id}: "
-                            f"{active_recordings} recordings already active (max 3)"
+                            f"Concurrent memory recording limit active ({active_recordings}/3). "
+                            f"Tracking deferred incident for track {state.track_id} via archive extraction fallback."
                         )
                         self._recording_skip_warned.add(state.track_id)
                         self._vlog.log_recording_cap_hit(
@@ -1323,18 +1374,29 @@ class VideoPipeline:
                 # Frames are already JPEG-encoded (JPEGFrame objects) — cheap to copy.
                 # Pre-event frames carry tid=None so the writer renders them raw.
                 state.is_alert_recording = True
+                state.active_incident_type = "phone" if state.is_using_phone else "gaze"
+                state.incident_context = {
+                    'target_paper': state.cheating_target_paper,
+                    'target_neighbor': state.cheating_target_neighbor,
+                    'paper_bbox': self._paper_bboxes.get(
+                        state.cheating_target_paper
+                    ) if state.cheating_target_paper else None,
+                    'is_heuristic_paper': state.is_heuristic_paper,
+                    'is_using_phone': (state.active_incident_type == "phone"),
+                    'phone_bbox': state.phone_bbox,
+                    'suspicious_start_time': getattr(state, 'suspicious_start_time', 0.0),
+                }
                 # Acquire buffer lock to protect against concurrent frame appends.
                 with self._buffer_lock:
                     pre_frames = list(self._global_frame_buffer)[-self._post_buffer_frames:]
                 state.recording_buffer = deque(pre_frames, maxlen=300)
                 state.frames_to_record = self._post_buffer_frames  # 2-second post-buffer
                 self._recording_skip_warned.discard(state.track_id)  # Reset warn on successful start
-                cheat_type_start = "phone" if state.is_using_phone else "gaze"
                 self._vlog.log_alert_recording_start(
                     track_id=state.track_id,
                     prebuffer_frames=len(state.recording_buffer),
                     post_buffer_frames=self._post_buffer_frames,
-                    cheat_type=cheat_type_start,
+                    cheat_type=state.active_incident_type,
                 )
             
             if not state.is_alert_recording:
@@ -1352,9 +1414,22 @@ class VideoPipeline:
                 )
             )
 
+            # Severity upgrade if phone detected during active gaze recording
+            if state.is_using_phone and state.active_incident_type != "phone":
+                state.active_incident_type = "phone"
+                if not getattr(state, 'incident_context', None):
+                    state.incident_context = {}
+                state.incident_context['is_using_phone'] = True
+                state.incident_context['phone_bbox'] = state.phone_bbox
+                state.frames_to_record = self._post_buffer_frames
+
             if state.is_cheating:
                 # Still cheating — keep recording, reset post-cheating countdown
                 state.frames_to_record = self._post_buffer_frames  # Will countdown only after cheating stops
+                # Update incident context if new target details become available
+                if state.cheating_target_paper and not state.incident_context.get('target_paper'):
+                    state.incident_context['target_paper'] = state.cheating_target_paper
+                    state.incident_context['paper_bbox'] = self._paper_bboxes.get(state.cheating_target_paper)
             else:
                 # Cheating stopped — count down the 2s post-buffer
                 state.frames_to_record -= 1
@@ -1362,30 +1437,26 @@ class VideoPipeline:
                     # Take a snapshot of the buffer for the writer thread,
                     # then reset recording state immediately.
                     frames_snapshot = list(state.recording_buffer)
-                    state.is_alert_recording = False
-                    state.recording_buffer = deque(maxlen=_MAX_RECORDING_FRAMES)
-                    
-                    # Determine cheat type BEFORE resetting state
-                    cheat_type = "phone" if state.is_using_phone else "gaze"
-                    
-                    # Snapshot cheating context BEFORE reset so the background
-                    # writer can render paper/victim annotations correctly.
-                    # Without this, cheating_target_paper is already None by
-                    # the time the writer thread calls _render_alert_frame.
-                    cheat_ctx = {
-                        'target_paper': state.cheating_target_paper,
-                        'target_neighbor': state.cheating_target_neighbor,
-                        'paper_bbox': self._paper_bboxes.get(
-                            state.cheating_target_paper
-                        ) if state.cheating_target_paper else None,
-                        'is_heuristic_paper': state.is_heuristic_paper,
-                        'is_using_phone': state.is_using_phone,
-                        'phone_bbox': state.phone_bbox,
-                        'suspicious_start_time': state.suspicious_start_time,
-                    }
+                    cheat_type = state.active_incident_type or ("phone" if state.is_using_phone else "gaze")
+                    cheat_ctx = dict(getattr(state, 'incident_context', {}))
+                    if not cheat_ctx:
+                        cheat_ctx = {
+                            'target_paper': state.cheating_target_paper,
+                            'target_neighbor': state.cheating_target_neighbor,
+                            'paper_bbox': self._paper_bboxes.get(
+                                state.cheating_target_paper
+                            ) if state.cheating_target_paper else None,
+                            'is_heuristic_paper': state.is_heuristic_paper,
+                            'is_using_phone': (cheat_type == "phone"),
+                            'phone_bbox': state.phone_bbox,
+                            'suspicious_start_time': getattr(state, 'suspicious_start_time', 0.0),
+                        }
                     
                     # Fully reset cheating state — the event is captured.
-                    # Student returns to normal (no more red box).
+                    state.is_alert_recording = False
+                    state.active_incident_type = None
+                    state.incident_context = {}
+                    state.recording_buffer = deque(maxlen=_MAX_RECORDING_FRAMES)
                     state.is_cheating = False
                     state.cheating_cooldown = 0
                     state.suspicious_start_time = 0.0
@@ -1398,6 +1469,23 @@ class VideoPipeline:
                         frames_snapshot, state.track_id, frame_data.timestamp,
                         cheat_type=cheat_type, cheat_ctx=cheat_ctx
                     )
+
+            # R4: Flush deferred incident when cheating concludes
+            if state.has_deferred_incident and not state.is_cheating and not state.is_alert_recording:
+                end_sec = (frame_data.frame_index + self._post_buffer_frames) / float(self._camera_fps)
+                mic_id = self._layout.nearest_mic_for_point(self._camera_id, state.center) if self._layout else None
+                if self._composer is not None:
+                    self._composer.compose_video_alert(
+                        camera_id=self._camera_id,
+                        mic_id=mic_id,
+                        start_sec=state.deferred_start_sec,
+                        end_sec=end_sec,
+                        alert_type=state.deferred_type,
+                        subject_point=state.center
+                    )
+                state.has_deferred_incident = False
+                state.deferred_ctx = {}
+                self._recording_skip_warned.discard(state.track_id)
 
         # ── Phone alert recording state machine ──────────────────────────────
         # Completely independent of student tracking.
@@ -1830,7 +1918,11 @@ class VideoPipeline:
                 # Resolve alerts_dir to prevent path traversal vulnerability.
                 alerts_dir = Path(self._settings.alerts_dir).resolve()
                 alerts_dir.mkdir(exist_ok=True)
-                time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
+                # Format time string using WallTime (epoch or current datetime)
+                if timestamp > 1e9:
+                    time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
+                else:
+                    time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
 
                 frames_written = 0
                 annotated_frames = []
@@ -1875,16 +1967,18 @@ class VideoPipeline:
                     if subject_point is None:
                         subject_point = (width // 2, height // 2)
 
-                    # Use frame_index / fps for archive-accurate seek offsets.
+                    # Use frame_index / fps for archive-accurate StreamTime seek offsets.
                     def _get_offset(itm):
-                        if hasattr(itm, 'frame_index'):
+                        if hasattr(itm, 'frame_index') and itm.frame_index is not None:
                             return itm.frame_index / float(self._camera_fps)
-                        if hasattr(itm, 'timestamp'):
-                            return itm.timestamp
-                        return timestamp
+                        if hasattr(itm, 'timestamp') and itm.timestamp is not None:
+                            return itm.timestamp if itm.timestamp < 1e9 else 0.0
+                        return 0.0
 
-                    timestamp_start = _get_offset(frames[0]) if frames else max(0.0, timestamp - (len(annotated_frames) / self._camera_fps))
-                    timestamp_end   = _get_offset(frames[-1]) if frames else timestamp
+                    timestamp_start = _get_offset(frames[0]) if frames else 0.0
+                    timestamp_end   = _get_offset(frames[-1]) if frames else timestamp_start + (len(annotated_frames) / float(self._camera_fps))
+                    if timestamp_end <= timestamp_start:
+                        timestamp_end = timestamp_start + (len(annotated_frames) / float(self._camera_fps))
 
                     # Find nearest mic to phone location (for audio extraction)
                     mic_id = None
@@ -2000,14 +2094,22 @@ class VideoPipeline:
                     self._archive_writer = writer
                     self._archive_path = str(filepath)
                     self._archive_size = (w, h)
-                    # P-2: Notify composer of the actual archive path so that
-                    # live-camera alerts seek in the correct dynamically-created
-                    # archive file rather than the original source path.
+                    # R1: Record the precise wall-clock moment this archive began.
+                    # Both update_video_archive (path) and register_archive_start
+                    # (wall_start_time) must be called together so the composer
+                    # can perform cross-modal offset correction.
+                    _archive_wall_start = time.time()
                     if self._composer is not None:
-                        self._composer.update_video_archive(self._camera_id, str(filepath))
+                        self._composer.register_archive_start(
+                            source_type="video",
+                            source_id=self._camera_id,
+                            path=str(filepath),
+                            wall_start_time=_archive_wall_start,
+                        )
                     logger.info(
                         f"Archive recording started: {filepath} "
-                        f"(codec={codec}, quality={self._video_quality}, size={w}x{h})"
+                        f"(codec={codec}, quality={self._video_quality}, size={w}x{h}, "
+                        f"wall_start={_archive_wall_start:.3f})"
                     )
                     self._vlog.log_archive_start(
                         filepath=str(filepath),
@@ -2058,7 +2160,11 @@ class VideoPipeline:
                 alerts_dir = Path(self._settings.alerts_dir).resolve()
                 alerts_dir.mkdir(exist_ok=True)
                 
-                time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
+                # Format time string using WallTime (epoch or current datetime)
+                if timestamp > 1e9:
+                    time_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
+                else:
+                    time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
                 # Determine frame dimensions by decoding the first valid item.
                 height, width = None, None
@@ -2094,12 +2200,14 @@ class VideoPipeline:
                 subject_point = None
                 
                 def _get_relative_time(itm):
-                    if hasattr(itm, 'frame_index'):
+                    if hasattr(itm, 'frame_index') and itm.frame_index is not None:
                         return itm.frame_index / float(self._camera_fps)
                     # Fallback for tuples if any
-                    if isinstance(itm, tuple) and hasattr(itm[1], 'frame_index'):
+                    if isinstance(itm, tuple) and hasattr(itm[1], 'frame_index') and itm[1].frame_index is not None:
                         return itm[1].frame_index / float(self._camera_fps)
-                    return None
+                    if hasattr(itm, 'timestamp') and itm.timestamp is not None:
+                        return itm.timestamp if itm.timestamp < 1e9 else 0.0
+                    return 0.0
 
                 for item in frames:
                     # Decode JPEG bytes if needed (JPEGFrame), else extract raw array.
@@ -2159,24 +2267,11 @@ class VideoPipeline:
                     if subject_point is None:
                         subject_point = (width // 2, height // 2)
 
-                    # Use the first and last frames of the buffer directly,
-                    # as the buffer naturally contains the pre-roll and post-roll.
+                    # Use the first and last frames of the buffer directly in StreamTime
                     timestamp_start = _get_relative_time(frames[0]) if frames else 0.0
-                    timestamp_end = _get_relative_time(frames[-1]) if frames else 0.0
-                    
-                    # Fallback to system time if frame_index is somehow missing
-                    if timestamp_start is None or timestamp_start == 0.0:
-                        def _get_ts(itm):
-                            if hasattr(itm, 'timestamp'):
-                                return itm.timestamp
-                            if isinstance(itm, tuple):
-                                return itm[0]
-                            return timestamp
-                        if cheat_ctx and cheat_ctx.get('suspicious_start_time', 0.0) > 0.0:
-                            timestamp_start = cheat_ctx['suspicious_start_time'] - 2.0
-                        else:
-                            timestamp_start = _get_ts(frames[0]) if frames else timestamp - (len(annotated_frames) / self._camera_fps)
-                        timestamp_end = _get_ts(frames[-1]) if frames else timestamp
+                    timestamp_end = _get_relative_time(frames[-1]) if frames else timestamp_start + (len(annotated_frames) / float(self._camera_fps))
+                    if timestamp_end <= timestamp_start:
+                        timestamp_end = timestamp_start + (len(annotated_frames) / float(self._camera_fps))
                     
                     # Find the nearest mic ID to the student
                     mic_id = None

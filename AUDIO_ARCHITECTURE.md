@@ -1,6 +1,21 @@
-# Thaqib Audio System Architecture & Data Flow
+# ⚠️ ARCHIVED — Thaqib Audio System Architecture (Previous Version)
 
-This document breaks down the core architecture of the Thaqib Audio System. The system is designed to continuously monitor multiple microphones, intelligently filter out ambient room noise, and use AI to transcribe and flag specific cheating-related whispers.
+> [!CAUTION]
+> **This document is ARCHIVED and describes a previous version of the Thaqib audio system.**
+> It does NOT reflect the current codebase. The system has been significantly redesigned since this document was written.
+>
+> **Do not use this document as a reference for the current implementation.**
+>
+> **Current documentation:**
+> - [`docs/architecture_analysis.md`](docs/architecture_analysis.md) — Full system architecture (current, verified against live code)
+> - [`docs/system_analysis.md`](docs/system_analysis.md) — Concurrency, error handling, and fix history
+> - [`SYSTEM_DOCUMENTATION.md`](SYSTEM_DOCUMENTATION.md) — Complete technical reference
+
+---
+
+# Thaqib Audio System Architecture & Data Flow (Archived)
+
+This document breaks down the core architecture of the Thaqib Audio System **as it existed in an earlier version**. The system is designed to continuously monitor multiple microphones, intelligently filter out ambient room noise, and use AI to transcribe and flag specific cheating-related whispers.
 
 ## High-Level Data Flow
 

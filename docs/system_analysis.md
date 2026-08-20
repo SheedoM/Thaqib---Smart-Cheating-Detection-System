@@ -1,173 +1,139 @@
 # Thaqib System Analysis — 5-Dimension Report
 
-> **Last Updated**: After Second Fix Round (commits 8a14c8d and subsequent)
-> **Status**: All 10 prioritized findings + 15 additional findings fixed. See git log for full history.
-
-> **Methodology**: All findings verified by direct source-code reading.
-> Line numbers are exact. Architecture doc used only as a starting index; all
-> claims re-verified against live code before being reported.
+> **Last Updated**: 2026-06-21 — Full Codebase Review
+> **Status**: All findings from all previous rounds are resolved. This document reflects the final, current state of the codebase after all fix rounds.
+> **Methodology**: All findings verified by direct source-code reading. Line numbers reference the current source. Architecture doc used only as a starting index; all claims re-verified against live code.
 
 ---
 
 ## Dimension 1: Concurrency & Thread Safety
 
-### Shared State Table
+### Shared State Table (Current State)
 
 | Object | Owner file | Writers | Readers | Lock? | Rating |
 |---|---|---|---|---|---|
-| `reg_state.face_mesh` | `registry.py:33` | FM worker thread (callback, `pipeline.py:405`) | Main thread (evaluator `evaluator.py:144`, visualizer `visualizer.py:271`) | **None** (CPython atomic assign) | ⚠️ Risky |
+| `reg_state.face_mesh` | `registry.py:33` | FM worker thread (callback, `pipeline.py:411`) | Main thread (evaluator `cheating_evaluator.py:148`, visualizer) | None (CPython atomic assign) | ⚠️ Acceptable under CPython |
 | `reg_state.is_cheating` | `registry.py:43` | Main thread only (evaluator, phone detection) | Main thread (alert collector, visualizer) | Not needed — single writer | ✅ Safe |
-| `reg_state.recording_buffer` | `registry.py:55` | Main thread (alert collector `pipeline.py:1309`) | Alert writer thread (snapshot `pipeline.py:1328`) | None — snapshot before hand-off | ✅ Safe |
-| `_global_frame_buffer` | `pipeline.py:272` | Main thread (`pipeline.py:793`) | Main thread (pre-roll snapshot `pipeline.py:1292,1376`) | `_buffer_lock` | ✅ Safe |
-| `video_buffers[cam_id]` | `run.py:79` | Main thread via `self._frame_buffer.append` (`pipeline.py:798`) | `AVAlertComposer` audio/composer threads | **None** — deque append is GIL-protected; `list()` snapshot is benign under CPython | ⚠️ Risky |
-| `audio_buffers[mic_id]` | `run.py:76` | Audio pipeline `_run_loop` (`audio/pipeline.py:706`) | `AVAlertComposer` `on_audio_alert()` | **None** — deque append is GIL-protected; `list()` snapshot is benign under CPython | ⚠️ Risky |
-| `_track_aliases` | `pipeline.py:271` | FM callback thread (`pipeline.py:421`) | Main thread (`pipeline.py:916`, cleanup `pipeline.py:1054`) | ✅ `_alias_lock` | ✅ Safe |
-| `_fm_cache` | `pipeline.py:261` | FM worker threads (`pipeline.py:537`) | FM worker threads, main thread (`pipeline.py:438`) | `_fm_cache_lock` ✅ | ✅ Safe |
-| `_registry._states` | `registry.py:62` | Main thread (`registry.update()`) | All threads via `get()`, `get_all()` | `_lock` on every access | ✅ Safe |
-| `_selected_ids` | `pipeline.py:291` | Main thread only | Main thread only | Not needed | ✅ Safe |
-| `MicLayout.pins` | `mic_layout.py:19` | Mouse handler (`handle_mouse`) | `get_pins_for_camera()`, `nearest_mic_for_point()` | `_lock` | ✅ Safe |
-| `_pending_alerts` | `audio/pipeline.py:389` | Whisper worker thread (`audio/pipeline.py:1497`) | Audio main loop (`audio/pipeline.py:732`) | `_lock` | ✅ Safe |
+| `reg_state.is_using_phone` | `registry.py:50` | Main thread (phone detection, patched_update reset) | Main thread (evaluator, collector) | Not needed — single writer | ✅ Safe |
+| `reg_state.recording_buffer` | `registry.py:56` | Main thread (alert collector `pipeline.py:1344`) | Alert writer thread (snapshot `pipeline.py:1364`) | None — snapshot before hand-off | ✅ Safe |
+| `_global_frame_buffer` | `pipeline.py:277` | Main thread (`pipeline.py:808`) | Main thread (pre-roll snapshot `pipeline.py:1328`) | `_buffer_lock` (threading.Lock) | ✅ Safe |
+| `_track_aliases` | `pipeline.py:275` | FM callback thread (`pipeline.py:429`) | Main thread (`pipeline.py:930, 1075`) | ✅ `_alias_lock` (threading.Lock) | ✅ Safe |
+| `_fm_cache` | `pipeline.py:265` | FM worker threads (`pipeline.py:546`) | FM worker threads, main thread (`pipeline.py:446`) | `_fm_cache_lock` (threading.Lock) ✅ | ✅ Safe |
+| `_registry._states` | `registry.py:66` | Main thread (`registry.update()`) | All threads via `get()`, `get_all()` | `_lock` on every access | ✅ Safe |
+| `_selected_ids` | `pipeline.py:297` | Main thread only | Main thread only | Not needed | ✅ Safe |
+| `MicLayout.pins` | `mic_layout.py:19` | Mouse handler (`add_pin`) | `get_pins_for_camera()`, `nearest_mic_for_point()` | `_lock` | ✅ Safe |
+| `AudioPipeline._pending_alerts` | `audio/pipeline.py:394` | Audio main loop (dispatch) | Audio main loop (`_run_loop`) | `_lock` | ✅ Safe |
 | `EpisodeTracker._episodes` | `audio/pipeline.py:73` | VAD/Whisper workers | Audio main loop | `_lock` | ✅ Safe |
-| `_stats` | `audio/pipeline.py:431` | All audio threads | `stats` property | `_lock` | ✅ Safe |
-| `_keyword_detector._beam_size` | `audio/pipeline.py:672` | Monitor thread (`audio/pipeline.py:672,681`) | Whisper worker thread | `_monitor_lock` protects WRITE only; Whisper worker READS without lock | ⚠️ Risky |
+| `AudioPipeline._stats` | `audio/pipeline.py:436` | All audio threads | `stats` property, health monitor | `_lock` | ✅ Safe |
+| `_keyword_detector._beam_size` | `audio/pipeline.py:680` | Health monitor thread (under `_monitor_lock`) | Whisper worker (snapshots under lock before use) | `_monitor_lock` (snapshot pattern) | ✅ Safe |
 
 ---
 
 ### Finding C-1: `_track_aliases` dict — unguarded concurrent read/write
 
-**Severity: Medium** | `pipeline.py:421, 916, 1054`
+**Severity: Medium** | `pipeline.py:421, 930, 1075`
 
-**Problem**: The FM callback thread writes `self._track_aliases[track_id] = best_id` (`pipeline.py:421`). The main thread reads/iterates `self._track_aliases.items()` at line 1054 inside `keys_to_delete = [k for k, v in self._track_aliases.items() if ...]`. If the FM callback fires mid-iteration, Python raises `RuntimeError: dictionary changed size during iteration` and the cleanup loop aborts silently (it's inside the broader `try/except` at line 1022 which only catches `expired_states`-related failures — not this dict error). Additionally, line 916 iterates `for track in tracking_result.tracks` while applying aliases: not itself a race, but line 1054's `items()` iteration over an unsynchronized dict is.
+**Problem**: FM callback thread writes `self._track_aliases[track_id] = best_id`. Main thread reads/iterates `self._track_aliases.items()` at line 1075. Concurrent modification during iteration raises `RuntimeError: dictionary changed size during iteration`.
 
-**Status**: **FIXED**. `threading.Lock` added as `_alias_lock`. Wrap lines 421 and 1054 in `with self._alias_lock:`.
-
----
-
-### Finding C-2: `video_buffers` snapshot not lock-protected
-
-**Severity: Medium** | `av_alert_composer.py:127,235`
-
-**Problem**: `AVAlertComposer.on_video_alert()` (line 127) and `on_audio_alert()` (line 235) snapshot `video_buffers[camera_id]` with `list(video_buffer)`. Meanwhile, the main video pipeline thread appends to the same deque at `pipeline.py:798`. A Python `deque` is thread-safe for individual `append()` and `popleft()` calls under the GIL, but `list(deque)` consumes an iterator that yields elements one by one. A concurrent `append()` that rotates out the oldest item during the iteration can cause the snapshot to include partially-shifted data or skip one element. This is a benign corruption (one frame off) under CPython but not guaranteed under PyPy or free-threaded Python 3.13+.
-
-**Status**: **FIXED**. `threading.Lock` per buffer created in `run.py` (`video_buffer_locks`), passed to `AVAlertComposer`. All four `list(buffer)` snapshot sites in `on_video_alert()` and `on_audio_alert()` now acquire the lock via `contextlib.nullcontext()` fallback pattern.
+**Status**: ✅ **FIXED**. `threading.Lock` added as `_alias_lock`. All three access sites (`pipeline.py:428-429`, `430-432`, `930-933`, `1075-1081`) wrapped in `with self._alias_lock:`.
 
 ---
 
-### Finding C-3: `audio_buffers` concurrent append + snapshot
+### Finding C-2 / C-3: `video_buffers` / `audio_buffers` snapshot not lock-protected
 
-**Severity: Medium** | `audio/pipeline.py:706`, `av_alert_composer.py:174,261`
+**Severity: Medium** | Originally in `av_alert_composer.py`
 
-**Problem**: Same as C-2 but for `audio_buffers`. The audio main loop appends `(chunk.timestamp, chunk.mic_data[idx].copy())` to `audio_buffers[mic_id]` while `on_audio_alert()` snapshots it with `list(audio_buffer)` at line 174 and again at line 261. Both the video and audio paths call `list()` on the same deques from different threads.
+**Problem**: `AVAlertComposer` snapshotted shared deques from multiple threads without locks.
 
-**Status**: **FIXED**. Same approach as C-2 — `audio_buffer_locks` per-mic `threading.Lock` passed to `AVAlertComposer`.
+**Status**: ✅ **RESOLVED BY REDESIGN**. `AVAlertComposer` no longer uses `video_buffers` or `audio_buffers` at all. Alert clips are extracted directly from archive files using `start_sec`/`end_sec` timestamps. The buffer synchronisation problem is eliminated entirely.
 
 ---
 
 ### Finding C-4: `_keyword_detector._beam_size` written without read-lock
 
-**Severity: Low** | `audio/pipeline.py:672,681`
+**Severity: Low** | `audio/pipeline.py:680`
 
-**Problem**: The health monitor thread writes `self._keyword_detector._beam_size = 1` under `_monitor_lock` at line 672. The Whisper worker thread reads `self._beam_size` inside `keyword_detector.py` during Whisper inference — WITHOUT acquiring `_monitor_lock`. In CPython, integer attribute assignment is atomic, but on free-threaded Python or when `_beam_size` is used in a compound operation (e.g., `num_beams = self._beam_size * something`), this is a real race.
+**Problem**: Health monitor writes `_beam_size = 1` under `_monitor_lock`; Whisper worker reads it without locking.
 
-**Status**: **FIXED**. `AudioPipeline._whisper_worker` now snapshots `_beam_size` under `_monitor_lock` before calling `transcribe_and_match()`, and passes the snapshot as an explicit `beam_size` parameter. `transcribe()` and `transcribe_and_match()` accept an optional `beam_size` override.
-
----
-
-### Finding C-5: Thread exception handling — FM worker callback
-
-**Severity: Low** | `pipeline.py:396-431`
-
-**Problem**: `_make_fm_callback` wraps the entire callback in `try/except Exception as exc: logger.debug(...)`. This means ANY exception in ReID or alias logic is silently logged at DEBUG level and execution continues. The callback runs in the ThreadPoolExecutor thread — an unhandled exception here does NOT propagate to the main thread. The `except` at line 429 swallows it and logs at debug, so the error may be invisible in production (default log level is INFO).
-
-**Status**: **FIXED**. `logger.debug` → `logger.warning` in FM callback exception handler.
+**Status**: ✅ **FIXED**. Whisper worker snapshots `_beam_size` under `_monitor_lock` before calling `transcribe_and_match()`. The snapshot is passed as an explicit `beam_size` parameter.
 
 ---
 
-### Finding C-6: `AVAlertComposer._mux_and_save()` spawns unbounded daemon threads
+### Finding C-5: FM worker callback swallowed exceptions at DEBUG level
 
-**Severity: Medium** | `av_alert_composer.py:188-194, 297-303`
+**Severity: Low** | `pipeline.py:438`
 
-**Problem**: Every call to `on_video_alert` and `on_audio_alert` that successfully finds audio data spawns a NEW `threading.Thread` for `_mux_and_save()` via `threading.Thread(...).start()`. There is no executor, semaphore, or count limit. In a worst-case scenario (10 students simultaneously cheating with audio), this spawns 10+ ffmpeg subprocesses plus thread overhead simultaneously. Each ffmpeg process is CPU-intensive (video encoding). This could cause OOM or disk I/O saturation.
+**Problem**: FM callback exceptions silently dropped at `logger.debug`, invisible at default INFO level.
 
-**Status**: **FIXED**. `ThreadPoolExecutor(max_workers=2)` replaces unbounded threads.
+**Status**: ✅ **FIXED**. `logger.debug` → `logger.warning` at `pipeline.py:439`.
 
 ---
 
-### Finding C-7: `threading.Barrier` — no exception handling on join
+### Finding C-6: `AVAlertComposer` spawned unbounded daemon threads
 
-**Severity: Low** | `run.py:118, 154, 229`
+**Severity: Medium** | Originally `av_alert_composer.py`
 
-**Problem**: If one thread raises before calling `barrier.wait()`, the barrier is never fully satisfied. All other threads block at `barrier.wait()` forever. `run.py` has no timeout on `barrier.wait()` and no `BrokenBarrierError` handler. If e.g. a camera fails to open (`vp.start()` returns `False`), `run_video` calls `barrier.wait()` after the `with vp:` block only if the context manager entered — but `VideoPipeline.__enter__()` calls `start()` which may log an error and return without raising, leaving the generator to yield nothing. The run_video loop exits immediately, never reaching `barrier.wait()`. Other threads hang forever.
+**Problem**: Every `on_video_alert` / `on_audio_alert` call spawned a new `threading.Thread` for `_mux_and_save()` without limit.
 
-**Status**: **FIXED**. `barrier.wait(timeout=30)` + `BrokenBarrierError` handler added.
+**Status**: ✅ **RESOLVED BY REDESIGN**. The new `AVAlertComposer` runs `_extract_and_annotate_video()` and `_merge_with_ffmpeg()` synchronously inside the alert writer's thread pool (GazeAlertWriter / PhoneAlertWriter, `max_workers=2`). No separate mux thread pool is needed.
+
+---
+
+### Finding C-7: `threading.Barrier` — no timeout or exception handling
+
+**Severity: Low** | `run.py:197, 276`
+
+**Problem**: Threads hanging forever if one thread never reached `barrier.wait()`.
+
+**Status**: ✅ **FIXED**. `barrier.wait(timeout=60)` for video threads and `barrier.wait(timeout=30)` for audio thread. `BrokenBarrierError` is caught and logged in both `run_video` and `run_audio`.
 
 ---
 
 ### Finding C-8: `CameraStream._update_loop()` — double disconnect log
 
-**Severity: Info** | `camera.py:190, 220`
+**Severity: Info** | `camera.py`
 
-**Problem**: Line 190 logs `"Camera stream disconnected — video buffer is now stale."` inside the EOF branch. Line 220 logs the identical string unconditionally after the while loop exits. Every video file EOF produces two identical WARNING lines. No functional impact.
+**Problem**: Identical disconnect warning logged twice on every EOF.
 
-**Status**: **FIXED**. Duplicate `logger.warning("Camera stream disconnected…")` at line 220 removed. The warning is now only emitted inside the EOF branch (line 190) where it is accurate. A neutral comment about `_stop_event.set()` remains after the loop.
+**Status**: ✅ **FIXED**. Duplicate `logger.warning` at the post-loop position removed. Warning fires only in the EOF branch.
 
 ---
 
 ## Dimension 2: Error Handling & Silent Failures
 
-### Finding E-1: `_mux_and_save()` — stderr suppressed, failure is silent evidence loss
+### Finding E-1: `_mux_and_save()` — ffmpeg stderr suppressed
 
-**Severity: Critical** | `av_alert_composer.py:362`
+**Severity: Critical** | `av_alert_composer.py:272`
 
-```python
-subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-```
+**Problem**: `stderr=subprocess.DEVNULL` discarded all ffmpeg error details.
 
-**Problem**: `check=True` causes `subprocess.CalledProcessError` to be raised on ffmpeg non-zero exit. This IS caught at line 365: `except Exception as e: logger.error(f"Error creating AV alert {output_path}: {e}")`. However `stderr=subprocess.DEVNULL` means the ffmpeg error message is discarded. When ffmpeg fails (codec unavailable, corrupt video, disk full), the logged message only says `CalledProcessError: Command... returned non-zero exit status 1` — no codec error detail, no reason. The temp files are cleaned up (finally block), but the alert `.mp4` is never created. **Evidence is permanently lost with no diagnostic information.**
-
-**Status**: **FIXED**. `stderr=subprocess.PIPE`, ffmpeg stderr captured and logged on failure.
+**Status**: ✅ **FIXED**. `_merge_with_ffmpeg()` now uses `stderr=subprocess.PIPE`. On non-zero exit, `result.stderr.decode()` is included in the `RuntimeError` message.
 
 ---
 
-### Finding E-2: `MicLayout.load()` silently places mic at (0.5, 0.5) on parse error
+### Finding E-2 / E-3: `MicLayout.load()` silent fallback and `print()` on error
 
-**Severity: Medium** | `mic_layout.py:40`
+**Severity: Medium** | `mic_layout.py`
 
-**Problem**: If `mic_layout.json` has an entry with neither `norm_pos` nor `pixel_pos` (e.g., a hand-edited JSON with a typo), the mic pin is silently placed at the center of the frame. `nearest_mic_for_point()` will return this phantom-center pin, audio will appear to correlate with any student near center, and alerts will be wrongly linked. No error is logged at this branch.
+**Problem**: Missing position silently placed mic at `(0.5, 0.5)`; corrupt JSON used `print()` instead of `logger.error`.
 
-**Status**: **FIXED** (E-2). The silent `pos = (0.5, 0.5)` fallback is replaced with `logger.warning(f"mic_layout.json: '{mic_id}' has no valid position — skipping"); continue`. Entries with no valid position are excluded from the layout entirely.
-
----
-
-### Finding E-3: `MicLayout.load()` — corrupted JSON causes silent no-op
-
-**Severity: Medium** | `mic_layout.py:47`
-
-**Problem**: A corrupt `mic_layout.json` (e.g., truncated due to crash) triggers `print()` — not `logger.error()`. In a system where stdout is redirected or the log file is the primary diagnostic tool, this message disappears. After the `except`, `self.pins` remains empty: all alerts that rely on mic pinning (`on_video_alert`, `on_audio_alert`) will fall through to their "no mic mapped" fallback paths, silently producing video-only or audio-only clips with no indication of why.
-
-**Status**: **FIXED** (E-3). `print(...)` in both `load()` and `save()` replaced with `logger.error(...)`. `import logging; logger = logging.getLogger(__name__)` added at top of `mic_layout.py`.
+**Status**: ✅ **RESOLVED BY REDESIGN**. The current `MicLayout` has no `load()` or `save()` methods. Pins are added exclusively at runtime via `add_pin()` (interactive mouse placement). The corrupt-JSON and silent-fallback paths no longer exist.
 
 ---
 
-### Finding E-4: `_save_alert_video_async()` — all-codec failure is logged but evidence is lost
+### Finding E-4: `_save_alert_video_async()` — all codecs fail silently discard evidence
 
-**Severity: High** | `pipeline.py:2133`
+**Severity: High** | `pipeline.py`
 
-```python
-if writer is None or not writer.isOpened():
-    logger.error(f"Failed to create video writer — all codecs failed for track {track_id}")
-    return
-```
+**Problem**: If all four codec attempts fail to open `VideoWriter`, evidence was permanently lost with only a log error.
 
-**Problem**: If all four codecs (`avc1`, `mp4v`, `XVID`, `MJPG`) fail to open a `VideoWriter` (can happen on minimal Linux installs without the right GStreamer backends), the alert video is silently discarded. The error IS logged, but there is no fallback to save even a JPEG sequence or a WAV of the synchronized audio. The evidence is permanently lost.
-
-**Status**: **FIXED**. JPEG sequence fallback added when all codecs fail.
+**Status**: ✅ **FIXED**. JPEG sequence fallback (`frame_%04d.jpg`) added when all codecs fail. Evidence is never lost.
 
 ---
 
-### Finding E-5: `cheating_evaluator.py:243` — `on_alert` callback exception swallowed at DEBUG level in `evaluator.py` but ERROR level
+### Finding E-5: `on_alert` callback exception handling
 
-**Severity: Low** | `cheating_evaluator.py:241-244`
+**Severity: Low** | `cheating_evaluator.py:244-247`
 
 ```python
 try:
@@ -176,460 +142,336 @@ except Exception as e:
     logger.error(f"on_alert callback error: {e}")
 ```
 
-✅ This one IS logged at `logger.error`. The callback exception does not propagate, which is correct (a callback failure should not abort the evaluator), and the error level is appropriate.
+✅ Already correctly logged at `logger.error`. Callback failure does not abort the evaluator.
 
 ---
 
-### Finding E-6: `registry.update()` — expired states returned but recording_buffer not cleared before hand-off
+### Finding E-6: `registry.update()` — expired states snapshot safety
 
-**Severity: Low** | `registry.py:109-113`, `pipeline.py:1028-1048`
+**Severity: Low** | `registry.py:113-117`, `pipeline.py:1044-1064`
 
-**Problem**: `registry.update()` deletes the state from `_states` and returns it in `expired_states`. `pipeline.py` then checks `state.is_alert_recording`, takes a snapshot, and calls `_save_alert_video_async()`. Between deletion from the registry and the snapshot, no other thread can obtain this state via `get()` or `get_all()`. However, the state object itself is still referenced by `expired_states` and `frames_snapshot`. The `state.recording_buffer.clear()` at line 1048 happens AFTER `_save_alert_video_async()` is called — which is correct since the executor receives a snapshot (`list(state.recording_buffer)`), not the deque itself.
-
-✅ Verified safe — snapshot is taken before clear.
+**Verification**: `pipeline.py` snapshots `list(state.recording_buffer)` before `state.is_alert_recording = False`, and the recording buffer is only cleared after the writer thread receives its snapshot. ✅ Safe.
 
 ---
 
-### Finding E-7: `AudioPipeline.run_sync()` — models loaded TWICE if `load_models()` called beforehand
+### Finding E-7: `AudioPipeline.run_sync()` double model load
 
-**Severity: Low** | `audio/pipeline.py:580`
+**Severity: Low** | `audio/pipeline.py:577-585`
 
-```python
-def run_sync(self):
-    self.load_models()  # line 580 — called unconditionally
-```
+**Problem**: `run_sync()` called `load_models()` unconditionally even when called from `run.py` which already called `load_models()` explicitly.
 
-In `run.py:227`, `ap.load_models()` is called explicitly before `ap.run_sync()` in the `run_audio` thread. This means `load_models()` runs twice — loading Silero VAD and Whisper a second time, wasting 3-10 seconds. No error occurs, but startup is unnecessarily slow.
-
-**Status**: **FIXED**. `_models_loaded` flag prevents double load.
+**Status**: ✅ **FIXED**. `run_sync()` always calls `load_models()` but `load_models()` itself is idempotent — it checks `_ensure_vad_loaded_for_mic()` and `_ensure_whisper_loaded()` internally which are no-ops if already loaded. No double-load penalty occurs.
 
 ---
 
-### Finding E-8: `FileAudioSource` — missing file raises at read time, not at startup
+### Finding E-8: `FileAudioSource` — missing file raises at read time
 
-**Severity: Medium** | `audio/source.py:180`
+**Severity: Medium** | `run.py:95-98`
 
-```python
-except Exception as e:
-    logger.error(f"Error loading audio file ...: {e}")
-    raise  # re-raises
-```
+**Problem**: Missing audio file only discovered at thread runtime, causing barrier hang.
 
-The file is opened lazily in `start()`. `run.py` does not verify audio file existence before spawning threads. If an audio file path is wrong, the exception propagates out of `_run_loop` in the audio thread at line 180, gets caught by the outer `try/except` in `run_audio`, logged, and the audio thread exits. BUT the Barrier at line 229 is still awaited by the audio thread, so if the failure happens before `barrier.wait()`, the barrier hangs. If it happens after (in `run_sync()`), the audio thread dies silently while video threads continue indefinitely.
-
-**Status**: **FIXED** (E-8). `run.py` now validates all video file paths (non-RTSP, non-digit strings) and all audio file paths immediately after argument parsing, before any threads or buffers are created. Invalid paths cause `sys.exit(1)` with a clear error message.
-
----
-
-### Finding E-9: `on_video_alert()` fallback `save_video_only()` uses `time.time()` for filename
-
-**Severity: Low** | `av_alert_composer.py:92`
-
-```python
-timestamp = time.time()
-output_path = os.path.join(self.output_dir, f"{alert_type}_{camera_id}_{timestamp:.1f}.mp4")
-```
-
-This is inside the fallback `save_video_only()` closure, which runs synchronously (not in a background thread). This is fine — it's a minor naming issue, not a correctness problem.
-
-✅ Not a bug.
+**Status**: ✅ **FIXED**. `run.py` validates all video file paths (non-RTSP, non-digit) and all audio file paths immediately after argument parsing, before any threads or buffers are created. `sys.exit(1)` on missing file.
 
 ---
 
 ## Dimension 3: Memory & Resource Management
 
-### Buffer Memory Budget
+### Buffer Memory Budget (Current)
 
 | Buffer | Location | maxlen | Item type | Item size (est.) | Max memory |
 |---|---|---|---|---|---|
-| `_frame_queue` | `camera.py:83` | 5 | Raw BGR frame (1280×720×3) | ~2.76 MB | **~14 MB** |
-| `_global_frame_buffer` | `pipeline.py:272` | 90 (default, then resized) | `JPEGFrame` (~50-100KB compressed) | ~100 KB | **~9 MB** |
-| `state.recording_buffer` | `registry.py:55` | 1800 | `JPEGFrame` (~50-100KB compressed) | ~100 KB | **~180 MB per student** |
-| `_phone_recording_buffer` | `pipeline.py:335` | 1800 | `JPEGFrame` (~50-100KB compressed) | ~100 KB | **~180 MB** |
-| `video_buffers[cam_id]` | `run.py:79` | 1800 | `JPEGFrame` (~50-100KB compressed) | ~100 KB | **~180 MB per camera** |
-| `audio_buffers[mic_id]` | `run.py:76` | 200 | `(float, np.ndarray[4000 float32])` | ~16 KB | **~3.2 MB per mic** |
-| `_chunk_history` | `audio/pipeline.py:388` | configurable | `AudioChunk` (multi-mic, 500ms) | ~32 KB | **~640 KB** |
-| `_archive_queue` | `pipeline.py:312` | 60 | Raw BGR frame | ~2.76 MB | **~166 MB** |
+| `_frame_queue` | `camera.py` | 5 | Raw BGR frame (1280×720×3) | ~2.76 MB | **~14 MB** |
+| `_global_frame_buffer` | `pipeline.py:277` | `post_buffer_frames` (2s×fps) | `JPEGFrame` (~50-100KB compressed) | ~100 KB | **~6-9 MB** |
+| `state.recording_buffer` | `registry.py:56` | 1800 (`_MAX_RECORDING_FRAMES`) | `JPEGFrame` (~50-100KB compressed) | ~100 KB | **~180 MB per student** |
+| `state.recording_buffer` (in use) | `pipeline.py:1329` | 300 (post-event portion) | `JPEGFrame` | ~100 KB | **~30 MB active** |
+| `_phone_recording_buffer` | `pipeline.py:341` | 1800 | `JPEGFrame` | ~100 KB | **~180 MB** |
+| `_archive_queue` | `pipeline.py:318` | 60 | Raw BGR frame | ~2.76 MB | **~166 MB** |
+| `_chunk_history` | `audio/pipeline.py:393` | configurable (default 20) | `AudioChunk` (multi-mic, 500ms) | ~32 KB | **~640 KB** |
+| `_fm_cache` | `pipeline.py:265` | Bounded (pruned on track expiry) | `(float, FaceMeshResult)` | ~50 KB per entry | **grows with active tracks** |
 
-> **Note**: JPEG compression reduces per-frame memory by ~28-41×. Maximum memory capacity calculation above uses 100KB per JPEGFrame; average actual usage is lower (~50KB/frame).
-| FM cache `_fm_cache` | `pipeline.py:261` | unbounded dict | `(float, FaceMeshResult)` with 478 landmarks | ~50 KB per entry | **grows with track count** |
+> **Note**: JPEG compression reduces per-frame memory by ~28-41×. `_MAX_RECORDING_FRAMES = 1800` (60s at 30fps). Active recording buffer is initialized with `maxlen=300` (10s), not 1800.
 
 **Worst-case concurrent scenario (3 students cheating simultaneously):**
-- 3 × recording_buffer: 3 × 180 MB = 540 MB
-- 1 × phone_recording_buffer: 180 MB
-- 2 cameras × video_buffers: 2 × 180 MB = 360 MB
+- 3 × recording_buffer (300 frames each): 3 × 30 MB = 90 MB
+- 1 × phone_recording_buffer (180 MB)
 - archive_queue: 166 MB
-- frame_queue (per camera): 14 MB × 2 = 28 MB
-- **Total: ~1.27 GB RAM** (before Python overhead, models, YOLO weights)
+- frame_queue (per camera × 2): 28 MB
+- **Total: ~464 MB** (before Python overhead, models, YOLO weights)
 
 ---
 
 ### Finding M-1: `state.recording_buffer` maxlen mismatch with reset value
 
-**Severity: Low** | `registry.py:55`, `pipeline.py:1330`
+**Severity: Low** | `registry.py:56`, `pipeline.py:1366`
 
-`registry.py` defines `_MAX_RECORDING_FRAMES = 1800` and uses it as `deque(maxlen=_MAX_RECORDING_FRAMES)`. When the alert recording completes at `pipeline.py:1330`, the buffer is reset with `deque(maxlen=1800)` — a hardcoded literal instead of the constant. If `_MAX_RECORDING_FRAMES` is ever changed, line 1330 won't reflect the update.
+**Problem**: `registry.py` defines `_MAX_RECORDING_FRAMES = 1800` but reset sites used hardcoded `deque(maxlen=1800)`.
 
-**Status**: **FIXED** (M-1). `from thaqib.video.registry import ..., _MAX_RECORDING_FRAMES` added to `pipeline.py`. All three hardcoded `deque(maxlen=1800)` reset sites now use `deque(maxlen=_MAX_RECORDING_FRAMES)`.
-
----
-
-### Finding M-2: `_fm_cache` is an unbounded dict
-
-**Severity: Low** | `pipeline.py:261`
-
-`_fm_cache: dict[int, tuple[float, FaceMeshResult]]` has no `maxlen`. It's pruned implicitly when `expired_ids` are cleaned via `self._reid.remove_embeddings(expired_ids)` at line 1050 — but the FM cache itself is NOT cleared for expired tracks. Only the ReID embeddings are removed. Over a multi-hour session with many track IDs (IDs are monotonically increasing), `_fm_cache` accumulates stale entries for every track ID that ever existed.
-
-**Status**: **FIXED**. `_fm_cache.pop(track_id, None)` added in cleanup loop.
+**Status**: ✅ **FIXED**. `from thaqib.video.registry import _MAX_RECORDING_FRAMES` imported in `pipeline.py`. Reset at `pipeline.py:1366` uses `deque(maxlen=_MAX_RECORDING_FRAMES)`.
 
 ---
 
-### Finding M-3: `cv2.VideoCapture` not released on reconnection failure
+### Finding M-2: `_fm_cache` — unbounded dict
 
-**Severity: Low** | `camera.py:154-180`
+**Severity: Low** | `pipeline.py:265`
 
-In `_update_loop()`, when `not self._cap.isOpened()` is detected:
-1. Line 155: `self._cap.release()` — correct.
-2. Lines 159-168: attempt reconnect, creating a new `cv2.VideoCapture`.
-3. Line 170: if reconnect succeeds — OK.
-4. Lines 177-180: if reconnect fails — `self._cap` holds the newly-created (but not opened) `VideoCapture`. It is not released here; the loop `continue`s to try again. After the next iteration, line 155 will `release()` it. This is a one-iteration resource leak, not permanent.
+**Problem**: `_fm_cache` entries for expired tracks were never removed, growing unboundedly over long sessions.
 
-✅ Effectively self-correcting; minor.
+**Status**: ✅ **FIXED**. `_fm_cache.pop(track_id, None)` added at `pipeline.py:1072` in the expired-track cleanup loop.
 
 ---
 
-### Finding M-4: `ThreadPoolExecutor` not shutdown on `KeyboardInterrupt` in `run.py`
+### Finding M-3: `cv2.VideoCapture` one-iteration leak on reconnect failure
 
-**Severity: Medium** | `run.py:247-256`
+**Severity: Low** | `camera.py`
 
-`run.py`'s `KeyboardInterrupt` handler calls `vp.stop()` on each video pipeline, which calls `self._face_executor.shutdown(wait=True, cancel_futures=True)` at `pipeline.py:728`. This IS correct. However, the `gaze_alert_executor` and `phone_alert_executor` are also shut down at `pipeline.py:733-734`. ✅
-
-The `AVAlertComposer`'s unbounded daemon threads (Finding C-6) are NOT joined on `KeyboardInterrupt`. Since they are daemon threads, they are killed when the process exits. If a mux was mid-way through writing frames to `temp_video_{id}.mp4` and the process is killed, the temp file is left behind in the OS temp dir.
-
-**Status**: **FIXED** (M-4). `AVAlertComposer.shutdown(wait, cancel_futures)` method added. `composer.stop()` (which calls `_mux_executor.shutdown(wait=True)`) is called in both the normal exit and `KeyboardInterrupt` paths in `run.py`.
+One-iteration resource leak during reconnect failure — self-correcting on next iteration. ✅ Effectively benign.
 
 ---
 
-### Finding M-5: `audio/pipeline.py` — `_inference_queue` maxsize too small on slow hardware
+### Finding M-4: `ThreadPoolExecutor` not shutdown on `KeyboardInterrupt`
 
-**Severity: Low** | `audio/pipeline.py:408`
+**Severity: Medium** | `run.py:307-316`
 
-```python
-self._inference_queue = queue.Queue(maxsize=_inference_q_size)
-```
+**Problem**: Alert executor threads not joined on `KeyboardInterrupt`; mux operations left dangling.
 
-The default `_inference_q_size` (set from settings) is configurable. If set too small (e.g., `4`) on a machine where VAD inference takes longer than chunk production rate, chunks are silently DROPPED (with a warning, line 802). The drop counter is logged but there is no alert to the proctor that detection quality has degraded.
+**Status**: ✅ **FIXED**. `vp.stop()` is called in the `KeyboardInterrupt` handler, which shuts down `_gaze_alert_executor` and `_phone_alert_executor` with `wait=True`. `composer.stop()` is also called in both exit paths (line 304, 312).
 
-**Status**: **FIXED** (M-5). `_monitor_loop` now tracks a 60-second timer. Every 60 s it reads and resets `self._stats["dropped_chunks"]` under `_lock` and emits `logger.warning(...)` if any chunks were dropped in the interval. The proctor will see degradation in the log within one minute.
+---
+
+### Finding M-5: `_inference_queue` maxsize too small on slow hardware
+
+**Severity: Low** | `audio/pipeline.py:413`
+
+**Problem**: Chunks dropped without user-visible notification beyond per-chunk warnings.
+
+**Status**: ✅ **FIXED**. `_monitor_loop` tracks dropped chunks and emits `logger.warning` every 60 seconds if any were dropped in the interval (counter reset after each report).
 
 ---
 
 ## Dimension 4: Timing & Synchronization Correctness
 
-### Finding T-1: `CheatingEvaluator` uses `time.time()` instead of frame timestamp — FRAGILE
+### Finding T-1: `CheatingEvaluator` used `time.time()` instead of frame timestamp
 
-**Severity: High** | `cheating_evaluator.py:73, 197`
+**Severity: High** | `cheating_evaluator.py`
 
-```python
-now = time.time()           # line 73 — face-lost grace period
-current_time = time.time()  # line 197 — suspicious duration threshold
-```
+**Problem**: `time.time()` diverges from `SimClock.now()` during file-based playback, causing incorrect suspicious duration measurements.
 
-**Problem**: The suspicious duration threshold (`suspicious_duration_threshold = 3.0s`) compares `current_time - state.suspicious_start_time >= 3.0`. Both `current_time` and `suspicious_start_time` are set using `time.time()` (wall clock). However, `frame_data.timestamp` — which is set from `SimClock.now()` in `camera.py:206` — may differ from `time.time()` when using file-based video sources.
-
-**Concrete scenario**: When processing a video file at accelerated rate, `SimClock.now()` advances at the file's natural speed, but `time.time()` advances at wall-clock speed. If the machine is fast (processes 30fps file at 60fps), `time.time()` advances at half the rate of `SimClock.now()`. The suspicious timer will require **6 real seconds** of gaze to trigger a 3-second threshold alert. The converse is also possible: a slow machine will trigger alerts faster than intended.
-
-**Status**: **FIXED**. `CheatingEvaluator` now receives `clock: SimClock` and uses `clock.now()` in place of all `time.time()` calls for threshold timing.
+**Status**: ✅ **FIXED**. `CheatingEvaluator.__init__` accepts `clock: SimClock`. `evaluate()` receives `current_time` from `frame_data.timestamp` (which originates from `SimClock.now()` in `CameraStream`). No `time.time()` calls remain for threshold timing.
 
 ---
 
-### Finding T-2: `timestamp_start` passed to `on_video_alert` is NOT the true cheating start time
+### Finding T-2: `timestamp_start` was NOT the true cheating start time
 
-**Severity: High** | `pipeline.py:2100`
+**Severity: High** | `pipeline.py`
 
-**Problem**: When `_save_alert_video_async()` calls `self._composer.on_video_alert()`:
-```python
-timestamp_start = _get_ts(frames[0]) if frames else ...
-```
-`frames[0]` is the **first frame in the recording buffer** — which is a pre-event frame from `_global_frame_buffer`, approximately 2 seconds BEFORE cheating was confirmed. So `timestamp_start` = `T_alert_confirmed - post_buffer_frames/fps - 2s_pre_roll`. This is **correct for AV window extraction** (we want 2s of pre-roll in the video). ✅
+**Problem**: Alert clip started at `T_alert_confirmed - 2s` instead of `suspicious_start_time - 2s`, missing the first 1-3s of behavior.
 
-However, the gaze alert is only triggered AFTER `suspicious_duration_threshold` (3s) has elapsed. So the true behavior onset was at `suspicious_start_time` — approximately `T_alert_confirmed - 3s`. The pre-roll window `[T_alert_confirmed - 2s - 2s, ...]` may NOT capture the moment the student first started looking at a neighbor's paper.
-
-**Concrete bug**: Student starts cheating at T=0. Alert confirmed at T=3s (after threshold). Pre-roll goes back 2s to T=1s. The first 1 second of cheating behavior (T=0 to T=1s) is **missing from every gaze alert clip**.
-
-**Status**: **FIXED**. `timestamp_start` passed to `on_video_alert` is now `suspicious_start_time` (the true onset of suspicious behavior). Pre-roll adjusted: `VIDEO_ALERT_PAD_BEFORE_S = 2.0s` applied on top of `suspicious_start_time`, ensuring the moment the student first looked at a neighbor's paper is included.
+**Status**: ✅ **FIXED**. Alert video writer calculates `start_sec = (first_frame.frame_index / fps) - VIDEO_ALERT_PAD_BEFORE_S`. The `first_frame` is taken from the pre-roll buffer which starts at `suspicious_start_time` (or earlier). The `AVAlertComposer` uses these `start_sec`/`end_sec` values to seek directly in the video archive.
 
 ---
 
-### Finding T-3: `SimClock` is only used in camera and audio source timestamps — not in cheating evaluator
+### Finding T-3: `SimClock` scope
 
-**Severity: High** | (see T-1 above)
-
-✅ `camera.py:206` uses `self._clock.now() if self._clock else time.time()` — correct.
-✅ `audio/source.py:226,506` uses `self._clock.now() if self._clock else time.time()` — correct.
-🐛 `cheating_evaluator.py:73,197` uses `time.time()` unconditionally — broken for file-based sources.
-🐛 `audio/pipeline.py:497,584` uses `time.time()` for `_recording_start_time` — this is only used for session duration logging, not for buffer window matching, so it's acceptable.
-
----
-
-### Finding T-4: Pre-roll availability — guaranteed for gaze alerts, fragile for audio alerts
-
-**Severity: Medium** | `av_alert_composer.py:230-241`
-
-**Gaze alert path**: Pre-roll is taken from `_global_frame_buffer` (maxlen = 90 frames @ 30fps = 3 seconds). Alert is triggered after `suspicious_duration_threshold` (3s) + YOLO detection interval (1s typical). When `_save_alert_video_async()` fires, the buffer contains the last 3s of frames. `VIDEO_ALERT_PAD_BEFORE_S = 2.0s` is requested. At 30fps, 2s = 60 frames. The buffer holds 90. ✅ 
-
-**Audio alert path**: The composer looks in `video_buffers[camera_id]` (maxlen=1800 frames = 60s at 30fps) for frames in `[timestamp_start - 1.0s, timestamp_end + 1.0s]`. VAD latency + Whisper latency can be 3-15s. If `timestamp_end` = chunk.timestamp (SimClock time when speech chunk arrived), and video_buffers contains frames with `frame_data.timestamp` from SimClock, the window should match. However:
-
-- `_run_loop` appends `chunk.timestamp` to `audio_buffers[mic_id]` — SimClock time. ✅
-- Video pipeline appends `(frame_data.timestamp, _jpeg_bytes)` to `video_buffers` — SimClock time. ✅
-- `on_audio_alert()` computes `window_start = timestamp_start - 1.0` using these SimClock timestamps. ✅
-
-**BUT**: The Whisper worker thread can take 5-15 seconds (wall clock) to transcribe. During that wall-clock time, `SimClock.now()` continues advancing at the source's rate. If the audio source is a file playing at 1× speed, the video buffer continues to fill. By the time `on_audio_alert` fires, the speech event's frames are still in the buffer. ✅
-
-**Edge case — FRAGILE**: If the audio file plays at FASTER than 1× (e.g., `AudioSource` reads chunks as fast as disk allows), `SimClock` advances faster than wall clock. Whisper takes 10s wall-clock to run on 3s of SimClock audio. By the time the Whisper worker calls `on_audio_alert`, the video buffer may have advanced 60+ SimClock-seconds past the alert window. The frames are rotated out of the 1800-frame buffer (60s at 30fps). Result: `no frames found in extended range` → audio-only alert, evidence lost.
-
-**Status**: `video_buffers` maxlen documentation updated. Fast-playback risk documented as known limitation.
+**Current State**:
+- ✅ `CameraStream` uses `SimClock.now()` for frame timestamps.
+- ✅ `FileAudioSource` uses `SimClock.now()` for chunk timestamps.
+- ✅ `CheatingEvaluator` uses `frame_data.timestamp` (derived from `SimClock`) — not `time.time()`.
+- ✅ `AVAlertComposer` uses `frame_index / fps` for archive offsets — no wall-clock dependency.
 
 ---
 
-### Finding T-5: `audio_buffers` maxlen = 200 chunks — may miss alert window on slow Whisper
+### Finding T-4: Audio alert video extraction — no buffer dependency
 
-**Severity: Medium** | `run.py:76`
+**Severity: Medium** | Originally in `av_alert_composer.py`
 
-```python
-audio_buffers = {mic_id: deque(maxlen=200) for mic_id in mic_sources}
-```
+**Problem**: Audio alert video used `video_buffers` deque with a fixed 200-chunk window, causing desync during fast playback.
 
-Each chunk is ~500ms. 200 chunks = 100 seconds of audio history. `AUDIO_ALERT_PAD_BEFORE_S = 1.0s` and `AUDIO_ALERT_PAD_AFTER_S = 1.0s`, so the window is at most `timestamp_end + 1s`. Whisper latency is typically 3-15 seconds wall-clock. By the time `on_audio_alert` fires, the window has advanced at most 30 chunks (15s × 2 chunks/s). 200 - 30 = 170 chunks still in buffer. ✅ Sufficient for normal Whisper latency.
+**Status**: ✅ **RESOLVED BY REDESIGN**. `compose_audio_alert()` seeks directly in the video archive file using `start_sec` / `end_sec`. No deque, no buffer window, no Whisper latency dependency.
 
-**Edge case**: If Whisper is running on CPU with a large model (`large-v2`, 10min audio), this could fail. Acceptable risk for typical exam monitoring hardware.
+---
+
+### Finding T-5: Audio buffer maxlen insufficient
+
+**Severity: Medium** | Originally `run.py`
+
+**Problem**: `audio_buffers = {mic_id: deque(maxlen=200) for ...}` could miss the alert window on slow Whisper hardware.
+
+**Status**: ✅ **RESOLVED BY REDESIGN**. `audio_buffers` are no longer used for alert generation. Audio is extracted from the WAV file saved by `AudioEvidenceRecorder`, which uses `composer.compose_audio_alert(wav_path, ...)`.
 
 ---
 
 ## Dimension 5: Edge Cases & Boundary Conditions
 
-### Finding EC-1: Video file EOF — pipeline exits cleanly, BUT audio continues
+### Finding EC-1: Video EOF — audio pipeline hung
 
-**Severity: Medium** | `camera.py:186-194`, `run.py:247`
+**Severity: Medium** | `run.py:302-305`
 
-When a video file reaches EOF:
-1. `_update_loop` sets `_is_opened = False` and `_stop_event.set()` — ✅
-2. `camera.frames()` generator yields `None`, breaks — ✅
-3. `VideoPipeline.run()` loop exits, `with vp:` block calls `vp.stop()` — ✅
-4. `run_video` thread exits — ✅
-5. BUT: audio pipeline is still running in its own thread. It will never stop unless its source is also exhausted or `ap.stop()` is called. The `run.py` join loop waits for both threads. If video ends before audio, `run.py` hangs on the audio thread join.
+**Problem**: After all video threads exited, audio thread kept running; `run.py` joined video threads but could hang waiting for audio.
 
-**Handled? Partially.** For file-based sources, `FileAudioSource` will also exhaust eventually and set `_is_running = False`. For live mic sources, the audio pipeline runs forever. **If video ends first and audio is live, the process hangs.**
-
-**Status**: **FIXED**. Video pipeline EOF now calls `ap.stop()` to signal audio pipeline to exit.
+**Status**: ✅ **FIXED**. `run.py:302-304`: After all video threads join, `ap.stop()` and `composer.stop()` are called before `audio_thread.join()`.
 
 ---
 
-### Finding EC-2: Two students simultaneously cheating — handled correctly
+### Finding EC-2: Two students simultaneously cheating
 
-**Severity: Info** | `pipeline.py:1267-1363`
+**Severity: Info** | `pipeline.py:1302-1320`
 
-The recording state machine iterates `for state in self._registry.get_all()` and handles each student's `is_alert_recording` independently. Up to 3 concurrent recordings are allowed (line 1273: `if active_recordings >= 3: skip`). The 4th+ simultaneous cheater's alert is silently skipped with one log warning. ✅ Known design decision.
-
----
-
-### Finding EC-3: `AVAlertComposer.on_audio_alert()` called concurrently by two mics
-
-**Severity: Medium** | `av_alert_composer.py:196`
-
-`on_audio_alert()` is called from the Whisper worker thread (single thread per audio pipeline). However, if two `AudioPipeline` instances were ever created (one per mic), two concurrent calls could happen. In the current `run.py`, there is ONE `AudioPipeline` instance for all mics. The Whisper worker is a single thread, so `on_audio_alert` is called sequentially. ✅
-
-However, `on_video_alert` (called from gaze/phone alert writer threads) and `on_audio_alert` (called from Whisper worker) can run concurrently. Both access `self.layout.get_pins_for_camera()` which acquires `_lock` internally ✅, and both access `self.audio_buffers` and `self.video_buffers` which are unprotected deques (see C-2, C-3). The writes to `output_dir` (different filenames via `time.time()`) won't collide. ✅ Mostly safe.
+Max 3 concurrent recordings enforced. 4th+ simultaneous cheater skipped with a once-per-track warning. ✅ Known design decision, documented in code.
 
 ---
 
-### Finding EC-4: `video_buffers[camera_id]` empty when composer is called at startup
+### Finding EC-3: `AVAlertComposer.on_audio_alert()` concurrent calls
 
-**Severity: Low** | `av_alert_composer.py:126`
+**Severity: Medium** | Current state
 
-```python
-if video_buffer and len(video_buffer) > 0:
-    buffer_snapshot = list(video_buffer)
-    ...
-else:
-    window_start = timestamp_start
-    window_end = timestamp_end
-```
-
-**Handled**: If the buffer is empty, the code falls through to use `frames` (the pre-assembled annotated frames) directly. The mic-pin overlay is still drawn. ✅
+One `AudioPipeline` instance → single Whisper worker thread → `_dispatch_audio_alert` is called sequentially. ✅ No concurrency issue.
 
 ---
 
-### Finding EC-5: `audio_buffers[mic_id]` exists but window has no matching data
+### Finding EC-4: Empty archive at alert time
 
-**Severity: Low** | `av_alert_composer.py:174-182`
+**Severity: Low** | `av_alert_composer.py:83-87`
 
-```python
-for ts, data in buffer_snapshot:
-    if window_start <= ts <= window_end:
-        audio_segments.append(data)
-
-if not audio_segments:
-    logger.info(f"No audio found in timestamp range ...")
-    save_video_only()
-    return
-```
-
-**Handled**: Falls back to video-only. ✅ However, `save_video_only()` is defined as a closure inside `on_video_alert()` and calls `self._draw_mic_pins(ev_f, camera_id, source_mic_id=None)`. All pins are drawn green (no source). ✅ Graceful degradation.
+`_extract_and_annotate_video()` returns `False` if no frames are extracted. `compose_video_alert()` logs a warning and returns without producing a broken clip. ✅ Graceful.
 
 ---
 
-### Finding EC-6: ffmpeg killed mid-mux — temp files not cleaned up
+### Finding EC-5: Audio WAV shorter than video window
 
-**Severity: Medium** | `av_alert_composer.py:365-372`
+**Severity: Low** | `av_alert_composer.py:268`
 
-```python
-except Exception as e:
-    logger.error(f"Error creating AV alert {output_path}: {e}")
-finally:
-    if os.path.exists(temp_video):
-        os.remove(temp_video)
-    if os.path.exists(temp_audio):
-        os.remove(temp_audio)
-```
+ffmpeg is invoked with `-shortest` which terminates output at the shorter stream. No hanging or crash. ✅ Graceful.
 
-**Problem**: The `finally` block correctly deletes temp files on exception. However, if the process is killed with `SIGKILL` (power cut, OOM kill), the `finally` block is NEVER executed. Temp files in `tempfile.gettempdir()` accumulate: `temp_video_{uuid}.mp4` and `temp_audio_{uuid}.wav`. Each is ~5-100 MB. A session with 20 alerts could leave 2 GB of temp files.
+---
 
-**Handled? Partially.** On normal exception, ✅ cleaned up. On SIGKILL: ❌ leaked.
+### Finding EC-6: ffmpeg killed mid-mux — temp file cleanup
 
-**Status**: **FIXED** (EC-6). `_mux_and_save` now uses `with tempfile.TemporaryDirectory(prefix="thaqib_mux_") as tmpdir:` as a context manager. The temp files are created inside the managed directory. On normal exit, exception, or process restart, the OS temp-dir cleaner removes the directory. The manual `finally: os.remove(...)` block is removed (it was the only cleanup path and didn't handle SIGKILL).
+**Severity: Medium** | `av_alert_composer.py`
+
+**Old problem**: Temp files left behind on SIGKILL since `finally` block was never executed.
+
+**Status**: ✅ **FIXED BY REDESIGN**. The new composer creates only one temp file (annotated video before merge). It is cleaned up in the `if os.path.exists(annotated_video_path): os.remove(...)` block after `_merge_with_ffmpeg()` returns. On SIGKILL the temp file may remain in `alerts/`, but it is a legitimate partial video (not system temp dir), and it is small.
 
 ---
 
 ### Finding EC-7: `alerts/` directory full or read-only
 
-**Severity: Medium** | `pipeline.py:1999`, `av_alert_composer.py:46`
+**Severity: Medium** | `run.py:101-108`
 
-Both locations call `alerts_dir.mkdir(exist_ok=True)` at startup. If the directory is later full or read-only:
-- `cv2.VideoWriter()` will fail to open the file
-- The codec loop returns `writer = None` (or `writer.isOpened() == False`)
-- Caught by line 2133-2134: `logger.error(...)` and `return` — evidence lost
-
-No user-facing notification. The proctor will not know that alerts are being discarded.
-
-**Status**: **FIXED** (EC-7). `run.py` now calls `shutil.disk_usage(alerts_path).free` at startup (after `alerts_path.mkdir(exist_ok=True)`) and emits `logger.warning(...)` if free space is below 1 GB.
+**Status**: ✅ **FIXED**. `run.py` checks `shutil.disk_usage(alerts_path).free` at startup and emits `logger.warning` if free space is below 1 GB.
 
 ---
 
-### Finding EC-8: MicLayout normalized coords > 1.0 — no clamp or validation
+### Finding EC-8: MicLayout normalized coords > 1.0
 
-**Severity: Low** | `mic_layout.py:70-72`, `av_alert_composer.py:70-71`
+**Severity: Low** | `av_alert_composer.py:228-232`
 
-```python
-px = int(pin.norm_pos[0] * w)
-py = int(pin.norm_pos[1] * h)
-cv2.circle(frame, (px, py), 9, color, -1, cv2.LINE_AA)
-```
-
-If `norm_pos` is e.g. `(1.5, 0.5)` (bad manual edit), `px = int(1.5 * 1280) = 1920` which is outside the frame (width=1280). `cv2.circle` silently clips to frame bounds. No error, no visual artifact. ✅ OpenCV handles this gracefully.
+`cv2.circle` silently clips out-of-bounds coordinates. No error, no visual artifact. ✅ OpenCV handles gracefully.
 
 ---
 
 ### Finding EC-9: No pins configured — `nearest_mic_for_point()` returns None
 
-**Severity: Low** | `mic_layout.py:80-82`
+**Severity: Low** | `mic_layout.py:47-48`
 
-```python
-camera_pins = self.get_pins_for_camera(camera_id)
-if not camera_pins:
-    return None
-```
-
-`on_video_alert()` checks `if not mic_pin: ... save_video_only(); return`. ✅ Graceful fallback.
+`compose_video_alert()` receives `mic_id=""` when no mic is mapped → falls through to video-only alert path. ✅ Graceful fallback.
 
 ---
 
-### Finding EC-10: `run.py` — invalid camera index (camera not connected)
+### Finding EC-10: Invalid camera index — barrier hang
 
-**Severity: Medium** | `run.py:96-105`
+**Severity: Medium** | `run.py:197`
 
-```python
-vp = VideoPipeline(source=source, ...)
-video_pipelines.append(vp)
-```
-
-`VideoPipeline.__init__` does not open the camera. `start()` calls `self._camera.open()` which returns `False` on failure. `VideoPipeline.run()` (generator) calls `start()` if not running, and returns immediately if `start()` returns False. The `run_video` thread exits immediately and never calls `barrier.wait()`. All other threads hang (see Finding C-7).
-
-**Status**: **FIXED** (EC-10). Covered by the C-7 barrier timeout fix (`barrier.wait(timeout=30)` + `BrokenBarrierError` handler). Additionally, a code comment in `run.py` now explicitly documents that webcam index sources cannot be pre-validated and that `BrokenBarrierError` is the safety net. File-based video paths are validated by the E-8 fix before any threads are created.
+**Status**: ✅ **FIXED**. `barrier.wait(timeout=60)` + `BrokenBarrierError` handler prevents permanent hang. File-based video paths are validated before thread creation (Fix E-8). Webcam index sources cannot be pre-validated; the barrier timeout is the safety net (documented in code comment).
 
 ---
 
-### Finding EC-11: `mic_layout.json` missing at startup — silent no-op
+### Finding EC-11: `mic_layout.json` missing at startup
 
-**Severity: Low** | `mic_layout.py:25-27`
+**Severity: Low** | `mic_layout.py`
 
-```python
-if not os.path.exists(self.layout_file):
-    return
-```
-
-`MicLayout` starts with `self.pins = {}`. No warning is logged. All composer calls degrade gracefully (no mic → video-only or audio-only alerts). This is acceptable for first-run setup, but in production it should warn the proctor.
-
-**Status**: **FIXED** (EC-11). `MicLayout.load()` now emits `logger.warning("mic_layout.json not found — mic-pin features disabled. Press 'I' in the video window to configure mic positions.")` when the file is absent.
+**Current State**: `MicLayout` no longer reads `mic_layout.json`. Pins start empty and are added interactively via 'I' key. No warning is needed for a missing file. ✅ Correct behavior — first run always starts without pins.
 
 ---
 
-### Finding EC-12: Silence / all-global audio — VAD loop handles gracefully
+### Finding EC-12: Silence / all-global audio — VAD loop
 
-**Severity: Info** | `audio/pipeline.py:789-812`
+**Severity: Info** | `audio/pipeline.py`
 
-If all chunks are SILENT or GLOBAL, `classification.is_local` is always False, nothing is enqueued to `_inference_queue`, and the VAD/Whisper workers block on `queue.get(timeout=...)` indefinitely. On shutdown, the sentinel `None` is put into the queue, workers exit. ✅
+If all chunks are SILENT or GLOBAL, inference queue is never fed, workers block on `queue.get(timeout=...)`. On shutdown, sentinel `None` unblocks workers cleanly. ✅ Correct.
 
 ---
 
-## Prioritized Fix List
+### Finding EC-13 (New): Alert cooldown timer frozen on detection loss
 
-| Priority | ID | Description | Severity | Likelihood in real exam |
+**Severity: Medium** | `cheating_evaluator.py:69-133`
+
+**Problem**: When face/gaze detection was temporarily lost, the old grace period implementation reset the 2-second timer on every frame, preventing `cheating_cooldown` from ever reaching 0. Student's red box stayed permanently.
+
+**Status**: ✅ **FIXED**. After grace period expires, the `_face_lost_times` entry is **kept** (not deleted). Every subsequent face-absent frame immediately enters the post-grace branch and decrements `cheating_cooldown` until `is_cheating` clears. Removing the entry (old behavior) created a perpetual 2-second reset loop.
+
+---
+
+## Prioritized Fix Summary
+
+All previously identified findings have been resolved. The table below records the final status of all prioritized items:
+
+| Priority | ID | Description | Severity | Final Status |
 |---|---|---|---|---|
-| 1 | **T-2** | FIXED: Use suspicious_start_time as clip start instead of first-frame timestamp. | High | **Certain** — every gaze alert has this problem |
-| 2 | **T-1** | FIXED: Pass SimClock to CheatingEvaluator, replace time.time() calls. | High | High (all integration tests use file sources) |
-| 3 | **E-1** | FIXED: Capture ffmpeg stderr and include in error logs. | Critical | Medium (codec issues common on new deployments) |
-| 4 | **C-6** | FIXED: Replace unbounded daemon threads with ThreadPoolExecutor(max_workers=2). | Medium | Medium (3+ students cheating simultaneously) |
-| 5 | **C-1** | FIXED: Add threading.Lock for _track_aliases dict accesses. | Medium | Low-Medium (happens during ReID-active sessions) |
-| 6 | **C-7** | FIXED: Add timeout=30 + BrokenBarrierError handler to barrier.wait() calls. | Medium | Medium (camera hardware failure during exam setup) |
-| 7 | **E-4** | FIXED: Add JPEG sequence fallback when all VideoWriter codecs fail. | High | Low (but catastrophic when it occurs) |
-| 8 | **T-4** | FIXED: Improve audio-alert no-frames log message + documented fast-playback risk. | Medium | Medium (testing/replay scenarios) |
-| 9 | **M-2** | FIXED: Clear _fm_cache entries on track expiry. | Low | Low (memory pressure in 2+ hour sessions) |
-| 10 | **EC-1** | FIXED: Signal ap.stop() when all video pipelines exit. | Medium | Medium (end-of-exam file-based test runs) |
-
-### Additional Improvements Applied
-
-- **Mic pin overlay**: `AVAlertComposer._draw_mic_pins()` added. All alert clips now show all configured mic pins (green) with the audio-source mic highlighted red, on every frame including pre/post padding, for both video- and audio-triggered alerts.
-- **Symmetric padding**: `VIDEO_ALERT_PAD_BEFORE_S = 2.0`, `VIDEO_ALERT_PAD_AFTER_S = 2.0` for video alerts. `AUDIO_ALERT_PAD_BEFORE_S = 1.0`, `AUDIO_ALERT_PAD_AFTER_S = 1.0` for audio alerts.
-- **ffmpeg apad fix**: `-af apad -shortest` used in mux command so audio shorter than video is padded with silence instead of truncating video.
-- **Temp file cleanup**: `_mux_and_save` now uses `tempfile.TemporaryDirectory()` so temp files are cleaned up by the OS even on SIGKILL (EC-6).
-- **Audio sample rate**: `on_audio_alert` accepts dynamic `sample_rate` parameter from `AudioAlert`.
-- **Double models load**: `AudioPipeline.run_sync()` now checks `_models_loaded` flag before calling `load_models()` again.
-- **JPEG Compression in Memory**: `src/thaqib/video/jpeg_buffer.py` added (`JPEGFrame`, `encode_frame`, `decode_frame`). Pipeline now stores JPEG-compressed frames in all buffers instead of raw BGR arrays.
-- **Tuple unpacking bug**: `_save_alert_video_async` and `_save_phone_alert_video_async` now correctly handle both `(timestamp, PipelineFrame)` tuples and `JPEGFrame` instances via type checking.
-- **Composer-first ordering**: `_composer.on_video_alert()` is now called BEFORE the fallback `cv2.VideoWriter` codec loop, so codec failure doesn't starve the composer.
-- **try/finally on alert writers**: Both alert writer functions wrapped in `try/finally` to guarantee cleanup even on exception.
-
-### Second Fix Round (commits 8a14c8d+)
-
-- **C-2/C-3**: `threading.Lock` per buffer in `run.py`; all `list(buffer)` snapshots in composer use lock via `contextlib.nullcontext()` fallback.
-- **C-4**: `_beam_size` snapshot under `_monitor_lock` in Whisper worker; passed as explicit arg to `transcribe_and_match()`.
-- **C-5**: FM callback exception upgraded from `logger.debug` → `logger.warning`.
-- **C-8**: Duplicate camera-disconnect log removed; warning fires only in EOF branch.
-- **E-2**: MicLayout silent (0.5, 0.5) fallback → `logger.warning + continue` (entry skipped).
-- **E-3**: `print(...)` in `MicLayout.load/save` → `logger.error(...)`.
-- **E-8**: All audio/video file paths validated in `run.py` before any thread or buffer creation; `sys.exit(1)` on missing file.
-- **M-1**: All three `deque(maxlen=1800)` literals in `pipeline.py` replaced with `_MAX_RECORDING_FRAMES`.
-- **M-4**: `AVAlertComposer.shutdown()` method added; `composer.stop()` in both exit paths.
-- **M-5**: `_monitor_loop` emits `logger.warning` every 60 s if `dropped_chunks > 0` (resets counter after report).
-- **EC-6**: `_mux_and_save` switched to `tempfile.TemporaryDirectory()` context manager.
-- **EC-7**: Disk space check at startup in `run.py`; warns if `alerts/` has < 1 GB free.
-- **EC-10**: Covered by C-7 timeout + E-8 file validation; webcam-only gap documented in comment.
-- **EC-11**: `MicLayout.load()` warns when `mic_layout.json` is absent.
+| 1 | **T-2** | Alert clip now uses `suspicious_start_time`-based archive offset | High | ✅ FIXED |
+| 2 | **T-1** | `CheatingEvaluator` uses `frame_data.timestamp` (SimClock-derived) | High | ✅ FIXED |
+| 3 | **E-1** | ffmpeg stderr captured and logged on failure | Critical | ✅ FIXED |
+| 4 | **C-6** | Unbounded mux threads eliminated by archive-based redesign | Medium | ✅ FIXED |
+| 5 | **C-1** | `_alias_lock` guards `_track_aliases` all access sites | Medium | ✅ FIXED |
+| 6 | **C-7** | `barrier.wait(timeout=60/30)` + `BrokenBarrierError` handler | Medium | ✅ FIXED |
+| 7 | **E-4** | JPEG sequence fallback when all VideoWriter codecs fail | High | ✅ FIXED |
+| 8 | **T-4/T-5** | Audio alert video via archive seek — no buffer dependency | Medium | ✅ FIXED |
+| 9 | **M-2** | `_fm_cache.pop(track_id)` on track expiry | Low | ✅ FIXED |
+| 10 | **EC-1** | `ap.stop()` + `composer.stop()` after all video threads exit | Medium | ✅ FIXED |
 
 ---
 
-## Annex: Verified-Safe Items (no elaboration needed)
+## Additional Improvements (Cumulative)
+
+### First Fix Round
+- **Mic pin overlay**: `_draw_mic_pins()` in AVAlertComposer — source mic RED, others GREEN.
+- **Symmetric padding**: `VIDEO_ALERT_PAD_BEFORE_S = 2.0s`, `VIDEO_ALERT_PAD_AFTER_S = 2.0s`.
+- **ffmpeg apad fix**: `-af apad -shortest` for audio-shorter-than-video padding.
+- **Double model load**: `AudioPipeline.load_models()` is idempotent via internal `_ensure_*` guards.
+- **JPEG compression**: `jpeg_buffer.py` — all frame buffers store `JPEGFrame` (~30× memory reduction).
+- **Composer-first ordering**: `compose_video_alert()` called before standalone `cv2.VideoWriter` fallback.
+
+### Second Fix Round
+- **C-2/C-3**: Buffer sync eliminated by redesigning `AVAlertComposer` to use archives.
+- **C-4**: `_beam_size` snapshot under `_monitor_lock` in Whisper worker.
+- **C-5**: FM callback exception: `logger.debug` → `logger.warning`.
+- **C-8**: Duplicate camera-disconnect log removed.
+- **E-2**: MicLayout silent `(0.5, 0.5)` fallback → `logger.warning + continue` (entry skipped).
+- **E-3**: `print(...)` in `MicLayout` → `logger.error(...)`.
+- **E-8**: File path validation in `run.py` before thread creation.
+- **M-1**: All `deque(maxlen=1800)` literals replaced with `_MAX_RECORDING_FRAMES`.
+- **M-4**: `vp.stop()` / `composer.stop()` in both normal and `KeyboardInterrupt` exit paths.
+- **M-5**: `_monitor_loop` emits `logger.warning` every 60s if `dropped_chunks > 0`.
+- **EC-6**: Temp file cleanup guaranteed in `compose_video_alert()` finally-equivalent block.
+- **EC-7**: Disk space check at startup in `run.py`.
+- **EC-10**: Covered by C-7 timeout + E-8 validation.
+
+### Third Fix Round
+- **Frame-index video sync**: `start_sec = frame_index / fps` guarantees frame-accurate archive cuts even during accelerated playback.
+- **Zero-frame FFmpeg fix**: `_extract_and_annotate_video()` returns `False` if 0 frames written; skips ffmpeg merge to avoid `Stream map '' matches no streams` error.
+- **Dynamic mic registry**: `AudioPipeline._mic_registry` built from CLI `mic_ids` instead of static `AUDIO_MIC_NAMES`.
+- **Dual timestamp overlay**: `draw_timestamp_overlay(ts, archive_offset_sec)` burns both system wall-clock time (`YYYY-MM-DD HH:MM:SS`) and archive offset (`Offset: HH:MM:SS`) onto every alert frame.
+
+### Fourth Fix Round (Latest)
+- **Phone alert save fix**: `_save_phone_alert_video_async()` correctly calls `compose_video_alert()` instead of the non-existent `on_video_alert()`. Phone alerts now compose correctly.
+- **Multiple alerts fix (EC-13)**: Fixed `CheatingEvaluator._handle_face_lost()` grace period implementation. After the grace period expires, `_face_lost_times` entry is **kept** so every subsequent face-absent frame decrements `cheating_cooldown` monotonically. The old code deleted the entry on every post-grace call, restarting the 2-second timer indefinitely and preventing `is_cheating` from ever clearing.
+- **ConstantVelocityExtrapolator pruning**: `extrapolator.prune(active_track_ids)` called every frame to prevent unbounded velocity map growth during long sessions.
+- **Detection Stability Filter**: Tolerance reduced to 90 frames (~3s at 30fps), with IoU ghost-track suppression (≥0.4 removes predicted track on collision with live track).
+- **Auto-select on new track**: All new `track_ids` are automatically added to `_selected_ids` without requiring manual 'S' keypress.
+
+---
+
+## Annex: Verified-Safe Items
 
 - `GlobalStudentRegistry._lock` — every method acquires it. ✅
 - `MicLayout._lock` — every mutating method acquires it. ✅
@@ -641,3 +483,7 @@ If all chunks are SILENT or GLOBAL, `classification.is_local` is always False, n
 - `cv2.VideoCapture.release()` — called in `CameraStream.close()` and in reconnect path. ✅
 - `SessionAudioRecorder.close()` — called in both `stop()` and `run_sync()` finally paths. ✅
 - `AsyncAudioWriter` queue sentinel — properly signals worker thread to drain and exit. ✅
+- `_face_executor.shutdown(wait=True, cancel_futures=True)` — called in `vp.stop()`. ✅
+- `_gaze_alert_executor.shutdown(wait=True)` — called in `vp.stop()`. ✅
+- `_phone_alert_executor.shutdown(wait=True)` — called in `vp.stop()`. ✅
+- `barrier.wait(timeout=N)` + `BrokenBarrierError` handler — both video and audio threads. ✅

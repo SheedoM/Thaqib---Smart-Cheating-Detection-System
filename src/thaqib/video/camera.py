@@ -84,7 +84,6 @@ class CameraStream:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._clock = clock
-        self._clock = clock
 
     def open(self) -> bool:
         """
@@ -146,8 +145,7 @@ class CameraStream:
         """Background thread to read frames without blocking pipeline."""
         fps = self.target_fps if self.target_fps else 30.0
         frame_time_target = 1.0 / fps
-        failed_frames = 0
-
+        
         failed_frames = 0
         stream_start_time = None
         file_frame_idx = 0

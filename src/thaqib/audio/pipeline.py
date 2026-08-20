@@ -499,9 +499,13 @@ class AudioPipeline:
 
         # ── Phase 2: Start audio ingestion and workers ─────────────────────────
         self._is_running = True
-        self._recording_start_time = time.time()
+        self._wall_start_time = time.time()
+        self._recording_start_time = self._clock.now() if self._clock else self._wall_start_time
         self._stats["start_time"] = self._recording_start_time
         self._source.start()
+        # R1: Register audio archive wall_start_time with composer so cross-modal
+        # offset correction knows when this audio stream began recording.
+        self._register_audio_archives_with_composer()
         self._async_writer.start()
 
         self._thread = threading.Thread(
@@ -536,7 +540,39 @@ class AudioPipeline:
 
         logger.info("Audio pipeline started — models pre-loaded, zero cold-start delay")
 
+    def _register_audio_archives_with_composer(self) -> None:
+        """
+        R1: Register each mic's audio archive path and wall_start_time with the
+        composer so it can perform cross-modal offset correction.
+
+        For FileAudioSource the archive IS the source file.  For live mic sources
+        there may be no archive file — registration is skipped and the warning in
+        _cross_modal_offsets will fire if a composed alert is requested.
+        """
+        composer = getattr(self, '_composer', None)
+        if composer is None:
+            return
+        # Only file-based sources have a static archive path to register.
+        file_paths = getattr(self._source, '_file_paths', None)
+        if file_paths is None:
+            return
+        for i, mic_id_str in enumerate(self._mic_ids):
+            if i < len(file_paths):
+                try:
+                    composer.register_archive_start(
+                        source_type="audio",
+                        source_id=mic_id_str,
+                        path=str(file_paths[i]),
+                        wall_start_time=self._wall_start_time,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to register audio archive for %s with composer: %s",
+                        mic_id_str, e,
+                    )
+
     def stop(self) -> None:
+
         """Stop the audio pipeline and all worker threads."""
         self._is_running = False
         self._source.stop()
@@ -586,9 +622,12 @@ class AudioPipeline:
 
         # ── Phase 2: Start ingestion ─────────────────────────────────────────
         self._is_running = True
-        self._recording_start_time = time.time()
+        self._wall_start_time = time.time()
+        self._recording_start_time = self._clock.now() if self._clock else self._wall_start_time
         self._stats["start_time"] = self._recording_start_time
         self._source.start()
+        # R1: Register audio archive wall_start_time with composer.
+        self._register_audio_archives_with_composer()
         self._async_writer.start()
 
         # ── Phase 3: Open session recorder ──────────────────────────────
@@ -766,11 +805,11 @@ class AudioPipeline:
                 for completed in completed_alerts:
                     full_audio = np.concatenate(completed.audio_sequence)
                     completed.alert.audio_clip = full_audio
-                    # Update timestamp_end to the actual last post-chunk so the
-                    # composer's video window covers the full post-buffer period.
-                    # Without this update, the video window ended at the original
-                    # detection chunk and post-chunk audio was truncated by ffmpeg -shortest.
-                    completed.alert.timestamp_end = chunk.timestamp
+                    # Update timestamp_end to StreamTime of the completed post-buffer
+                    if self._clock is not None:
+                        completed.alert.timestamp_end = chunk.timestamp
+                    else:
+                        completed.alert.timestamp_end = max(0.0, chunk.timestamp - self._recording_start_time)
                     self._dispatch_audio_alert(completed.alert)
 
                 # 3. Process the chunk (fast classification)
@@ -1254,19 +1293,33 @@ class AudioPipeline:
         pre_buffer = [frame[mic_id] for frame in pre_buffer_frames if mic_id in frame]
         pre_buffer.append(mic_audio.copy())
 
+        # Determine StreamTime vs WallTime
+        if self._clock is not None:
+            stream_now = chunk.timestamp
+            wall_time = getattr(self, '_wall_start_time', time.time()) + stream_now
+        else:
+            stream_now = max(0.0, chunk.timestamp - self._recording_start_time)
+            wall_time = chunk.timestamp
+
+        clip_dur = len(np.concatenate(pre_buffer)) / chunk.sample_rate
+        stream_start = max(0.0, stream_now - clip_dur)
+        stream_end = stream_now
+
         alert = AudioAlert(
             timestamp=chunk.timestamp,
             mic_id=mic_id,
             active_mics=[mic_id],
             transcript="",                          # no Whisper → no transcript
             matched_keywords=["*HUMAN_SPEECH_DETECTED*"],
-            timestamp_start=chunk.timestamp - (len(np.concatenate(pre_buffer)) / chunk.sample_rate),
-            timestamp_end=chunk.timestamp,
+            timestamp_start=stream_start,
+            timestamp_end=stream_end,
             audio_clip=np.concatenate(pre_buffer),
             sample_rate=chunk.sample_rate,
             confidence=float(vad_confidence),
             chunk_index=chunk.chunk_index,
             recording_start=self._recording_start_time,
+            wall_time=wall_time,
+            stream_offset=stream_now,
             discriminator_baseline=getattr(classification, 'baseline_ratio', 0.0),
             discriminator_raw_ratio=getattr(classification, 'raw_ratio', 0.0),
             discriminator_normalized_ratio=getattr(classification, 'normalized_ratio', 0.0),
@@ -1445,23 +1498,28 @@ class AudioPipeline:
                     f"EXTENDED ALERT [{mic_name}]: keywords={result.matched_keywords}"
                 )
             else:
+                if self._clock is not None:
+                    stream_now = chunk.timestamp
+                    wall_time = getattr(self, '_wall_start_time', time.time()) + stream_now
+                else:
+                    stream_now = max(0.0, chunk.timestamp - self._recording_start_time)
+                    wall_time = chunk.timestamp
+
                 alert = AudioAlert(
                     timestamp=chunk.timestamp,
                     mic_id=mic_id,
                     active_mics=classification.active_mics,
                     transcript=result.transcript,
                     matched_keywords=result.matched_keywords,
-                    # timestamp_start covers the FULL window: pre-buffer + speech.
-                    # Computed after pre_buffer is built below so the composer
-                    # fetches a video window of the correct duration.
-                    # Set to a temporary value here; overwritten below.
-                    timestamp_start=chunk.timestamp - (len(mic_audio) / chunk.sample_rate),
-                    timestamp_end=chunk.timestamp,
+                    timestamp_start=stream_now - (len(mic_audio) / chunk.sample_rate),
+                    timestamp_end=stream_now,
                     audio_clip=mic_audio.copy(),
                     sample_rate=chunk.sample_rate,
                     confidence=result.confidence,
                     chunk_index=chunk.chunk_index,
                     recording_start=self._recording_start_time,
+                    wall_time=wall_time,
+                    stream_offset=stream_now,
                     # Log the discriminator's decision metrics in alert
                     discriminator_baseline=getattr(classification, 'baseline_ratio', 0.0),
                     discriminator_raw_ratio=getattr(classification, 'raw_ratio', 0.0),
@@ -1508,9 +1566,9 @@ class AudioPipeline:
                     alert.audio_clip = np.concatenate(pre_buffer + [mic_audio.copy()])
 
                 # Now that audio_clip covers the full pre+speech window, update
-                # timestamp_start to match so on_audio_alert fetches the right
-                # video frames (= duration of audio_clip before the chunk end).
-                alert.timestamp_start = alert.timestamp_end - (len(alert.audio_clip) / chunk.sample_rate)
+                # timestamp_start to match in StreamTime
+                clip_dur = len(alert.audio_clip) / chunk.sample_rate
+                alert.timestamp_start = max(0.0, alert.timestamp_end - clip_dur)
 
                 # Defer evidence write if clip_sec_after is configured
                 chunk_duration_sec = chunk.duration_ms / 1000.0

@@ -162,14 +162,17 @@ Computes k-nearest neighbors for each student using Euclidean distance between c
 - **Step C**: For each student, collect papers belonging to their neighbors → `surrounding_papers`.
 - **Skip-if-stable**: If max center movement < 20px since last computation, skip (optimization).
 
-### 3.8 `face_mesh.py` — Face Landmark Extraction
+### 3.8 `face_mesh.py` — Face Landmark Extraction (Dead Code)
 
-MediaPipe FaceLandmarker in **VIDEO mode** (temporal smoothing enabled).
+> **Note**: `face_mesh.py` (`FaceMeshExtractor`, VIDEO mode) and `face_mesh_worker.py` (MP process) are **dead code** — never imported or invoked by the pipeline. The active implementation lives entirely inside `pipeline.py`.
 
-- Creates one `FaceLandmarker` instance per worker thread (thread-local storage).
+The active face mesh logic in `pipeline.py` uses MediaPipe FaceLandmarker in **IMAGE mode** (no temporal smoothing — each frame is independent).
+
+- Creates one `FaceLandmarker` per worker thread via `threading.local()` (lazy init on first use).
+- Runs via a `ThreadPoolExecutor(FACE_MESH_WORKERS=4)` — each thread has its own instance.
 - Extracts 2D/3D landmarks, face transformation matrix, and iris positions.
-- Returns a `FaceMeshResult` with `landmarks_2d`, `landmarks_3d`, `head_matrix`, `iris_left`, `iris_right`.
-- Runs via a `ThreadPoolExecutor` using thread-local instances to avoid GIL contention.
+- Returns a `FaceMeshResult` with `landmarks_2d`, `landmarks_3d`, `head_matrix`, `bbox`.
+- Results cached in `_fm_cache` (0.3s staleness tolerance); cache pruned on track expiry.
 
 ### 3.9 `gaze.py` — Gaze Direction Computation
 
@@ -229,25 +232,55 @@ Standalone utility module providing `draw_timestamp_overlay(frame, ts)`. Burns a
 - Used by `demo_video.py` to **optionally** show timestamps on the live display (toggled via `W` key).
 - Kept in a separate module to avoid circular imports between `pipeline.py` and `visualizer.py`.
 
+### 3.14 `av_alert_composer.py` — Audio-Video Alert Composer
+
+`AVAlertComposer` — produces combined A/V evidence clips using a fully **archive-based** approach (no in-memory frame buffers).
+
+**Key methods:**
+- `compose_video_alert(camera_id, mic_id, start_sec, end_sec, alert_type, subject_point)` — called by `VideoPipeline` when a gaze or phone alert is saved. Seeks into the video archive, annotates frames (mic pins, subject point, timestamp), then merges with the audio archive via ffmpeg.
+- `compose_audio_alert(alert_wav_path, mic_id, camera_ids, start_sec, end_sec)` — called by `AudioPipeline`. Receives a pre-cut WAV already saved by `AudioEvidenceRecorder`, extracts and annotates the matching video segment, then merges.
+- `update_video_archive(camera_id, archive_path)` — called by `VideoPipeline` each time a new archive file is created (live camera mode), so the composer always seeks in the currently-being-written archive.
+- `stop()` / `shutdown()` — compatibility stubs only; no internal thread pool.
+
+**Annotation per frame (inside `_extract_and_annotate_video`):**
+- Mic pin overlay: source mic = RED circle, others = GREEN circles.
+- Subject point: yellow dot at student/phone center.
+- `draw_timestamp_overlay()`: burns SYS wall-clock time + archive offset onto every frame.
+- OpenCV `VideoWriter` uses `mp4v` codec; ffmpeg merges with audio using `-c:v copy -c:a aac -shortest`.
+
 ---
 
 ## 4. Threading & Concurrency Model
 
-| Thread/Process | Name | Purpose | Shared State |
-|----------------|------|---------|-------------|
-| **Main thread** | — | Frame loop, tracking, evaluation, recording state machines | Everything |
-| **Camera reader** | `CameraReader` | `cv2.VideoCapture.read()` in a loop | `_frame_queue` (deque) |
-| **Detection worker** | `DetectionWorker` | YOLO person + tools inference | `_current_frame_data` (via lock) |
-| **Archive writer** | `ArchiveWriter` | Drains frame queue → disk | `_archive_queue` (Queue) |
-| **Alert writers** | `AlertWriter-N` | Saves alert clips (one thread per clip) | Independent frame list |
-| **Phone alert writer** | `PhoneAlertWriter` | Saves phone clips | Independent frame list |
-| **Face mesh pool** | `ThreadPool(4)` | MediaPipe inference (multithreading) | Thread-local instances |
+### Video Pipeline Threads
+
+| Thread | Name | Purpose | Shared State |
+|--------|------|---------|-------------|
+| **Main thread** | — | Frame loop, tracking, cheating evaluation, alert state machines | Everything |
+| **Camera reader** | `CameraReader` | `cv2.VideoCapture.read()` in a background loop, pushes to `deque(maxlen=5)` | `_frame_queue` (deque) |
+| **Detection thread** | `DetectionThread` | Periodic YOLO inference (person + phone + tools) every `DETECTION_INTERVAL` seconds | `_detection_queue` (Queue) |
+| **Face mesh pool** | `ThreadPoolExecutor(FACE_MESH_WORKERS)` | MediaPipe IMAGE-mode FaceLandmarker — one instance per thread via `threading.local()` | `_fm_cache` (guarded by `_fm_cache_lock`) |
+| **Gaze alert writer** | `GazeAlertWriter` (pool, max 2) | Renders annotated frames, calls `AVAlertComposer.compose_video_alert()` | Independent snapshot |
+| **Phone alert writer** | `PhoneAlertWriter` (pool, max 2) | Same as above for phone alerts | Independent snapshot |
+| **Archive writer** | `ArchiveWriter` | Drains `_archive_queue` (maxsize=60) → disk; drops frames rather than blocking | `_archive_queue` (Queue) |
+
+### Audio Pipeline Threads
+
+| Thread | Name | Purpose | Shared State |
+|--------|------|---------|-------------|
+| **Audio main loop** | `AudioPipeline` | Reads chunks, runs preprocessor + discriminator, feeds session recorder | `_chunk_history`, `_stats` |
+| **VAD worker** | `_inference_worker` | Runs Silero VAD on LOCAL chunks, accumulates speech buffers | `_inference_queue`, `_whisper_queue` |
+| **Whisper worker** | `_whisper_worker` | Transcribes speech, matches keywords, dispatches alerts | `_whisper_queue`, `_alerts` |
+| **Health monitor** | `_monitor_loop` | Monitors queue depths, reduces `beam_size` under load, logs dropped chunks | `_monitor_lock` |
+| **Async audio writer** | `AsyncAudioWriter` | Drains disk I/O queue → WAV + JSON evidence files | `_pending_alerts` |
 
 ### Key synchronization:
 - Detection results pass via `Queue` (thread-safe).
-- Camera frames pass via `deque(maxlen=5)` (lock-free, main thread only reads latest).
-- Face mesh uses `multiprocessing.shared_memory` to pass frames to worker processes.
-- Archive uses a bounded `Queue(maxsize=60)` — drops frames rather than blocking.
+- Camera frames pass via `deque(maxlen=5)` (lock-free; main thread always reads latest).
+- Face mesh uses `threading.local()` — each `ThreadPoolExecutor` worker has its own `FaceLandmarker` instance (IMAGE mode). No shared memory or multiprocessing.
+- `_fm_cache` guarded by `_fm_cache_lock`; `_track_aliases` guarded by `_alias_lock`.
+- Archive writer uses a bounded `Queue(maxsize=60)` — drops frames (with log) rather than blocking the main thread.
+- `_keyword_detector._beam_size` written by health monitor under `_monitor_lock`; Whisper worker snapshots it under the same lock before use.
 
 ---
 
@@ -350,40 +383,87 @@ Phone detected in frame → START recording
 
 ## 7. Alert Recording System
 
-### 7.1 Gaze Alert Videos
+> **Design principle**: All alert clips are produced by `AVAlertComposer` using an **archive-based** approach. No frames are held in circular memory buffers for composition. Instead, the composer seeks directly into the on-disk archive files using `start_sec`/`end_sec` timestamps derived from `frame_index / fps`.
 
-**Filename**: `alerts/gaze_alert_trackN_YYYYMMDD_HHMMSS.mp4`
+### 7.1 Alert Clip Pipeline
 
-**Contents per frame:**
-- RED bounding box around the cheating student + label "CHEATER ID:X"
-- YELLOW bounding box around the target paper (not the victim student)
-- Red banner: "CHEATING ALERT — Student X looking at neighbor's paper"
+```
+Cheating detected (is_cheating = True)
+  │
+  ├─ Pre-roll: snapshot last N JPEGFrames from _global_frame_buffer
+  ├─ During: append JPEGFrames to state.recording_buffer
+  └─ Post-event countdown (2s) → _save_alert_video_async()
+         │
+         ├─ _render_alert_frame() → annotated frames (red bbox, paper box, gaze line)
+         └─ IF composer available:
+               → compose_video_alert(camera_id, mic_id, start_sec, end_sec, ...)
+                     → seek video_archive by CAP_PROP_POS_MSEC
+                     → annotate (mic pins + subject point + timestamp)
+                     → ffmpeg merge with audio_archive → combined_AV_*.mp4
+            ELSE (no composer):
+               → standalone cv2.VideoWriter fallback
+               → JPEG sequence fallback if all codecs fail (evidence never lost)
+```
 
-**Buffer structure:** `AlertFrame` dataclasses. Pre-event frames have no bboxes → written raw.
+### 7.2 Gaze Alert Videos
 
-### 7.2 Phone Alert Videos
+**Output filename**: `alerts/combined_AV_gaze_<camera_id>_<timestamp>.mp4`  
+**Fallback filename**: `alerts/gaze_alert_track<N>_<YYYYMMDD_HHMMSS>.mp4`
 
-**Filename**: `alerts/phone_alert_YYYYMMDD_HHMMSS.mp4`
+**Annotations per frame (via `_render_alert_frame`):**
+- RED bounding box around the cheating student + label `"CHEATER ID:X"`
+- YELLOW bounding box around the target paper
+- Red banner: `"CHEATING ALERT — Student X looking at neighbor's paper"`
+- Mic pin overlay: source mic = RED dot, other mics = GREEN dots
+- Dual timestamp badge: SYS wall-clock time + archive offset (top-right corner)
 
-**Contents per frame:**
-- RED bounding box around each detected phone + label "PHONE"
-- Dark red banner: "PHONE ALERT — Mobile device detected"
+**Timing**: `start_sec = (first_pre_roll_frame.frame_index / fps) - 2.0s` — anchored to `suspicious_start_time`, not alert-confirmation time.
 
-**Buffer structure:** `AlertFrame` dataclasses. Pre-event frames have `[]` → written raw.
+### 7.3 Phone Alert Videos
 
-### 7.3 Concurrency Limits
+**Output filename**: `alerts/combined_AV_phone_<camera_id>_<timestamp>.mp4`  
+**Fallback filename**: `alerts/phone_alert_<YYYYMMDD_HHMMSS>.mp4`
 
-- Maximum 3 simultaneous gaze alert recordings (prevents OOM).
-- Phone alerts are independent and not counted against this limit.
-- Each recording runs in its own daemon thread.
+**Annotations per frame:**
+- RED bounding box around each detected phone + label `"PHONE"`
+- Dark red banner: `"PHONE ALERT — Mobile device detected"`
+- Mic pin overlay + dual timestamp badge
+
+**State machine**: Fully independent of student tracking. Managed by `_phone_is_recording` state variable in `VideoPipeline`.
+
+### 7.4 Audio-Triggered Alert Videos
+
+**Output filename**: `alerts/combined_AV_<camera_id>_<alert_filename>.mp4`
+
+When `AudioPipeline` fires an alert:
+1. `AudioEvidenceRecorder` saves a pre-cut WAV clip to `audio alerts/`.
+2. `AVAlertComposer.compose_audio_alert(alert_wav_path, mic_id, camera_ids, start_sec, end_sec)` is called.
+3. Composer extracts and annotates the matching video segment from the archive.
+4. ffmpeg merges the annotated video with the pre-cut WAV → combined A/V clip.
+
+### 7.5 Concurrency Limits
+
+- Maximum **3 simultaneous** gaze alert recordings per camera (OOM prevention).
+- 4th+ simultaneous cheater: recording skipped with a once-per-track `logger.warning`; resumes when a slot opens.
+- Phone alerts are **independent** and not counted against the gaze limit.
+- Alert writers run in bounded thread pools: `GazeAlertWriter` (max 2), `PhoneAlertWriter` (max 2).
 
 ---
 
 ## 8. Video Output & Codec Strategy
 
-### 8.1 Codec Fallback Chain
+### 8.1 Codec Usage by Component
 
-All video writers (archive + alerts) use the same priority:
+| Component | Codec | Notes |
+|-----------|-------|-------|
+| **Archive writer** (`ArchiveWriter`) | Configured via `ARCHIVE_MODE`; typically raw BGR frames written to MKV/MP4 | Continuous session recording |
+| **Alert annotation** (`_extract_and_annotate_video`) | `mp4v` via `cv2.VideoWriter` | Intermediate temp file only |
+| **Final alert mux** (ffmpeg `-c:v copy`) | Copies `mp4v` stream; audio encoded as `aac` | Combined A/V output |
+| **Standalone fallback** (no composer) | `avc1` → `mp4v` → `XVID` → `MJPG` → JPEG sequence | Chain tried in order; JPEG sequence ensures evidence is never lost |
+
+### 8.1a Standalone Fallback Codec Chain
+
+Used when `AVAlertComposer` is not available (no audio/video archive configured):
 
 | Priority | Codec | Extension | Notes |
 |----------|-------|-----------|-------|
@@ -391,6 +471,7 @@ All video writers (archive + alerts) use the same priority:
 | 2 | `mp4v` | `.mp4` | MPEG-4 fallback |
 | 3 | `XVID` | `.avi` | Universally available |
 | 4 | `MJPG` | `.avi` | Always works, largest files |
+| 5 | JPEG sequence | `frame_%04d.jpg` | Last resort — evidence never lost |
 
 > On most Windows systems, `avc1` requires the OpenH264 DLL. If unavailable, the system automatically falls back to `mp4v`.
 

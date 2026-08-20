@@ -149,10 +149,11 @@ def main():
         clock=clock
     )
 
-    total_pipeline_count = len(video_pipelines) + 1
-    barrier = threading.Barrier(total_pipeline_count)
+    from thaqib.startup import StartupCoordinator
+    component_ids = [vp._camera_id for vp in video_pipelines] + ["audio"]
+    coordinator = StartupCoordinator(component_ids)
 
-    def run_video(vp, barrier, layout, available_mic_ids):
+    def run_video(vp, coordinator, layout, available_mic_ids):
         visualizer = VideoVisualizer()
         vp.set_visualizer(visualizer)
         
@@ -189,19 +190,26 @@ def main():
 
         cv2.setMouseCallback(window_name, mouse_callback)
 
-        logger.info(f"[{vp._camera_id}] Pre-loading YOLO detector...")
-        vp.preload_models()
-        logger.info(f"[{vp._camera_id}] Models ready.")
-
         try:
-            barrier.wait(timeout=60)
-        except threading.BrokenBarrierError:
-            logger.error(f"Barrier broken or timed out in run_video ({vp._camera_id}). Aborting.")
+            logger.info(f"[{vp._camera_id}] Pre-loading YOLO detector...")
+            vp.preload_models()
+            logger.info(f"[{vp._camera_id}] Models ready.")
+            coordinator.signal_ready(vp._camera_id)
+        except Exception as e:
+            coordinator.signal_failed(vp._camera_id, str(e))
+            cv2.destroyWindow(window_name)
+            return
+
+        if not coordinator.wait_barrier(timeout=15.0):
+            logger.error(f"Startup aborted or timed out in run_video ({vp._camera_id}). Aborting.")
+            cv2.destroyWindow(window_name)
             return
         
         try:
             with vp:
                 for pipeline_frame in vp.run():
+                    if coordinator.abort_event.is_set():
+                        break
                     _latest_frame[0] = pipeline_frame
                     
                     if pipeline_frame.annotated_frame is not None:
@@ -232,6 +240,7 @@ def main():
                     key = cv2.waitKey(1) & 0xFF
 
                     if key == ord('q'):
+                        coordinator.abort_event.set()
                         break
                     elif key == ord('s'):
                         if pipeline_frame.registry:
@@ -265,33 +274,39 @@ def main():
                         visualizer.toggle_face_mesh()
         except Exception as e:
             logger.error(f"Video pipeline {vp._camera_id} error: {e}")
+            coordinator.abort_event.set()
         finally:
             cv2.destroyWindow(window_name)
 
-    def run_audio(ap):
-        logger.info("Loading audio models...")
-        ap.load_models()
-        logger.info("Audio models ready.")
+    def run_audio(ap, coordinator):
         try:
-            barrier.wait(timeout=30)
-        except threading.BrokenBarrierError:
-            logger.error("Barrier broken or timed out in run_audio. Aborting.")
+            logger.info("Loading audio models...")
+            ap.load_models()
+            logger.info("Audio models ready.")
+            coordinator.signal_ready("audio")
+        except Exception as e:
+            coordinator.signal_failed("audio", str(e))
+            return
+
+        if not coordinator.wait_barrier(timeout=15.0):
+            logger.error("Startup aborted or timed out in run_audio. Aborting.")
             return
             
         try:
             ap.run_sync()
         except Exception as e:
             logger.error(f"Audio pipeline error: {e}")
+            coordinator.abort_event.set()
         finally:
             ap.stop()
 
     video_threads = []
     for vp in video_pipelines:
-        t = threading.Thread(target=run_video, args=(vp, barrier, layout, mic_sources))
+        t = threading.Thread(target=run_video, args=(vp, coordinator, layout, mic_sources))
         t.start()
         video_threads.append(t)
 
-    audio_thread = threading.Thread(target=run_audio, args=(ap,))
+    audio_thread = threading.Thread(target=run_audio, args=(ap, coordinator))
     audio_thread.start()
 
     try:
@@ -300,12 +315,14 @@ def main():
             t.join()
             
         logger.info("All video streams ended. Stopping audio pipeline and composer...")
+        coordinator.abort_event.set()
         ap.stop()
         composer.stop()
         audio_thread.join()
         
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received, stopping pipelines...")
+        coordinator.abort_event.set()
         for vp in video_pipelines:
             vp.stop()
         ap.stop()

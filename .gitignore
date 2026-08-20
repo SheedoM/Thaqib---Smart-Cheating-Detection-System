@@ -89,7 +89,6 @@ data/
 *.jpg
 
 # Model weights (download separately)
-*.pt
 *.pth
 *.onnx
 weights/
